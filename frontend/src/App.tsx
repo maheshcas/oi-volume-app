@@ -62,7 +62,6 @@ export default function App() {
   const [instrumentType, setInstrumentType] = useState("Indices");
   const [expiries, setExpiries] = useState<string[]>([]);
   const [expiry, setExpiry] = useState<string>("");
-  const [strikes, setStrikes] = useState<(number | string)[]>([]);
   const [rangeEnabled, setRangeEnabled] = useState(true);
   const [rangeCount, setRangeCount] = useState(10);
   const [rows, setRows] = useState<SummaryRow[]>([]);
@@ -87,9 +86,7 @@ export default function App() {
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data = await res.json();
       const list = Array.isArray(data.expiries) ? data.expiries : [];
-      const strikeList = Array.isArray(data.strikes) ? data.strikes : [];
       setExpiries(list);
-      setStrikes(strikeList);
       setExpiry((current) => (current && list.includes(current) ? current : list[0] ?? ""));
       setStatus(list.length ? `Loaded ${list.length} expiries.` : "No expiries returned.");
     } catch (err) {
@@ -382,22 +379,6 @@ export default function App() {
     let best = null as SummaryRow | null;
     displayRows.forEach((row) => {
       if (!best || row.CE_OI > best.CE_OI) best = row;
-    });
-    return best?.strike ?? null;
-  }, [displayRows]);
-
-  const maxCeDoiStrike = useMemo(() => {
-    let best = null as SummaryRow | null;
-    displayRows.forEach((row) => {
-      if (!best || row.CE_DeltaOI > best.CE_DeltaOI) best = row;
-    });
-    return best?.strike ?? null;
-  }, [displayRows]);
-
-  const maxPeDoiStrike = useMemo(() => {
-    let best = null as SummaryRow | null;
-    displayRows.forEach((row) => {
-      if (!best || row.PE_DeltaOI > best.PE_DeltaOI) best = row;
     });
     return best?.strike ?? null;
   }, [displayRows]);
