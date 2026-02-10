@@ -13,6 +13,12 @@ type SummaryRow = {
   CE_OIDir?: string;
   CE_VolDir?: string;
   CE_Interpretation?: string;
+  CE_TruthFlags?: {
+    volume_without_oi: boolean;
+    oi_without_volume: boolean;
+    real_money: boolean;
+    volume_low: boolean;
+  };
   PE_OI: number;
   PE_DeltaOI: number;
   PE_Volume: number;
@@ -22,6 +28,12 @@ type SummaryRow = {
   PE_OIDir?: string;
   PE_VolDir?: string;
   PE_Interpretation?: string;
+  PE_TruthFlags?: {
+    volume_without_oi: boolean;
+    oi_without_volume: boolean;
+    real_money: boolean;
+    volume_low: boolean;
+  };
   signal: string;
 };
 
@@ -36,7 +48,7 @@ type SummaryResponse = {
   rows: SummaryRow[];
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const REFRESH_MS = 15000;
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
@@ -362,8 +374,8 @@ export default function App() {
     if (!strikesSorted.length) return [];
     const idx = strikesSorted.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
     const center = idx >= 0 ? idx : Math.floor(strikesSorted.length / 2);
-    const start = Math.max(0, center - 5);
-    const end = Math.min(strikesSorted.length, start + 11);
+    const start = Math.max(0, center - 3);
+    const end = Math.min(strikesSorted.length, start + 8);
     return strikesSorted.slice(start, end);
   }, [strikesSorted, nearestSpotStrike]);
 
@@ -513,6 +525,16 @@ export default function App() {
     return alerts;
   }, [displayRows, resistanceStrike, supportStrike, maxVolumeStrike, volumeSpikeThreshold]);
 
+  const maxMetrics = useMemo(() => {
+    const max = (values: number[]) => (values.length ? Math.max(...values) : 1);
+    return {
+      ceOi: max(displayRows.map((row) => Number(row.CE_OI) || 0)),
+      peOi: max(displayRows.map((row) => Number(row.PE_OI) || 0)),
+      ceVol: max(displayRows.map((row) => Number(row.CE_Volume) || 0)),
+      peVol: max(displayRows.map((row) => Number(row.PE_Volume) || 0)),
+    };
+  }, [displayRows]);
+
   const interpretationSummary = useMemo(() => {
     const count = (key: "CE_Interpretation" | "PE_Interpretation") => {
       const map = new Map<string, number>();
@@ -650,49 +672,76 @@ export default function App() {
         <div className="dashboard-grid">
           <div className="dash-card strike-card">
             <h3>Strike Prices</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Strike</th>
-                  <th>CE OI</th>
-                  <th>ΔOI</th>
-                  <th>PE ΔOI</th>
-                </tr>
-              </thead>
-              <tbody>
-                {strikeSlice.map((row) => (
-                  <tr
+            <div className="ladder">
+              <div className="ladder-header">
+                <span>Call Options (CE OI)</span>
+                <span>Strike</span>
+                <span>Put Options (PE OI)</span>
+              </div>
+              {strikeSlice.map((row) => {
+                const ceOi = Number(row.CE_OI) || 0;
+                const peOi = Number(row.PE_OI) || 0;
+                const ceVol = Number(row.CE_Volume) || 0;
+                const peVol = Number(row.PE_Volume) || 0;
+                const isSpot = String(row.strike) === String(nearestSpotStrike);
+                const isRes = String(row.strike) === String(resistanceStrike);
+                const isSup = String(row.strike) === String(supportStrike);
+                const interpret =
+                  row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
+                    ? row.PE_Interpretation
+                    : row.CE_Interpretation ?? "Mixed";
+                return (
+                  <div
                     key={row.strike}
                     className={[
-                      String(row.strike) === String(nearestSpotStrike) ? "spot-row" : "",
-                      String(row.strike) === String(resistanceStrike) ? "resistance-row" : "",
-                      String(row.strike) === String(supportStrike) ? "support-row" : "",
+                      "ladder-row",
+                      isSpot ? "spot-row" : "",
+                      isRes ? "resistance-row" : "",
+                      isSup ? "support-row" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                   >
-                    <td>{formatNumber(row.strike)}</td>
-                    <td>{formatNumber(row.CE_OI)}</td>
-                    <td className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
-                      {row.CE_DeltaOI >= 0 ? "+" : ""}
-                      {formatNumber(row.CE_DeltaOI)}
-                    </td>
-                    <td className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
-                      {row.PE_DeltaOI >= 0 ? "+" : ""}
-                      {formatNumber(row.PE_DeltaOI)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    <div className="ladder-side">
+                      <div className="bar-wrap red">
+                        <div className="bar" style={{ width: `${(ceOi / maxMetrics.ceOi) * 100}%` }} />
+                      </div>
+                      <div className="bar-meta">
+                        <span>{formatNumber(ceOi)}</span>
+                        <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
+                          {row.CE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.CE_DeltaOI))}
+                        </span>
+                      </div>
+                      <div className="bar-sub">{formatNumber(ceVol)}</div>
+                    </div>
+                    <div className="ladder-center">
+                      <div className="strike">{formatNumber(row.strike)}</div>
+                      <div className="interp">{interpret}</div>
+                    </div>
+                    <div className="ladder-side right">
+                      <div className="bar-wrap green">
+                        <div className="bar" style={{ width: `${(peOi / maxMetrics.peOi) * 100}%` }} />
+                      </div>
+                      <div className="bar-meta">
+                        <span>{formatNumber(peOi)}</span>
+                        <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
+                          {row.PE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.PE_DeltaOI))}
+                        </span>
+                      </div>
+                      <div className="bar-sub">{formatNumber(peVol)}</div>
+                    </div>
+                    {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
+                    {isSup ? <span className="tag support">SUPPORT</span> : null}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div className="dash-card">
+          <div className="dash-card double-chart">
             <h3>Call OI & Volume</h3>
-            <ReactECharts option={callMiniOption} style={{ height: 260 }} />
-          </div>
-          <div className="dash-card">
+            <ReactECharts option={callMiniOption} style={{ height: 240 }} />
             <h3>Put OI & Volume</h3>
-            <ReactECharts option={putMiniOption} style={{ height: 260 }} />
+            <ReactECharts option={putMiniOption} style={{ height: 240 }} />
           </div>
           <div className="dash-card signal-card">
             <h3>Market Signals</h3>

@@ -229,8 +229,37 @@ button:hover {
 .dashboard-grid {
   margin-top: 16px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  grid-template-columns: minmax(300px, 1.4fr) minmax(360px, 2fr) minmax(260px, 1.1fr);
+  grid-template-areas: "charts strike signal";
   gap: 16px;
+}
+
+.strike-card {
+  grid-area: strike;
+}
+
+.double-chart {
+  grid-area: charts;
+}
+
+.signal-card {
+  grid-area: signal;
+}
+
+@media (max-width: 1100px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "strike"
+      "charts"
+      "signal";
+  }
+}
+
+@media (max-width: 720px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dash-card {
@@ -250,10 +279,120 @@ button:hover {
   font-size: 16px;
 }
 
+.double-chart h3 {
+  margin-top: 6px;
+}
+
 .strike-card table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.ladder {
+  display: grid;
+  gap: 10px;
+}
+
+.ladder-header {
+  display: grid;
+  grid-template-columns: 1fr 120px 1fr;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ladder-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 1fr;
+  gap: 10px;
+  position: relative;
+  padding: 8px 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ladder-side {
+  display: grid;
+  gap: 6px;
+}
+
+.ladder-side.right {
+  text-align: right;
+}
+
+.bar-wrap {
+  height: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-wrap.red .bar {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(240, 108, 108, 0.9), rgba(240, 108, 108, 0.2));
+}
+
+.bar-wrap.green .bar {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(88, 223, 124, 0.9), rgba(88, 223, 124, 0.2));
+}
+
+.bar-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.ladder-side.right .bar-meta {
+  justify-content: space-between;
+}
+
+.bar-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ladder-center {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+.ladder-center .strike {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.ladder-center .interp {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.tag {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tag.resistance {
+  border-color: rgba(255, 92, 132, 0.6);
+  color: #ff5c84;
+}
+
+.tag.support {
+  border-color: rgba(77, 208, 125, 0.6);
+  color: #4dd07d;
 }
 
 .strike-card th,
@@ -415,17 +554,7 @@ button:hover {
 }
 
 
-@media (max-width: 1100px) {
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(220px, 1fr));
-  }
-}
 
-@media (max-width: 720px) {
-  .dashboard-grid {
-    grid-template-columns: 1fr;
-  }
-}
 
 .index-grid {
   margin-top: 16px;

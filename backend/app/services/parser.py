@@ -51,28 +51,39 @@ def build_oi_volume_summary(nse_json):
             signal = "Neutral"
 
         # Core interpretation matrix (per side)
-        ce_price_dir = _direction(ce_change)
+        ce_price_dir = _direction(ce_change, zero_threshold=0.5)
         ce_oi_dir = _direction(ce_doi)
-        ce_vol_dir = "↑" if ce_vol > ce_avg_vol else "↓"
+        ce_vol_dir = "↑" if ce_vol > ce_avg_vol * 1.2 else "↓"
 
-        pe_price_dir = _direction(pe_change)
+        pe_price_dir = _direction(pe_change, zero_threshold=0.5)
         pe_oi_dir = _direction(pe_doi)
-        pe_vol_dir = "↑" if pe_vol > pe_avg_vol else "↓"
+        pe_vol_dir = "↑" if pe_vol > pe_avg_vol * 1.2 else "↓"
 
         def interpret(price_dir, oi_dir, vol_dir):
             if price_dir == "↑" and oi_dir == "↑" and vol_dir == "↑":
-                return "Strong Long Build-up"
+                return "Strong Long Build-up (Bullish)"
             if price_dir == "↓" and oi_dir == "↑" and vol_dir == "↑":
-                return "Strong Short Build-up"
+                return "Strong Short Build-up (Bearish)"
             if price_dir == "↑" and oi_dir == "↓" and vol_dir == "↑":
-                return "Short Covering"
+                return "Short Covering (Fast upside move)"
             if price_dir == "↓" and oi_dir == "↓" and vol_dir == "↑":
-                return "Long Unwinding"
+                return "Long Unwinding (Weak bulls exit)"
             if price_dir == "→" and oi_dir == "↑" and vol_dir == "↓":
-                return "Quiet Accumulation"
+                return "Quiet Position Building (Smart money)"
             if price_dir == "→" and oi_dir == "↓" and vol_dir == "↓":
-                return "No Interest"
+                return "No Interest / Time Decay Zone"
             return "Mixed"
+
+        def truth_flags(oi_change, vol, avg_vol):
+            oi_flat = abs(oi_change) <= 0
+            vol_high = vol > avg_vol * 1.2
+            vol_low = vol <= avg_vol
+            return {
+                "volume_without_oi": vol_high and oi_flat,
+                "oi_without_volume": (not vol_high) and abs(oi_change) > 0,
+                "real_money": vol_high and abs(oi_change) > 0,
+                "volume_low": vol_low,
+            }
 
         rows.append({
             "strike": strike,
@@ -86,6 +97,7 @@ def build_oi_volume_summary(nse_json):
             "CE_OIDir": ce_oi_dir,
             "CE_VolDir": ce_vol_dir,
             "CE_Interpretation": interpret(ce_price_dir, ce_oi_dir, ce_vol_dir),
+            "CE_TruthFlags": truth_flags(ce_doi, ce_vol, ce_avg_vol),
             "PE_OI": pe_oi,
             "PE_DeltaOI": pe_doi,
             "PE_Volume": pe_vol,
@@ -95,6 +107,7 @@ def build_oi_volume_summary(nse_json):
             "PE_OIDir": pe_oi_dir,
             "PE_VolDir": pe_vol_dir,
             "PE_Interpretation": interpret(pe_price_dir, pe_oi_dir, pe_vol_dir),
+            "PE_TruthFlags": truth_flags(pe_doi, pe_vol, pe_avg_vol),
             "signal": signal
         })
 
