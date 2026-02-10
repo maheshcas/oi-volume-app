@@ -189,10 +189,76 @@ button:hover {
     inset 0 0 18px rgba(120, 160, 255, 0.08);
 }
 
+.summary-bar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .summary-bar span + span::before {
   content: "|";
   margin: 0 10px 0 2px;
   color: rgba(255, 255, 255, 0.35);
+}
+
+.auto-interpret {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 14, 24, 0.8);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.auto-interpret strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.auto-interpret ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.market-summary h4,
+.interpret-card h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.key-levels {
+  margin-top: 8px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.interpret-card {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px 12px;
+}
+
+.interpret-label {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 92, 132, 0.15);
+  border: 1px solid rgba(255, 92, 132, 0.4);
+  color: #ff5c84;
+  font-weight: 700;
 }
 
 .summary-title {
@@ -223,6 +289,29 @@ button:hover {
 }
 
 .market-unknown {
+  color: var(--muted);
+}
+
+.trend-pill {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trend-pill.bull {
+  border-color: rgba(77, 208, 125, 0.6);
+  color: #4dd07d;
+}
+
+.trend-pill.bear {
+  border-color: rgba(255, 92, 132, 0.6);
+  color: #ff5c84;
+}
+
+.trend-pill.neutral {
+  border-color: rgba(160, 170, 190, 0.4);
   color: var(--muted);
 }
 
@@ -267,11 +356,20 @@ button:hover {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   padding: 14px;
-  min-height: 260px;
+  min-height: 220px;
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.04),
     0 12px 28px rgba(0, 0, 0, 0.45),
     inset 0 0 24px rgba(46, 110, 255, 0.08);
+  transition: box-shadow 200ms ease, transform 200ms ease;
+}
+
+.dash-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 18px 34px rgba(0, 0, 0, 0.55),
+    inset 0 0 30px rgba(88, 160, 255, 0.14);
 }
 
 .dash-card h3 {
@@ -313,6 +411,12 @@ button:hover {
   padding: 8px 6px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.ladder-row:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 18px rgba(120, 160, 255, 0.18);
 }
 
 .ladder-side {
@@ -329,6 +433,11 @@ button:hover {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 999px;
   overflow: hidden;
+}
+
+.bar {
+  animation: barIn 600ms ease;
+  transform-origin: left center;
 }
 
 .bar-wrap.red .bar {
@@ -370,8 +479,12 @@ button:hover {
 
 .ladder-center .interp {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--ink);
   text-align: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .tag {
@@ -394,6 +507,7 @@ button:hover {
   border-color: rgba(77, 208, 125, 0.6);
   color: #4dd07d;
 }
+
 
 .strike-card th,
 .strike-card td {
@@ -421,6 +535,15 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.signal-row strong,
+.signal-row .pill-inline {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  font-weight: 700;
 }
 
 .signal-row.support {
@@ -477,6 +600,130 @@ button:hover {
   box-shadow:
     0 10px 24px rgba(0, 0, 0, 0.45),
     inset 0 0 14px rgba(255, 200, 120, 0.08);
+}
+
+.chart-summary {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.chart-summary div {
+  background: rgba(10, 18, 30, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.chart-summary strong {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chart-summary span {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.chart-intro {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 14, 24, 0.7);
+}
+
+.chart-intro h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.chart-intro p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+
+
+
+.mini-summary {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.mini-summary div {
+  background: rgba(10, 18, 30, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.mini-summary strong {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mini-summary span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.disclaimer {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 14, 24, 0.75);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bias-pill {
+  padding: 4px 8px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bias-pill.bull {
+  border-color: rgba(77, 208, 125, 0.6);
+  box-shadow: 0 0 12px rgba(77, 208, 125, 0.4);
+  color: #4dd07d;
+}
+
+.bias-pill.bear {
+  border-color: rgba(255, 92, 132, 0.6);
+  box-shadow: 0 0 12px rgba(255, 92, 132, 0.4);
+  color: #ff5c84;
+}
+
+.bias-pill.neutral {
+  border-color: rgba(160, 170, 190, 0.4);
+  color: var(--muted);
+}
+
+@keyframes barIn {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }
 
 .alert-item {
@@ -662,6 +909,8 @@ button:hover {
   overflow-x: auto;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  max-height: 460px;
+  overflow-y: auto;
 }
 
 table {
@@ -672,6 +921,13 @@ table {
 
 thead {
   background: rgba(255, 255, 255, 0.06);
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(15, 25, 35, 0.95);
+  z-index: 2;
 }
 
 th,

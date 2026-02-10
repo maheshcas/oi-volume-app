@@ -395,6 +395,32 @@ export default function App() {
     return best?.strike ?? null;
   }, [displayRows]);
 
+  const maxPainStrike = useMemo(() => {
+    if (!displayRows.length) return null;
+    const strikesNumeric = displayRows
+      .map((row) => Number(row.strike))
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => a - b);
+    if (!strikesNumeric.length) return null;
+    let minPain = Number.POSITIVE_INFINITY;
+    let maxPain = strikesNumeric[0];
+    strikesNumeric.forEach((strike) => {
+      let pain = 0;
+      displayRows.forEach((row) => {
+        const k = Number(row.strike);
+        if (Number.isNaN(k)) return;
+        const cePain = Math.max(0, strike - k) * (row.CE_OI || 0);
+        const pePain = Math.max(0, k - strike) * (row.PE_OI || 0);
+        pain += cePain + pePain;
+      });
+      if (pain < minPain) {
+        minPain = pain;
+        maxPain = strike;
+      }
+    });
+    return maxPain;
+  }, [displayRows]);
+
   const maxVolumeStrike = useMemo(() => {
     let best = null as SummaryRow | null;
     let bestVol = -1;
@@ -407,6 +433,12 @@ export default function App() {
     });
     return best?.strike ?? null;
   }, [displayRows]);
+
+  const targetLevel = useMemo(() => {
+    if (bias.startsWith("Bullish")) return resistanceStrike;
+    if (bias.startsWith("Bearish")) return supportStrike;
+    return null;
+  }, [bias, resistanceStrike, supportStrike]);
 
   const callMiniOption = useMemo(
     () => ({
@@ -558,6 +590,172 @@ export default function App() {
     };
   }, [displayRows]);
 
+  const marketSummary = useMemo(() => {
+    const sorted = [...displayRows]
+      .map((row) => Number(row.strike))
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => a - b);
+    if (!sorted.length) {
+      return {
+        marketBias: "Neutral",
+        confidence: "Low",
+        reasons: ["Insufficient data"],
+        tag: null as string | null,
+        keyLevels: { support: supportStrike, resistance: resistanceStrike },
+      };
+    }
+
+    const atmIndex = sorted.findIndex((strike) => String(strike) === String(nearestSpotStrike));
+    const center = atmIndex >= 0 ? atmIndex : Math.floor(sorted.length / 2);
+    const start = Math.max(0, center - 3);
+    const end = Math.min(sorted.length, start + 7);
+    const atmWindow = new Set(sorted.slice(start, end).map(String));
+    const atmRows = displayRows.filter((row) => atmWindow.has(String(row.strike)));
+
+    let total_ce_oi_change = 0;
+    let total_pe_oi_change = 0;
+    let ce_short_buildup_count = 0;
+    let pe_short_buildup_count = 0;
+    let ce_long_buildup_count = 0;
+    let pe_long_buildup_count = 0;
+    let ce_short_covering_count = 0;
+    let pe_short_covering_count = 0;
+    let high_volume_strikes = 0;
+
+    atmRows.forEach((row) => {
+      total_ce_oi_change += Number(row.CE_DeltaOI) || 0;
+      total_pe_oi_change += Number(row.PE_DeltaOI) || 0;
+
+      if ((row.CE_Interpretation || "").includes("Short Build-up")) ce_short_buildup_count += 1;
+      if ((row.PE_Interpretation || "").includes("Short Build-up")) pe_short_buildup_count += 1;
+      if ((row.CE_Interpretation || "").includes("Long Build-up")) ce_long_buildup_count += 1;
+      if ((row.PE_Interpretation || "").includes("Long Build-up")) pe_long_buildup_count += 1;
+      if ((row.CE_Interpretation || "").includes("Short Covering")) ce_short_covering_count += 1;
+      if ((row.PE_Interpretation || "").includes("Short Covering")) pe_short_covering_count += 1;
+
+      if (row.CE_VolDir === "↑" || row.PE_VolDir === "↑") high_volume_strikes += 1;
+    });
+
+    const call_writing_score =
+      ce_short_buildup_count + (total_ce_oi_change > total_pe_oi_change ? 1 : 0);
+    const put_writing_score =
+      pe_short_buildup_count + (total_pe_oi_change > total_ce_oi_change ? 1 : 0);
+
+    const bullish_pressure = pe_short_covering_count + ce_long_buildup_count;
+    const bearish_pressure = ce_short_covering_count + pe_long_buildup_count;
+
+    const spot_change_pct = indexRow?.percChange ?? 0;
+    const approxEqual = (a: number, b: number) => Math.abs(a - b) <= 1;
+
+    let marketBias = "Neutral";
+    const reasons: string[] = [];
+
+    if (call_writing_score >= 3 && put_writing_score <= 1 && bullish_pressure === 0) {
+      marketBias = "Strongly Bearish";
+      reasons.push("Heavy call writing near ATM");
+      reasons.push("Limited put support below spot");
+      reasons.push("No signs of short covering");
+    } else if (call_writing_score > put_writing_score && bearish_pressure > bullish_pressure) {
+      marketBias = "Bearish";
+      reasons.push("Call writers dominating near spot");
+      reasons.push("Put support weakening");
+      reasons.push("Selling pressure visible");
+    } else if (
+      approxEqual(call_writing_score, put_writing_score) &&
+      approxEqual(bullish_pressure, bearish_pressure) &&
+      Math.abs(spot_change_pct) <= 0.4
+    ) {
+      marketBias = "Range-Bound";
+      reasons.push("Both call and put writing visible");
+      reasons.push("No aggressive build-up");
+      reasons.push("Price lacks directional conviction");
+    } else if (put_writing_score > call_writing_score && bullish_pressure > bearish_pressure) {
+      marketBias = "Bullish";
+      reasons.push("Strong put writing near support");
+      reasons.push("Call short covering visible");
+      reasons.push("Buyers gaining control");
+    } else if (put_writing_score >= 3 && call_writing_score <= 1 && bearish_pressure === 0) {
+      marketBias = "Strongly Bullish";
+      reasons.push("Aggressive put writing");
+      reasons.push("Calls being covered rapidly");
+      reasons.push("Strong downside support formed");
+    } else {
+      reasons.push("No dominant build-up signals near spot");
+    }
+
+    const tag =
+      ce_short_covering_count >= 2 && pe_short_covering_count >= 2 && high_volume_strikes >= 3
+        ? "Volatility Expansion Possible"
+        : null;
+
+    const confidenceScore = Math.min(5, Math.abs(call_writing_score - put_writing_score)) * 20;
+    const confidence = confidenceScore >= 80 ? "High" : confidenceScore >= 50 ? "Medium" : "Low";
+
+    return {
+      marketBias,
+      reasons,
+      tag,
+      confidence,
+      keyLevels: { support: supportStrike, resistance: resistanceStrike },
+    };
+  }, [displayRows, nearestSpotStrike, indexRow?.percChange, supportStrike, resistanceStrike]);
+
+  const topInterpretation = useMemo(() => {
+    let best = null as null | {
+      strike: number;
+      optionType: "CE" | "PE";
+      label: string;
+      desc: string;
+      score: number;
+    };
+    displayRows.forEach((row) => {
+      const ceScore = row.CE_ConfidenceScore ?? 0;
+      if (!best || ceScore > best.score) {
+        best = {
+          strike: row.strike,
+          optionType: "CE",
+          label: row.CE_Interpretation ?? "Mixed",
+          desc: row.CE_InterpretationDesc ?? "Signals are not aligned.",
+          score: ceScore,
+        };
+      }
+      const peScore = row.PE_ConfidenceScore ?? 0;
+      if (!best || peScore > best.score) {
+        best = {
+          strike: row.strike,
+          optionType: "PE",
+          label: row.PE_Interpretation ?? "Mixed",
+          desc: row.PE_InterpretationDesc ?? "Signals are not aligned.",
+          score: peScore,
+        };
+      }
+    });
+    return best;
+  }, [displayRows]);
+
+  const atmInfo = useMemo(() => {
+    const atmRow = displayRows.find((row) => String(row.strike) === String(nearestSpotStrike));
+    if (!atmRow) return { strike: null, bias: "Neutral" };
+    const atmVol = (Number(atmRow.CE_Volume) || 0) + (Number(atmRow.PE_Volume) || 0);
+    const avgVol =
+      displayRows.length
+        ? displayRows.reduce(
+            (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
+            0
+          ) / displayRows.length
+        : 0;
+    if (avgVol && atmVol > avgVol * 1.2) {
+      return { strike: atmRow.strike, bias: "Directional move loading" };
+    }
+    if (atmRow.CE_DeltaOI > 0 && atmRow.PE_DeltaOI < 0) {
+      return { strike: atmRow.strike, bias: "Bullish bias" };
+    }
+    if (atmRow.PE_DeltaOI > 0 && atmRow.CE_DeltaOI < 0) {
+      return { strike: atmRow.strike, bias: "Bearish bias" };
+    }
+    return { strike: atmRow.strike, bias: "Neutral" };
+  }, [displayRows, nearestSpotStrike]);
+
   return (
     <div className="page">
       <header className="hero">
@@ -661,12 +859,64 @@ export default function App() {
               </span>
             ) : null}
           </span>
-          <span>Exp: {meta?.expiry ?? "-"}</span>
           <span>
-            Market: <strong className={`market-${marketState.toLowerCase()}`}>{marketState}</strong>
+            % Change:{" "}
+            <span className={`spot-change ${indexRow?.percChange >= 0 ? "up" : "down"}`}>
+              {indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
+            </span>
           </span>
+          <span>Exp: {meta?.expiry ?? "-"}</span>
           <span>PCR: {pcr ? pcr.toFixed(2) : "-"}</span>
+          <span>Max Pain: {formatNumber(maxPainStrike)}</span>
+          <span>
+            Trend:{" "}
+            <span className={`trend-pill ${bias.startsWith("Bullish") ? "bull" : bias.startsWith("Bearish") ? "bear" : "neutral"}`}>
+              {bias.startsWith("Bullish") ? "Bullish" : bias.startsWith("Bearish") ? "Bearish" : "Neutral"}
+            </span>
+          </span>
           <span>Updated: {meta?.timestamp ?? lastUpdated ?? "-"}</span>
+        </div>
+
+        <div className="auto-interpret">
+          <div className="market-summary">
+            <h4>
+              Market Summary{" "}
+              <span
+                className={`bias-pill ${
+                  marketSummary.marketBias.toLowerCase().includes("bullish")
+                    ? "bull"
+                    : marketSummary.marketBias.toLowerCase().includes("bearish")
+                      ? "bear"
+                      : "neutral"
+                }`}
+              >
+                {marketSummary.marketBias}
+              </span>
+              <span className="pill-inline">Confidence: {marketSummary.confidence}</span>
+            </h4>
+            <ul>
+              {marketSummary.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+              {marketSummary.tag ? <li>⚠ {marketSummary.tag}</li> : null}
+            </ul>
+            <div className="key-levels">
+              <span>Resistance: {formatNumber(marketSummary.keyLevels.resistance)}</span>
+              <span>Support: {formatNumber(marketSummary.keyLevels.support)}</span>
+            </div>
+          </div>
+          <div className="interpret-card">
+            <h4>Interpretation</h4>
+            <div className="interpret-label">
+              {topInterpretation
+                ? `${topInterpretation.label} at ${formatNumber(topInterpretation.strike)} ${topInterpretation.optionType}`
+                : "Mixed"}
+            </div>
+            <ul>
+              <li>{topInterpretation?.desc ?? "Signals are not aligned."}</li>
+              <li>Confidence: {topInterpretation?.score ?? 0}</li>
+            </ul>
+          </div>
         </div>
 
         <div className="dashboard-grid">
@@ -712,7 +962,12 @@ export default function App() {
                           {row.CE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.CE_DeltaOI))}
                         </span>
                       </div>
-                      <div className="bar-sub">{formatNumber(ceVol)}</div>
+                      <div className="bar-sub">
+                        {formatNumber(ceVol)}{" "}
+                        <span className={row.CE_VolDir === "↑" ? "up" : row.CE_VolDir === "↓" ? "down" : ""}>
+                          {row.CE_VolDir ?? "→"}
+                        </span>
+                      </div>
                     </div>
                     <div className="ladder-center">
                       <div className="strike">{formatNumber(row.strike)}</div>
@@ -728,7 +983,12 @@ export default function App() {
                           {row.PE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.PE_DeltaOI))}
                         </span>
                       </div>
-                      <div className="bar-sub">{formatNumber(peVol)}</div>
+                      <div className="bar-sub">
+                        {formatNumber(peVol)}{" "}
+                        <span className={row.PE_VolDir === "↑" ? "up" : row.PE_VolDir === "↓" ? "down" : ""}>
+                          {row.PE_VolDir ?? "→"}
+                        </span>
+                      </div>
                     </div>
                     {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
                     {isSup ? <span className="tag support">SUPPORT</span> : null}
@@ -742,26 +1002,49 @@ export default function App() {
             <ReactECharts option={callMiniOption} style={{ height: 240 }} />
             <h3>Put OI & Volume</h3>
             <ReactECharts option={putMiniOption} style={{ height: 240 }} />
+            <div className="mini-summary">
+              <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
+              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
+              <div><strong>Bias</strong><span className={`bias-pill ${bias.startsWith("Bullish") ? "bull" : bias.startsWith("Bearish") ? "bear" : "neutral"}`}>{bias}</span></div>
+              <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
+              <div><strong>Alerts</strong><span>{alertItems[0] ?? "-"}</span></div>
+              <div><strong>ATM</strong><span>{formatNumber(atmInfo.strike)}</span></div>
+              <div><strong>ATM Bias</strong><span className={`bias-pill ${atmInfo.bias.startsWith("Bullish") ? "bull" : atmInfo.bias.startsWith("Bearish") ? "bear" : "neutral"}`}>{atmInfo.bias}</span></div>
+            </div>
           </div>
           <div className="dash-card signal-card">
             <h3>Market Signals</h3>
             <div className="signal-row support">
-              <span className="dot support" /> Support: {formatNumber(supportStrike)} PE
+              <span className="dot support" /> Support:
+              <span className="pill-inline">{formatNumber(supportStrike)} PE</span>
             </div>
             <div className="signal-row resistance">
-              <span className="dot resistance" /> Resistance: {formatNumber(resistanceStrike)} CE
+              <span className="dot resistance" /> Resistance:
+              <span className="pill-inline">{formatNumber(resistanceStrike)} CE</span>
             </div>
             <div className="signal-row battle">
-              <span className="dot battle" /> Max Volume: {formatNumber(maxVolumeStrike)}
+              <span className="dot battle" /> Max Volume:
+              <span className="pill-inline">{formatNumber(maxVolumeStrike)}</span>
             </div>
-            <div className="signal-row">Trend: {marketState}</div>
-            <div className="signal-row">Bias: {bias}</div>
-            <div className="signal-row">CE: {interpretationSummary.ce}</div>
-            <div className="signal-row">PE: {interpretationSummary.pe}</div>
+            <div className="signal-row">
+              Trend: <span className="pill-inline">{marketState}</span>
+            </div>
+            <div className="signal-row">
+              Bias: <span className="pill-inline">{bias}</span>
+            </div>
+            <div className="signal-row">
+              CE: <span className="pill-inline">{interpretationSummary.ce}</span>
+            </div>
+            <div className="signal-row">
+              PE: <span className="pill-inline">{interpretationSummary.pe}</span>
+            </div>
             <div className="signal-section">Actions</div>
             <div className="signal-row">Watch for OI Unwinding</div>
             <div className="signal-row">
-              Range: {formatNumber(supportStrike)} - {formatNumber(resistanceStrike)}
+              Range:
+              <span className="pill-inline">
+                {formatNumber(supportStrike)} - {formatNumber(resistanceStrike)}
+              </span>
             </div>
           </div>
         </div>
@@ -780,6 +1063,14 @@ export default function App() {
           ))}
         </div>
 
+        <div className="chart-intro">
+          <h3>Interpretation</h3>
+          <p>
+            Bars show OI, lines show volume. Spot line highlights ATM. Use Support/Resistance and
+            Bias for quick context.
+          </p>
+        </div>
+
         <div className="chart-grid">
           <div className="chart-card">
             <h3>Open Interest by Strike</h3>
@@ -790,6 +1081,7 @@ export default function App() {
             <ReactECharts option={volumeOption} style={{ height: 320 }} />
           </div>
         </div>
+
 
         <div className="table-wrap">
           <table>
@@ -867,6 +1159,11 @@ export default function App() {
               })}
             </tbody>
           </table>
+        </div>
+
+        <div className="disclaimer">
+          This dashboard is for educational and analytical purposes only. We are not SEBI registered.
+          No buy/sell recommendation.
         </div>
       </section>
     </div>

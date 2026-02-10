@@ -93,6 +93,65 @@ def option_chain_summary(
     }
 
 
+@router.get("/option-chain/interpretations")
+def option_chain_interpretations(
+    symbol: str = "NIFTY",
+    expiry: Optional[str] = None,
+    instrument_type: str = "Indices",
+    use_sample: bool = False,
+):
+    """
+    Returns per-strike interpretation objects for CE and PE using the rule engine.
+    """
+    if expiry == "":
+        expiry = None
+
+    try:
+        raw = _load_sample() if use_sample else fetch_option_chain(
+            symbol=symbol, expiry=expiry, instrument_type=instrument_type
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    rows = build_oi_volume_summary(raw)
+    out = []
+    for row in rows:
+        strike = row.get("strike")
+        out.append({
+            "strikePrice": strike,
+            "optionType": "CE",
+            "signals": {
+                "priceDirection": row.get("CE_PriceDir"),
+                "oiDirection": row.get("CE_OIDir"),
+                "volumeDirection": row.get("CE_VolDir"),
+            },
+            "interpretationLabel": row.get("CE_Interpretation"),
+            "interpretationDescription": row.get("CE_InterpretationDesc"),
+            "confidenceScore": row.get("CE_ConfidenceScore"),
+        })
+        out.append({
+            "strikePrice": strike,
+            "optionType": "PE",
+            "signals": {
+                "priceDirection": row.get("PE_PriceDir"),
+                "oiDirection": row.get("PE_OIDir"),
+                "volumeDirection": row.get("PE_VolDir"),
+            },
+            "interpretationLabel": row.get("PE_Interpretation"),
+            "interpretationDescription": row.get("PE_InterpretationDesc"),
+            "confidenceScore": row.get("PE_ConfidenceScore"),
+        })
+
+    return {
+        "meta": {
+            "symbol": symbol,
+            "instrument_type": instrument_type,
+            "expiry": expiry,
+        },
+        "interpretations": out,
+    }
+
+
 @router.get("/health/nse")
 def nse_health_check():
     """
