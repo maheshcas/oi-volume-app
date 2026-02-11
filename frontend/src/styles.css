@@ -201,6 +201,38 @@ button:hover {
   color: rgba(255, 255, 255, 0.35);
 }
 
+.decision-row {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.decision-card {
+  background: rgba(10, 18, 30, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.decision-card h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.decision-main {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.decision-sub {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .auto-interpret {
   margin-top: 12px;
   padding: 12px 14px;
@@ -904,6 +936,216 @@ button:hover {
   color: var(--ink);
 }
 
+.impact-grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.impact-card {
+  background: rgba(10, 18, 30, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.impact-card h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.impact-card ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.engine-list {
+  margin-top: 10px;
+  padding-left: 16px;
+  color: var(--muted);
+}
+
+.impact-signal {
+  margin: 8px 0 0;
+  font-weight: 700;
+  color: #f3b45a;
+}
+
+.prob-track {
+  height: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.prob-up {
+  height: 100%;
+  background: linear-gradient(90deg, #4dd07d, #f3b45a);
+}
+
+.prob-legend {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(70px, 1fr));
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sr-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sr-columns strong {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sr-item {
+  margin-top: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.sr-item.support {
+  border-color: rgba(77, 208, 125, 0.6);
+}
+
+.sr-item.resistance {
+  border-color: rgba(255, 92, 132, 0.6);
+}
+
+.writers-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.writer-item {
+  margin-top: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.writer-item.ce {
+  border-color: rgba(255, 92, 132, 0.6);
+}
+
+.writer-item.pe {
+  border-color: rgba(77, 208, 125, 0.6);
+}
+
+.writer-empty {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.basis-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.basis-grid div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+
+.basis-status {
+  font-weight: 700;
+}
+
+.basis-status.premium {
+  color: #4dd07d;
+}
+
+.basis-status.discount {
+  color: #ff5c84;
+}
+
+.basis-status.flat,
+.basis-status.unavailable {
+  color: var(--muted);
+}
+
+.heatmap-card {
+  margin-top: 14px;
+  width: 100%;
+  max-width: none;
+  margin-left: 0;
+  margin-right: auto;
+  display: block;
+}
+
+.secondary-tabs {
+  margin-top: 14px;
+}
+
+.tab-head {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tab-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--ink);
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tab-btn.active {
+  background: rgba(243, 180, 90, 0.2);
+  border-color: rgba(243, 180, 90, 0.65);
+}
+
+.table-toolbar {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* Legacy blocks hidden after layout refactor */
+.auto-interpret,
+.impact-grid,
+.heatmap-card,
+.chart-intro,
+.legend {
+  display: none;
+}
+
+.heatmap-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .table-wrap {
   margin-top: 18px;
   overflow-x: auto;
@@ -1027,5 +1269,29 @@ tbody tr:hover {
 
   button {
     width: 100%;
+  }
+
+  .impact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-row {
+    grid-template-columns: 1fr;
+  }
+
+  .heatmap-card {
+    width: 100%;
+  }
+
+  .prob-legend {
+    grid-template-columns: 1fr;
+  }
+
+  .sr-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .writers-grid {
+    grid-template-columns: 1fr;
   }
 }

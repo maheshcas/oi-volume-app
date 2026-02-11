@@ -52,8 +52,20 @@ type SummaryResponse = {
   rows: SummaryRow[];
 };
 
+type HistoryPoint = {
+  fetchedAtMs: number;
+  label: string;
+  spot: number | null;
+  rows: SummaryRow[];
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const REFRESH_MS = 15000;
+const HEATMAP_WINDOW_MINUTES = 120;
+const TRAP_BREAK_BUFFER_PCT = 0.1;
+const LOW_OI_CONFIRM_RATIO = 0.75;
+const SHORT_COVERING_BURST_MIN_STRIKES = 2;
+const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const INDEX_NAMES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"];
@@ -89,6 +101,9 @@ export default function App() {
   const [nseStatus, setNseStatus] = useState<"ok" | "blocked" | "checking">("checking");
   const [nseMessage, setNseMessage] = useState<string>("");
   const [indexData, setIndexData] = useState<IndexRow[]>([]);
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [secondaryTab, setSecondaryTab] = useState<"heatmap" | "shift" | "writers" | "basis">("heatmap");
+  const [showTable, setShowTable] = useState(false);
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -128,7 +143,26 @@ export default function App() {
       const data = (await res.json()) as SummaryResponse;
       setRows(data.rows ?? []);
       setMeta(data.meta ?? null);
-      setLastUpdated(new Date().toLocaleTimeString("en-IN"));
+      const fetchedAt = Date.now();
+      const displayLabel = new Date(fetchedAt).toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      setLastUpdated(new Date(fetchedAt).toLocaleTimeString("en-IN"));
+      setHistory((prev) => {
+        const minTs = fetchedAt - HEATMAP_WINDOW_MINUTES * 60 * 1000;
+        const next = [
+          ...prev.filter((point) => point.fetchedAtMs >= minTs),
+          {
+            fetchedAtMs: fetchedAt,
+            label: displayLabel,
+            spot: typeof data.meta?.spot === "number" ? data.meta.spot : null,
+            rows: data.rows ?? [],
+          },
+        ];
+        // avoid rendering oversized heatmap payload in long-running sessions
+        return next.slice(-480);
+      });
       setStatus(`Loaded ${data.rows?.length ?? 0} strikes.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -357,8 +391,6 @@ export default function App() {
     indexRow && typeof indexRow.previousClose === "number"
       ? indexRow.last - indexRow.previousClose
       : null;
-  const marketState =
-    pcr === null ? "UNKNOWN" : pcr > 1.15 ? "BULLISH" : pcr < 0.85 ? "BEARISH" : "RANGE";
   const bias =
     totals.ceOi > totals.peOi
       ? totals.ceDoi >= totals.peDoi
@@ -444,30 +476,18 @@ export default function App() {
     return null;
   }, [bias, resistanceStrike, supportStrike]);
 
+  const marketState =
+    pcr === null ? "UNKNOWN" : pcr > 1.15 ? "BULLISH" : pcr < 0.85 ? "BEARISH" : "RANGE";
+
   const callMiniOption = useMemo(
     () => ({
       tooltip: { trigger: "axis" },
       grid: { left: 36, right: 28, top: 28, bottom: 36 },
-      xAxis: {
-        type: "category",
-        data: displayStrikes,
-        axisLabel: { color: "#c7cbd4", rotate: 0 },
-      },
-      yAxis: [
-        { type: "value", axisLabel: { color: "#c7cbd4" } },
-        { type: "value", axisLabel: { color: "#c7cbd4" } },
-      ],
+      xAxis: { type: "category", data: displayStrikes, axisLabel: { color: "#c7cbd4" } },
+      yAxis: [{ type: "value", axisLabel: { color: "#c7cbd4" } }, { type: "value", axisLabel: { color: "#c7cbd4" } }],
       series: [
         { name: "Call OI", type: "bar", data: displayCeOi, itemStyle: { color: "#2f6bd2" } },
-        {
-          name: "Call Volume",
-          type: "line",
-          yAxisIndex: 1,
-          data: displayCeVol,
-          smooth: true,
-          lineStyle: { color: "#e6e6e6", width: 2 },
-          itemStyle: { color: "#e6e6e6" },
-        },
+        { name: "Call Volume", type: "line", yAxisIndex: 1, data: displayCeVol, smooth: true, lineStyle: { color: "#e6e6e6", width: 2 }, itemStyle: { color: "#e6e6e6" } },
       ],
     }),
     [displayStrikes, displayCeOi, displayCeVol]
@@ -477,30 +497,35 @@ export default function App() {
     () => ({
       tooltip: { trigger: "axis" },
       grid: { left: 36, right: 28, top: 28, bottom: 36 },
-      xAxis: {
-        type: "category",
-        data: displayStrikes,
-        axisLabel: { color: "#c7cbd4", rotate: 0 },
-      },
-      yAxis: [
-        { type: "value", axisLabel: { color: "#c7cbd4" } },
-        { type: "value", axisLabel: { color: "#c7cbd4" } },
-      ],
+      xAxis: { type: "category", data: displayStrikes, axisLabel: { color: "#c7cbd4" } },
+      yAxis: [{ type: "value", axisLabel: { color: "#c7cbd4" } }, { type: "value", axisLabel: { color: "#c7cbd4" } }],
       series: [
         { name: "Put OI", type: "bar", data: displayPeOi, itemStyle: { color: "#4a9a67" } },
-        {
-          name: "Put Volume",
-          type: "line",
-          yAxisIndex: 1,
-          data: displayPeVol,
-          smooth: true,
-          lineStyle: { color: "#b7f5cf", width: 2 },
-          itemStyle: { color: "#b7f5cf" },
-        },
+        { name: "Put Volume", type: "line", yAxisIndex: 1, data: displayPeVol, smooth: true, lineStyle: { color: "#b7f5cf", width: 2 }, itemStyle: { color: "#b7f5cf" } },
       ],
     }),
     [displayStrikes, displayPeOi, displayPeVol]
   );
+
+  const interpretationSummary = useMemo(() => {
+    const count = (key: "CE_Interpretation" | "PE_Interpretation") => {
+      const map = new Map<string, number>();
+      displayRows.forEach((row) => {
+        const value = row[key] ?? "Mixed";
+        map.set(value, (map.get(value) ?? 0) + 1);
+      });
+      let top = "Mixed";
+      let topCount = 0;
+      map.forEach((val, k) => {
+        if (val > topCount) {
+          top = k;
+          topCount = val;
+        }
+      });
+      return top;
+    };
+    return { ce: count("CE_Interpretation"), pe: count("PE_Interpretation") };
+  }, [displayRows]);
 
   const highlight = useMemo(() => {
     const pickThreshold = (values: number[]) => {
@@ -561,6 +586,162 @@ export default function App() {
     return alerts;
   }, [displayRows, resistanceStrike, supportStrike, maxVolumeStrike, volumeSpikeThreshold]);
 
+  const intradayEngine = useMemo(() => {
+    const parseMinutes = (text: string | null | undefined) => {
+      if (!text) return null;
+      const match = text.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return null;
+      const hh = Number(match[1]);
+      const mm = Number(match[2]);
+      if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+      return hh * 60 + mm;
+    };
+
+    const fallbackTime = new Date().toLocaleTimeString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const minutes = parseMinutes(meta?.timestamp ?? null) ?? parseMinutes(fallbackTime);
+    let sessionPhase = "Off session";
+    if (minutes !== null) {
+      if (minutes >= 9 * 60 + 15 && minutes < 10 * 60 + 30) sessionPhase = "Opening drive";
+      else if (minutes >= 10 * 60 + 30 && minutes < 14 * 60 + 30) sessionPhase = "Midday balance";
+      else if (minutes >= 14 * 60 + 30 && minutes <= 15 * 60 + 30) sessionPhase = "Closing move";
+    }
+
+    const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
+    const center = sorted.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
+    const centerIdx = center >= 0 ? center : Math.floor(sorted.length / 2);
+    const atmRows = sorted.slice(Math.max(0, centerIdx - 2), Math.min(sorted.length, centerIdx + 3));
+    const atmAbsOIMove = atmRows.reduce(
+      (acc, row) => acc + Math.abs(Number(row.CE_DeltaOI) || 0) + Math.abs(Number(row.PE_DeltaOI) || 0),
+      0
+    );
+    const avgAbsOIMove =
+      sorted.length > 0
+        ? sorted.reduce(
+            (acc, row) =>
+              acc + Math.abs(Number(row.CE_DeltaOI) || 0) + Math.abs(Number(row.PE_DeltaOI) || 0),
+            0
+          ) / sorted.length
+        : 0;
+    const lowOIConfirmation =
+      avgAbsOIMove > 0
+        ? atmAbsOIMove / Math.max(1, atmRows.length) < avgAbsOIMove * LOW_OI_CONFIRM_RATIO
+        : false;
+
+    const spot = typeof spotValue === "number" ? spotValue : null;
+    const breakBuffer = spot !== null ? (spot * TRAP_BREAK_BUFFER_PCT) / 100 : 0;
+    const breakoutUp =
+      spot !== null && resistanceStrike !== null ? spot > Number(resistanceStrike) + breakBuffer : false;
+    const breakoutDown =
+      spot !== null && supportStrike !== null ? spot < Number(supportStrike) - breakBuffer : false;
+    const trapLikely = (breakoutUp || breakoutDown) && lowOIConfirmation;
+    const trapMessage = trapLikely
+      ? breakoutUp
+        ? "Breakout above resistance with low OI confirmation: possible bull trap"
+        : "Breakdown below support with low OI confirmation: possible bear trap"
+      : "No trap setup";
+
+    const getLevels = (rows: SummaryRow[]) => {
+      let support: number | null = null;
+      let resistance: number | null = null;
+      let maxPe = -1;
+      let maxCe = -1;
+      rows.forEach((row) => {
+        const peOi = Number(row.PE_OI) || 0;
+        const ceOi = Number(row.CE_OI) || 0;
+        if (peOi > maxPe) {
+          maxPe = peOi;
+          support = Number(row.strike);
+        }
+        if (ceOi > maxCe) {
+          maxCe = ceOi;
+          resistance = Number(row.strike);
+        }
+      });
+      return { support, resistance };
+    };
+
+    const strikeStep = sorted.length > 1 ? Math.abs(Number(sorted[1].strike) - Number(sorted[0].strike)) : 0;
+    const shiftThreshold = strikeStep > 0 ? Math.max(1, Math.floor(strikeStep / 2)) : 1;
+    const previous = history.length >= 2 ? history[history.length - 2] : null;
+    const prevLevels = previous ? getLevels(previous.rows) : { support: null as number | null, resistance: null as number | null };
+    const currLevels = getLevels(displayRows);
+    const supportShift =
+      prevLevels.support !== null && currLevels.support !== null
+        ? currLevels.support - prevLevels.support
+        : 0;
+    const resistanceShift =
+      prevLevels.resistance !== null && currLevels.resistance !== null
+        ? currLevels.resistance - prevLevels.resistance
+        : 0;
+
+    const shiftLabel = (shift: number) => {
+      if (shift > 0) return `up ${formatNumber(shift)}`;
+      if (shift < 0) return `down ${formatNumber(Math.abs(shift))}`;
+      return "flat";
+    };
+
+    const atmRow = displayRows.find((row) => String(row.strike) === String(nearestSpotStrike));
+    const avgTotalVol =
+      displayRows.length > 0
+        ? displayRows.reduce(
+            (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
+            0
+          ) / displayRows.length
+        : 0;
+    const atmVol = atmRow
+      ? (Number(atmRow.CE_Volume) || 0) + (Number(atmRow.PE_Volume) || 0)
+      : 0;
+    const atmVolumeShock = avgTotalVol > 0 && atmVol > avgTotalVol * ATM_VOLUME_SHOCK_MULTIPLIER;
+    const shortCoveringBurst =
+      displayRows.filter(
+        (row) =>
+          ((row.CE_Interpretation || "").includes("Short Covering") ||
+            (row.PE_Interpretation || "").includes("Short Covering")) &&
+          ((row.CE_VolDir || "") === "↑" || (row.PE_VolDir || "") === "↑")
+      ).length >= SHORT_COVERING_BURST_MIN_STRIKES;
+    const newResistanceFormed = Math.abs(resistanceShift) >= shiftThreshold;
+
+    const engineAlerts: string[] = [];
+    if (newResistanceFormed && currLevels.resistance !== null) {
+      engineAlerts.push(
+        `New resistance formed at ${formatNumber(currLevels.resistance)} (shift ${shiftLabel(
+          resistanceShift
+        )})`
+      );
+    }
+    if (shortCoveringBurst) {
+      engineAlerts.push("Short covering burst detected across active strikes");
+    }
+    if (atmVolumeShock && nearestSpotStrike !== null) {
+      engineAlerts.push(`ATM volume shock at ${formatNumber(nearestSpotStrike)}`);
+    }
+    if (trapLikely) {
+      engineAlerts.push(trapMessage);
+    }
+    if (!engineAlerts.length) engineAlerts.push("No intraday trigger from decision engine");
+
+    return {
+      sessionPhase,
+      trapLikely,
+      trapMessage,
+      supportShift,
+      resistanceShift,
+      shiftSummary: `Support ${shiftLabel(supportShift)} | Resistance ${shiftLabel(resistanceShift)}`,
+      engineAlerts,
+    };
+  }, [meta?.timestamp, displayRows, nearestSpotStrike, spotValue, supportStrike, resistanceStrike, history]);
+
+  const combinedAlerts = useMemo(() => {
+    const merged = [...intradayEngine.engineAlerts, ...alertItems];
+    const unique = Array.from(new Set(merged));
+    return unique.slice(0, 8);
+  }, [intradayEngine.engineAlerts, alertItems]);
+
   const maxMetrics = useMemo(() => {
     const max = (values: number[]) => (values.length ? Math.max(...values) : 1);
     return {
@@ -568,29 +749,6 @@ export default function App() {
       peOi: max(displayRows.map((row) => Number(row.PE_OI) || 0)),
       ceVol: max(displayRows.map((row) => Number(row.CE_Volume) || 0)),
       peVol: max(displayRows.map((row) => Number(row.PE_Volume) || 0)),
-    };
-  }, [displayRows]);
-
-  const interpretationSummary = useMemo(() => {
-    const count = (key: "CE_Interpretation" | "PE_Interpretation") => {
-      const map = new Map<string, number>();
-      displayRows.forEach((row) => {
-        const value = row[key] ?? "Mixed";
-        map.set(value, (map.get(value) ?? 0) + 1);
-      });
-      let top = "Mixed";
-      let topCount = 0;
-      map.forEach((val, k) => {
-        if (val > topCount) {
-          top = k;
-          topCount = val;
-        }
-      });
-      return top;
-    };
-    return {
-      ce: count("CE_Interpretation"),
-      pe: count("PE_Interpretation"),
     };
   }, [displayRows]);
 
@@ -760,6 +918,318 @@ export default function App() {
     return { strike: atmRow.strike, bias: "Neutral" };
   }, [displayRows, nearestSpotStrike]);
 
+  const dynamicLevels = useMemo(() => {
+    if (!displayRows.length) {
+      return { supportTop: [] as Array<{ strike: number; score: number }>, resistanceTop: [] as Array<{ strike: number; score: number }> };
+    }
+    const maxCeOi = Math.max(...displayRows.map((row) => Number(row.CE_OI) || 0), 1);
+    const maxPeOi = Math.max(...displayRows.map((row) => Number(row.PE_OI) || 0), 1);
+    const maxCeDoi = Math.max(...displayRows.map((row) => Math.max(0, Number(row.CE_DeltaOI) || 0)), 1);
+    const maxPeDoi = Math.max(...displayRows.map((row) => Math.max(0, Number(row.PE_DeltaOI) || 0)), 1);
+    const maxCeVol = Math.max(...displayRows.map((row) => Number(row.CE_Volume) || 0), 1);
+    const maxPeVol = Math.max(...displayRows.map((row) => Number(row.PE_Volume) || 0), 1);
+
+    const resistanceTop = [...displayRows]
+      .map((row) => {
+        const score =
+          (0.5 * (Number(row.CE_OI) || 0)) / maxCeOi +
+          (0.3 * Math.max(0, Number(row.CE_DeltaOI) || 0)) / maxCeDoi +
+          (0.2 * (Number(row.CE_Volume) || 0)) / maxCeVol;
+        return { strike: row.strike, score: Math.round(score * 100) };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    const supportTop = [...displayRows]
+      .map((row) => {
+        const score =
+          (0.5 * (Number(row.PE_OI) || 0)) / maxPeOi +
+          (0.3 * Math.max(0, Number(row.PE_DeltaOI) || 0)) / maxPeDoi +
+          (0.2 * (Number(row.PE_Volume) || 0)) / maxPeVol;
+        return { strike: row.strike, score: Math.round(score * 100) };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    return { supportTop, resistanceTop };
+  }, [displayRows]);
+
+  const breakoutModel = useMemo(() => {
+    const recent = history.slice(-10);
+    const defaultModel = {
+      upProbability: 50,
+      downProbability: 50,
+      signal: "Range likely",
+      confidence: 50,
+      factors: ["Insufficient rolling momentum history"],
+    };
+    if (!displayRows.length || !recent.length) return defaultModel;
+
+    const firstSpot = recent.find((point) => typeof point.spot === "number")?.spot;
+    const lastSpot = [...recent].reverse().find((point) => typeof point.spot === "number")?.spot;
+    const spotMomentumPct =
+      firstSpot && lastSpot && firstSpot !== 0 ? ((lastSpot - firstSpot) / firstSpot) * 100 : 0;
+
+    const center = displayRows.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
+    const centerIdx = center >= 0 ? center : Math.floor(displayRows.length / 2);
+    const start = Math.max(0, centerIdx - 3);
+    const end = Math.min(displayRows.length, centerIdx + 4);
+    const atmBand = displayRows.slice(start, end);
+
+    const callPressure = atmBand.reduce(
+      (acc, row) => acc + Math.max(0, Number(row.CE_DeltaOI) || 0),
+      0
+    );
+    const putPressure = atmBand.reduce(
+      (acc, row) => acc + Math.max(0, Number(row.PE_DeltaOI) || 0),
+      0
+    );
+
+    const prevRows = recent.length >= 2 ? recent[recent.length - 2].rows : [];
+    const prevVolume = prevRows.reduce(
+      (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
+      0
+    );
+    const currVolume = displayRows.reduce(
+      (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
+      0
+    );
+    const volumeMomentum = prevVolume > 0 ? (currVolume - prevVolume) / prevVolume : 0;
+
+    const pressureDen = callPressure + putPressure + 1;
+    const pressureTilt = (putPressure - callPressure) / pressureDen;
+    const biasBoost = bias.startsWith("Bullish") ? 0.1 : bias.startsWith("Bearish") ? -0.1 : 0;
+
+    const upRaw = 0.5 + pressureTilt * 0.35 + spotMomentumPct * 0.18 + volumeMomentum * 0.08 + biasBoost;
+    const upProbability = Math.max(1, Math.min(99, Math.round(upRaw * 100)));
+    const downProbability = 100 - upProbability;
+    const confidence = Math.max(40, Math.min(95, Math.round(50 + Math.abs(upProbability - 50) * 1.2)));
+
+    const factors = [
+      `ATM pressure tilt: ${pressureTilt >= 0 ? "Put-side" : "Call-side"} (${(pressureTilt * 100).toFixed(1)}%)`,
+      `Spot momentum (${recent.length} snapshots): ${spotMomentumPct.toFixed(2)}%`,
+      `Volume momentum: ${(volumeMomentum * 100).toFixed(1)}%`,
+    ];
+
+    const signal =
+      upProbability >= 60
+        ? `Breakout above ${formatNumber(resistanceStrike)} more likely`
+        : upProbability <= 40
+          ? `Breakdown below ${formatNumber(supportStrike)} more likely`
+          : "Range likely";
+
+    return { upProbability, downProbability, signal, confidence, factors };
+  }, [history, displayRows, nearestSpotStrike, resistanceStrike, supportStrike, bias]);
+
+  const topWriters = useMemo(() => {
+    if (!displayRows.length) {
+      return { ce: [] as Array<{ strike: number; doi: number; volume: number; score: number }>, pe: [] as Array<{ strike: number; doi: number; volume: number; score: number }> };
+    }
+    const cePosDoi = displayRows.map((row) => Math.max(0, Number(row.CE_DeltaOI) || 0));
+    const pePosDoi = displayRows.map((row) => Math.max(0, Number(row.PE_DeltaOI) || 0));
+    const ceVols = displayRows.map((row) => Number(row.CE_Volume) || 0);
+    const peVols = displayRows.map((row) => Number(row.PE_Volume) || 0);
+    const quantile = (values: number[], q: number) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      if (!sorted.length) return 0;
+      const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1))));
+      return sorted[idx];
+    };
+    const ceDoiTh = quantile(cePosDoi, 0.8);
+    const peDoiTh = quantile(pePosDoi, 0.8);
+    const ceVolTh = quantile(ceVols, 0.8);
+    const peVolTh = quantile(peVols, 0.8);
+
+    const ce = displayRows
+      .map((row) => {
+        const doi = Math.max(0, Number(row.CE_DeltaOI) || 0);
+        const volume = Number(row.CE_Volume) || 0;
+        const score = doi * 0.6 + volume * 0.4;
+        return { strike: row.strike, doi, volume, score };
+      })
+      .filter((x) => x.doi >= ceDoiTh && x.volume >= ceVolTh && x.doi > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    const pe = displayRows
+      .map((row) => {
+        const doi = Math.max(0, Number(row.PE_DeltaOI) || 0);
+        const volume = Number(row.PE_Volume) || 0;
+        const score = doi * 0.6 + volume * 0.4;
+        return { strike: row.strike, doi, volume, score };
+      })
+      .filter((x) => x.doi >= peDoiTh && x.volume >= peVolTh && x.doi > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    return { ce, pe };
+  }, [displayRows]);
+
+  const futuresBasis = useMemo(() => {
+    const spot = typeof spotValue === "number" ? spotValue : null;
+    if (spot === null || nearestSpotStrike === null) {
+      return {
+        syntheticFuture: null as number | null,
+        basis: null as number | null,
+        basisPct: null as number | null,
+        basisType: "Unavailable",
+        direction: "No confirmation",
+        method: "Synthetic ATM parity",
+      };
+    }
+    const atm = displayRows.find((row) => String(row.strike) === String(nearestSpotStrike));
+    if (!atm || atm.CE_LastPrice === undefined || atm.PE_LastPrice === undefined) {
+      return {
+        syntheticFuture: null as number | null,
+        basis: null as number | null,
+        basisPct: null as number | null,
+        basisType: "Unavailable",
+        direction: "No confirmation",
+        method: "Synthetic ATM parity",
+      };
+    }
+    const strike = Number(atm.strike) || 0;
+    const ce = Number(atm.CE_LastPrice) || 0;
+    const pe = Number(atm.PE_LastPrice) || 0;
+    const syntheticFuture = strike + ce - pe;
+    const basis = syntheticFuture - spot;
+    const basisPct = spot !== 0 ? (basis / spot) * 100 : 0;
+    const basisType = basis > 0 ? "Premium" : basis < 0 ? "Discount" : "Flat";
+    const direction =
+      basis > 0.08 * spot / 100
+        ? "Bullish confirmation"
+        : basis < -0.08 * spot / 100
+          ? "Bearish confirmation"
+          : "Neutral confirmation";
+    return { syntheticFuture, basis, basisPct, basisType, direction, method: "Synthetic ATM parity" };
+  }, [displayRows, nearestSpotStrike, spotValue]);
+
+  const heatmapOption = useMemo(() => {
+    const minuteMap = new Map<string, HistoryPoint>();
+    history.forEach((point) => {
+      const key = new Date(point.fetchedAtMs).toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const existing = minuteMap.get(key);
+      if (!existing || point.fetchedAtMs > existing.fetchedAtMs) {
+        minuteMap.set(key, point);
+      }
+    });
+    const recent = [...minuteMap.values()]
+      .sort((a, b) => a.fetchedAtMs - b.fetchedAtMs)
+      .slice(-120);
+    if (!recent.length || !displayRows.length) return null;
+    const xLabels = recent.map((point) => point.label);
+    const strikeLabels = [...displayRows]
+      .map((row) => Number(row.strike))
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => b - a)
+      .map(String);
+    const strikeSet = new Set(strikeLabels);
+
+    const points: Array<[number, number, number]> = [];
+    recent.forEach((snap, xIdx) => {
+      const prevSnap = xIdx > 0 ? recent[xIdx - 1] : null;
+      const prevRowsByStrike = new Map(
+        (prevSnap?.rows ?? []).map((row) => [String(row.strike), row] as const)
+      );
+      const minuteVolDeltas = snap.rows.map((row) => {
+        const prev = prevRowsByStrike.get(String(row.strike));
+        const currVol = (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0);
+        const prevVol = prev ? (Number(prev.CE_Volume) || 0) + (Number(prev.PE_Volume) || 0) : 0;
+        return Math.max(0, currVol - prevVol);
+      });
+      const maxVolDelta = Math.max(1, ...minuteVolDeltas);
+      const rowsByStrike = new Map(
+        snap.rows.map((row) => [String(row.strike), row] as const)
+      );
+      strikeLabels.forEach((strike, yIdx) => {
+        if (!strikeSet.has(strike)) return;
+        const row = rowsByStrike.get(strike);
+        const prev = prevRowsByStrike.get(strike);
+        if (!row) {
+          points.push([xIdx, yIdx, 0]);
+          return;
+        }
+        if (!prev) {
+          points.push([xIdx, yIdx, 0]);
+          return;
+        }
+        const ceOiDelta = (Number(row.CE_OI) || 0) - (Number(prev.CE_OI) || 0);
+        const peOiDelta = (Number(row.PE_OI) || 0) - (Number(prev.PE_OI) || 0);
+        const currVol = (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0);
+        const prevVol = (Number(prev.CE_Volume) || 0) + (Number(prev.PE_Volume) || 0);
+        const volDelta = Math.max(0, currVol - prevVol);
+        const volFactor = volDelta / maxVolDelta;
+        const directional =
+          ((peOiDelta - ceOiDelta) / (Math.abs(peOiDelta) + Math.abs(ceOiDelta) + 1)) * 100;
+        points.push([xIdx, yIdx, Number((directional * volFactor).toFixed(2))]);
+      });
+    });
+    const maxAbs = Math.max(1, ...points.map((point) => Math.abs(point[2])));
+
+    return {
+      tooltip: {
+        position: "top",
+        formatter: (params: { value: [number, number, number] }) => {
+          const [x, y, value] = params.value;
+          const side = value >= 0 ? "Put pressure" : "Call pressure";
+          return `${strikeLabels[y]} @ ${xLabels[x]}<br/>${side}: ${Math.abs(value).toFixed(1)}`;
+        },
+      },
+      grid: { left: 70, right: 18, top: 26, bottom: 56 },
+      xAxis: {
+        type: "category",
+        data: xLabels,
+        axisLabel: { color: "#c7cbd4", interval: Math.max(0, Math.floor(xLabels.length / 8)) },
+      },
+      yAxis: {
+        type: "category",
+        data: strikeLabels,
+        axisLabel: {
+          color: "#c7cbd4",
+          formatter: (value: string) => {
+            if (nearestSpotStrike !== null && String(value) === String(nearestSpotStrike)) {
+              return `{atm|${value}}`;
+            }
+            return value;
+          },
+          rich: {
+            atm: {
+              color: "#111",
+              backgroundColor: "#f3b45a",
+              borderRadius: 4,
+              padding: [2, 6],
+              fontWeight: 700,
+            },
+          },
+        },
+      },
+      visualMap: {
+        min: -maxAbs,
+        max: maxAbs,
+        calculable: false,
+        orient: "horizontal",
+        left: "center",
+        bottom: 8,
+        textStyle: { color: "#c7cbd4" },
+        inRange: {
+          color: ["#f0446a", "#5a2440", "#1f2d3a", "#20533b", "#34d37a"],
+        },
+      },
+      series: [
+        {
+          name: "Minute OI+Volume change",
+          type: "heatmap",
+          data: points,
+          progressive: 3000,
+          emphasis: { itemStyle: { borderColor: "#fff", borderWidth: 1 } },
+        },
+      ],
+    };
+  }, [history, displayRows, nearestSpotStrike]);
+
   return (
     <div className="page">
       <header className="hero">
@@ -870,6 +1340,7 @@ export default function App() {
             </span>
           </span>
           <span>Exp: {meta?.expiry ?? "-"}</span>
+          <span>Phase: {intradayEngine.sessionPhase}</span>
           <span>PCR: {pcr ? pcr.toFixed(2) : "-"}</span>
           <span>Max Pain: {formatNumber(maxPainStrike)}</span>
           <span>
@@ -879,6 +1350,54 @@ export default function App() {
             </span>
           </span>
           <span>Updated: {meta?.timestamp ?? lastUpdated ?? "-"}</span>
+        </div>
+
+        <div className="decision-row">
+          <div className="decision-card">
+            <h3>Market Bias + Probability</h3>
+            <div className="decision-main">
+              <span
+                className={`bias-pill ${
+                  marketSummary.marketBias.toLowerCase().includes("bullish")
+                    ? "bull"
+                    : marketSummary.marketBias.toLowerCase().includes("bearish")
+                      ? "bear"
+                      : "neutral"
+                }`}
+              >
+                {marketSummary.marketBias}
+              </span>
+              <span className="pill-inline">Conf: {marketSummary.confidence}</span>
+            </div>
+            <div className="prob-track">
+              <div className="prob-up" style={{ width: `${breakoutModel.upProbability}%` }} />
+            </div>
+            <div className="prob-legend">
+              <span>Bull {breakoutModel.upProbability}%</span>
+              <span>Bear {breakoutModel.downProbability}%</span>
+              <span>{breakoutModel.confidence}%</span>
+            </div>
+            <p className="decision-sub">{breakoutModel.signal}</p>
+          </div>
+          <div className="decision-card">
+            <h3>Key Levels</h3>
+            <div className="key-levels">
+              <span>Resistance: {formatNumber(resistanceStrike)}</span>
+              <span>Support: {formatNumber(supportStrike)}</span>
+              <span>Target: {targetLevel ? formatNumber(targetLevel) : "Range"}</span>
+              <span>Phase: {intradayEngine.sessionPhase}</span>
+              <span>Shift: {intradayEngine.shiftSummary}</span>
+              <span>Trap: {intradayEngine.trapLikely ? "Likely" : "No"}</span>
+            </div>
+          </div>
+          <div className="decision-card">
+            <h3>Live Alerts</h3>
+            <ul className="engine-list">
+              {combinedAlerts.slice(0, 3).map((item) => (
+                <li key={`top-${item}`}>{item}</li>
+              ))}
+            </ul>
+          </div>
         </div>
 
         <div className="auto-interpret">
@@ -921,6 +1440,118 @@ export default function App() {
               <li>Confidence: {topInterpretation?.score ?? 0}</li>
             </ul>
           </div>
+        </div>
+
+        <div className="impact-grid">
+          <div className="impact-card">
+            <h3>Intraday Decision Engine</h3>
+            <div className="basis-grid">
+              <div><strong>Session</strong><span>{intradayEngine.sessionPhase}</span></div>
+              <div><strong>Trap Detector</strong><span className={intradayEngine.trapLikely ? "down" : "up"}>{intradayEngine.trapLikely ? "Likely false move" : "No trap setup"}</span></div>
+              <div><strong>Shift Tracker</strong><span>{intradayEngine.shiftSummary}</span></div>
+            </div>
+            <ul className="engine-list">
+              {intradayEngine.engineAlerts.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="impact-card">
+            <h3>Breakout Probability</h3>
+            <div className="prob-track">
+              <div className="prob-up" style={{ width: `${breakoutModel.upProbability}%` }} />
+            </div>
+            <div className="prob-legend">
+              <span>Bullish: {breakoutModel.upProbability}%</span>
+              <span>Bearish: {breakoutModel.downProbability}%</span>
+              <span>Confidence: {breakoutModel.confidence}%</span>
+            </div>
+            <p className="impact-signal">{breakoutModel.signal}</p>
+            <ul>
+              {breakoutModel.factors.map((factor) => (
+                <li key={factor}>{factor}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="impact-card">
+            <h3>Dynamic S/R Score</h3>
+            <div className="sr-columns">
+              <div>
+                <strong>Support (PE)</strong>
+                {dynamicLevels.supportTop.map((entry) => (
+                  <div key={`sup-${entry.strike}`} className="sr-item support">
+                    <span>{formatNumber(entry.strike)}</span>
+                    <span>{entry.score}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <strong>Resistance (CE)</strong>
+                {dynamicLevels.resistanceTop.map((entry) => (
+                  <div key={`res-${entry.strike}`} className="sr-item resistance">
+                    <span>{formatNumber(entry.strike)}</span>
+                    <span>{entry.score}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="impact-card">
+            <h3>Top Writers Activity (Proxy)</h3>
+            <div className="writers-grid">
+              <div>
+                <strong>Call Writers (CE)</strong>
+                {topWriters.ce.length ? (
+                  topWriters.ce.map((item) => (
+                    <div key={`cew-${item.strike}`} className="writer-item ce">
+                      <span>{formatNumber(item.strike)}</span>
+                      <span>OI+ {formatNumber(item.doi)}</span>
+                      <span>Vol {formatNumber(item.volume)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="writer-empty">No large CE writing bursts</div>
+                )}
+              </div>
+              <div>
+                <strong>Put Writers (PE)</strong>
+                {topWriters.pe.length ? (
+                  topWriters.pe.map((item) => (
+                    <div key={`pew-${item.strike}`} className="writer-item pe">
+                      <span>{formatNumber(item.strike)}</span>
+                      <span>OI+ {formatNumber(item.doi)}</span>
+                      <span>Vol {formatNumber(item.volume)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="writer-empty">No large PE writing bursts</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="impact-card">
+            <h3>Futures Basis Confirmation</h3>
+            <div className="basis-grid">
+              <div><strong>Method</strong><span>{futuresBasis.method}</span></div>
+              <div><strong>Synthetic Future</strong><span>{formatNumber(futuresBasis.syntheticFuture)}</span></div>
+              <div><strong>Basis</strong><span>{futuresBasis.basis !== null ? `${formatNumber(futuresBasis.basis)} (${futuresBasis.basisPct?.toFixed(2)}%)` : "-"}</span></div>
+              <div><strong>Status</strong><span className={`basis-status ${futuresBasis.basisType.toLowerCase()}`}>{futuresBasis.basisType}</span></div>
+              <div><strong>Directional Check</strong><span>{futuresBasis.direction}</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="chart-card heatmap-card">
+          <h3>OI + Volume Change Heatmap (rolling {HEATMAP_WINDOW_MINUTES}m)</h3>
+          {heatmapOption ? (
+            <ReactECharts option={heatmapOption} style={{ height: 320 }} />
+          ) : (
+            <p className="heatmap-empty">Collecting intraday snapshots. Heatmap appears after a few refreshes.</p>
+          )}
         </div>
 
         <div className="dashboard-grid">
@@ -1059,8 +1690,69 @@ export default function App() {
           <span className="legend-item battle">Highest Volume =&gt; Battle zone</span>
         </div>
 
+        <div className="secondary-tabs">
+          <div className="tab-head">
+            <button type="button" className={secondaryTab === "heatmap" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("heatmap")}>Heatmap</button>
+            <button type="button" className={secondaryTab === "shift" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("shift")}>Shift</button>
+            <button type="button" className={secondaryTab === "writers" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("writers")}>Writers</button>
+            <button type="button" className={secondaryTab === "basis" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("basis")}>Basis</button>
+          </div>
+          {secondaryTab === "heatmap" ? (
+            <div className="chart-card">
+              <h3>OI + Volume Change Heatmap</h3>
+              {heatmapOption ? <ReactECharts option={heatmapOption} style={{ height: 320 }} /> : <p className="heatmap-empty">Collecting intraday snapshots.</p>}
+            </div>
+          ) : null}
+          {secondaryTab === "shift" ? (
+            <div className="impact-card">
+              <h3>Shift Tracker</h3>
+              <div className="basis-grid">
+                <div><strong>Session</strong><span>{intradayEngine.sessionPhase}</span></div>
+                <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
+                <div><strong>Trap</strong><span>{intradayEngine.trapMessage}</span></div>
+              </div>
+            </div>
+          ) : null}
+          {secondaryTab === "writers" ? (
+            <div className="impact-card">
+              <h3>Top Writers Activity</h3>
+              <div className="writers-grid">
+                <div>
+                  <strong>CE Writers</strong>
+                  {topWriters.ce.length ? topWriters.ce.map((item) => (
+                    <div key={`ce-tab-${item.strike}`} className="writer-item ce">
+                      <span>{formatNumber(item.strike)}</span>
+                      <span>OI+ {formatNumber(item.doi)}</span>
+                    </div>
+                  )) : <div className="writer-empty">No large CE writing bursts</div>}
+                </div>
+                <div>
+                  <strong>PE Writers</strong>
+                  {topWriters.pe.length ? topWriters.pe.map((item) => (
+                    <div key={`pe-tab-${item.strike}`} className="writer-item pe">
+                      <span>{formatNumber(item.strike)}</span>
+                      <span>OI+ {formatNumber(item.doi)}</span>
+                    </div>
+                  )) : <div className="writer-empty">No large PE writing bursts</div>}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {secondaryTab === "basis" ? (
+            <div className="impact-card">
+              <h3>Futures Basis</h3>
+              <div className="basis-grid">
+                <div><strong>Synthetic Future</strong><span>{formatNumber(futuresBasis.syntheticFuture)}</span></div>
+                <div><strong>Basis</strong><span>{futuresBasis.basis !== null ? `${formatNumber(futuresBasis.basis)} (${futuresBasis.basisPct?.toFixed(2)}%)` : "-"}</span></div>
+                <div><strong>Status</strong><span className={`basis-status ${futuresBasis.basisType.toLowerCase()}`}>{futuresBasis.basisType}</span></div>
+                <div><strong>Direction</strong><span>{futuresBasis.direction}</span></div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         <div className="alert-bar">
-          {alertItems.map((item) => (
+          {combinedAlerts.map((item) => (
             <span key={item} className="alert-item">
               {item}
             </span>
@@ -1086,8 +1778,13 @@ export default function App() {
           </div>
         </div>
 
+        <div className="table-toolbar">
+          <button type="button" onClick={() => setShowTable((prev) => !prev)}>
+            {showTable ? "Hide Option Chain" : "Show Option Chain"}
+          </button>
+        </div>
 
-        <div className="table-wrap">
+        {showTable ? <div className="table-wrap">
           <table>
             <thead>
               <tr>
@@ -1163,7 +1860,7 @@ export default function App() {
               })}
             </tbody>
           </table>
-        </div>
+        </div> : null}
 
         <div className="disclaimer">
           This dashboard is for educational and analytical purposes only. We are not SEBI registered.
