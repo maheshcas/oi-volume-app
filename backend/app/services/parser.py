@@ -48,11 +48,6 @@ def _interpret(price_dir, oi_dir, vol_dir):
     if price_dir == "→" and oi_dir == "↓" and vol_dir == "↓":
         return "No Interest Zone", "Low participation. Time decay dominates."
     return "Mixed", "Signals are not aligned."
-        return "↑", oi_change
-    if oi_change < 0:
-        return "↓", oi_change
-    return "→", oi_change
-
 def _confidence(price_change_pct, oi_change, volume_ratio, vol_dir):
     score = 50
     if abs(price_change_pct) >= 0.5:
