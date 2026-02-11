@@ -13,6 +13,8 @@ type SummaryRow = {
   CE_OIDir?: string;
   CE_VolDir?: string;
   CE_Interpretation?: string;
+  CE_InterpretationDesc?: string;
+  CE_ConfidenceScore?: number;
   CE_TruthFlags?: {
     volume_without_oi: boolean;
     oi_without_volume: boolean;
@@ -28,6 +30,8 @@ type SummaryRow = {
   PE_OIDir?: string;
   PE_VolDir?: string;
   PE_Interpretation?: string;
+  PE_InterpretationDesc?: string;
+  PE_ConfidenceScore?: number;
   PE_TruthFlags?: {
     volume_without_oi: boolean;
     oi_without_volume: boolean;
@@ -861,8 +865,8 @@ export default function App() {
           </span>
           <span>
             % Change:{" "}
-            <span className={`spot-change ${indexRow?.percChange >= 0 ? "up" : "down"}`}>
-              {indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
+            <span className={`spot-change ${(indexRow?.percChange ?? 0) >= 0 ? "up" : "down"}`}>
+              {indexRow?.percChange !== undefined ? `${indexRow?.percChange.toFixed(2)}%` : "-"}
             </span>
           </span>
           <span>Exp: {meta?.expiry ?? "-"}</span>
