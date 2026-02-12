@@ -85,6 +85,12 @@ function formatNumber(value: number | string | null | undefined) {
   return num.toLocaleString("en-IN");
 }
 
+function formatSigned(value: number | null | undefined, digits = 0) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${Math.abs(value).toFixed(digits)}`;
+}
+
 export default function App() {
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
   const [instrumentType, setInstrumentType] = useState("Indices");
@@ -735,6 +741,35 @@ export default function App() {
       engineAlerts,
     };
   }, [meta?.timestamp, displayRows, nearestSpotStrike, spotValue, supportStrike, resistanceStrike, history]);
+
+  const velocityByStrike = useMemo(() => {
+    const prev = history.length >= 2 ? history[history.length - 2] : null;
+    const curr = history.length >= 1 ? history[history.length - 1] : null;
+    const output = new Map<
+      string,
+      {
+        ceDoiPerMin: number;
+        ceVolPerMin: number;
+        peDoiPerMin: number;
+        peVolPerMin: number;
+      }
+    >();
+    if (!prev || !curr) return output;
+    const elapsedMs = Math.max(1, curr.fetchedAtMs - prev.fetchedAtMs);
+    const minutes = elapsedMs / 60000;
+    const prevByStrike = new Map(prev.rows.map((row) => [String(row.strike), row] as const));
+    curr.rows.forEach((row) => {
+      const before = prevByStrike.get(String(row.strike));
+      if (!before) return;
+      output.set(String(row.strike), {
+        ceDoiPerMin: ((Number(row.CE_OI) || 0) - (Number(before.CE_OI) || 0)) / minutes,
+        ceVolPerMin: ((Number(row.CE_Volume) || 0) - (Number(before.CE_Volume) || 0)) / minutes,
+        peDoiPerMin: ((Number(row.PE_OI) || 0) - (Number(before.PE_OI) || 0)) / minutes,
+        peVolPerMin: ((Number(row.PE_Volume) || 0) - (Number(before.PE_Volume) || 0)) / minutes,
+      });
+    });
+    return output;
+  }, [history]);
 
   const combinedAlerts = useMemo(() => {
     const merged = [...intradayEngine.engineAlerts, ...alertItems];
@@ -1791,12 +1826,14 @@ export default function App() {
                 <th>CE OI</th>
                 <th>CE DeltaOI</th>
                 <th>CE Volume</th>
+                <th>CE Velocity</th>
                 <th>CE Price</th>
                 <th>CE Interpret</th>
                 <th>Strike</th>
                 <th>PE Volume</th>
                 <th>PE DeltaOI</th>
                 <th>PE OI</th>
+                <th>PE Velocity</th>
                 <th>PE Price</th>
                 <th>PE Interpret</th>
                 <th>Signal</th>
@@ -1813,6 +1850,7 @@ export default function App() {
                   highlight.peOiThreshold !== null && peOi >= highlight.peOiThreshold;
                 const isBattle =
                   highlight.volThreshold !== null && vol >= highlight.volThreshold;
+                const vel = velocityByStrike.get(String(row.strike));
                 return (
                 <tr
                   key={row.strike}
@@ -1828,6 +1866,7 @@ export default function App() {
                   <td>{formatNumber(row.CE_OI)}</td>
                   <td>{formatNumber(row.CE_DeltaOI)}</td>
                   <td>{formatNumber(row.CE_Volume)}</td>
+                  <td>OI {formatSigned(vel?.ceDoiPerMin)} / Vol {formatSigned(vel?.ceVolPerMin)}</td>
                   <td>
                     {formatNumber(row.CE_LastPrice ?? null)}{" "}
                     <span className={`dir ${row.CE_PriceDir === "↑" ? "up" : row.CE_PriceDir === "↓" ? "down" : ""}`}>
@@ -1843,6 +1882,7 @@ export default function App() {
                   <td>{formatNumber(row.PE_Volume)}</td>
                   <td>{formatNumber(row.PE_DeltaOI)}</td>
                   <td>{formatNumber(row.PE_OI)}</td>
+                  <td>OI {formatSigned(vel?.peDoiPerMin)} / Vol {formatSigned(vel?.peVolPerMin)}</td>
                   <td>
                     {formatNumber(row.PE_LastPrice ?? null)}{" "}
                     <span className={`dir ${row.PE_PriceDir === "↑" ? "up" : row.PE_PriceDir === "↓" ? "down" : ""}`}>
