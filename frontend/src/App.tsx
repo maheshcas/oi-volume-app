@@ -64,8 +64,9 @@ const REFRESH_MS = 15000;
 const HEATMAP_WINDOW_MINUTES = 120;
 const LIVE_DATA_UNAVAILABLE_MSG =
   "Live data temporarily unavailable. Showing last valid snapshot.";
-const TRAP_BREAK_BUFFER_PCT = 0.25;
-const LOW_OI_CONFIRM_RATIO = 0.75;
+const TRAP_BREAK_BUFFER_PCT_DEFAULT = 0.1;
+const TRAP_BREAK_BUFFER_PCT_BANKNIFTY = 0.15;
+const LOW_OI_CONFIRM_RATIO = 0.6;
 const LOW_VOLUME_CONFIRM_RATIO = 0.8;
 const ATM_BAND_RANGE = 2;
 const SHORT_COVERING_BURST_MIN_STRIKES = 2;
@@ -104,11 +105,17 @@ type TrapStrikeData = {
 };
 
 type TrapMarketContext = {
+  symbol: string;
   spot: number;
   resistance: number;
   support: number;
   strikes: TrapStrikeData[];
 };
+
+function getBreakBufferPct(symbol: string) {
+  if (symbol === "BANKNIFTY") return TRAP_BREAK_BUFFER_PCT_BANKNIFTY;
+  return TRAP_BREAK_BUFFER_PCT_DEFAULT;
+}
 
 function getATMIndex(strikes: TrapStrikeData[], spot: number) {
   let closestIndex = 0;
@@ -148,13 +155,13 @@ function checkWeakDirectionalOI(
 
   if (breakoutUp) {
     const directionalSupport = atmBand.some((s) => s.ceOIChange < 0 || s.peOIChange > 0);
-    return weakParticipation || !directionalSupport;
+    return { weakParticipation, directionalSupport, weakDirectional: weakParticipation || !directionalSupport };
   }
   if (breakoutDown) {
     const directionalSupport = atmBand.some((s) => s.peOIChange < 0 || s.ceOIChange > 0);
-    return weakParticipation || !directionalSupport;
+    return { weakParticipation, directionalSupport, weakDirectional: weakParticipation || !directionalSupport };
   }
-  return false;
+  return { weakParticipation, directionalSupport: true, weakDirectional: false };
 }
 
 function checkWeakVolume(context: TrapMarketContext) {
@@ -169,19 +176,35 @@ function checkWeakVolume(context: TrapMarketContext) {
 }
 
 function detectTrap(context: TrapMarketContext) {
-  const { spot, resistance, support } = context;
-  const breakBuffer = spot * (TRAP_BREAK_BUFFER_PCT / 100);
+  const { symbol, spot, resistance, support } = context;
+  const breakBuffer = spot * (getBreakBufferPct(symbol) / 100);
   const breakoutUp = spot > resistance + breakBuffer;
   const breakoutDown = spot < support - breakBuffer;
   if (!breakoutUp && !breakoutDown) {
-    return { bullTrap: false, bearTrap: false, trapLikely: false, message: "No trap setup" };
+    return {
+      bullTrap: false,
+      bearTrap: false,
+      trapLikely: false,
+      message: "No trap setup",
+      trapScore: 0,
+      trapRisk: "Safe breakout",
+      weakParticipation: false,
+      volumeExpansion: false,
+    };
   }
 
-  const weakOI = checkWeakDirectionalOI(context, breakoutUp, breakoutDown);
+  const oiCheck = checkWeakDirectionalOI(context, breakoutUp, breakoutDown);
   const weakVolume = checkWeakVolume(context);
-  const bullTrap = breakoutUp && weakOI && weakVolume;
-  const bearTrap = breakoutDown && weakOI && weakVolume;
+  const volumeExpansion = !weakVolume;
+  const bullTrap = breakoutUp && oiCheck.weakDirectional && weakVolume;
+  const bearTrap = breakoutDown && oiCheck.weakDirectional && weakVolume;
   const trapLikely = bullTrap || bearTrap;
+  let trapScore = 0;
+  if (breakoutUp || breakoutDown) trapScore += 40;
+  if (oiCheck.weakParticipation) trapScore += 30;
+  if (!volumeExpansion) trapScore += 30;
+  const trapRisk =
+    trapScore <= 30 ? "Safe breakout" : trapScore <= 60 ? "Caution" : "High Trap Risk";
 
   let message = "No trap setup";
   if (bullTrap) {
@@ -192,7 +215,16 @@ function detectTrap(context: TrapMarketContext) {
       "Breakdown below support lacks directional OI and volume confirmation: possible bear trap";
   }
 
-  return { bullTrap, bearTrap, trapLikely, message };
+  return {
+    bullTrap,
+    bearTrap,
+    trapLikely,
+    message,
+    trapScore,
+    trapRisk,
+    weakParticipation: oiCheck.weakParticipation,
+    volumeExpansion,
+  };
 }
 
 export default function App() {
@@ -772,6 +804,7 @@ export default function App() {
     const trapContext: TrapMarketContext | null =
       spot !== null && resistanceStrike !== null && supportStrike !== null
         ? {
+            symbol,
             spot,
             resistance: Number(resistanceStrike),
             support: Number(supportStrike),
@@ -786,7 +819,16 @@ export default function App() {
         : null;
     const trap = trapContext
       ? detectTrap(trapContext)
-      : { bullTrap: false, bearTrap: false, trapLikely: false, message: "No trap setup" };
+      : {
+          bullTrap: false,
+          bearTrap: false,
+          trapLikely: false,
+          message: "No trap setup",
+          trapScore: 0,
+          trapRisk: "Safe breakout",
+          weakParticipation: false,
+          volumeExpansion: false,
+        };
     const trapLikely = trap.trapLikely;
     const trapMessage = trap.message;
     const atmVolumeShock = avgTotalVol > 0 && atmVol > avgTotalVol * ATM_VOLUME_SHOCK_MULTIPLIER;
@@ -822,12 +864,16 @@ export default function App() {
       sessionPhase,
       trapLikely,
       trapMessage,
+      trapScore: trap.trapScore,
+      trapRisk: trap.trapRisk,
+      weakParticipation: trap.weakParticipation,
+      volumeExpansion: trap.volumeExpansion,
       supportShift,
       resistanceShift,
       shiftSummary: `Support ${shiftLabel(supportShift)} | Resistance ${shiftLabel(resistanceShift)}`,
       engineAlerts,
     };
-  }, [meta?.timestamp, displayRows, nearestSpotStrike, spotValue, supportStrike, resistanceStrike, history]);
+  }, [meta?.timestamp, displayRows, nearestSpotStrike, spotValue, supportStrike, resistanceStrike, history, symbol]);
 
   const velocityByStrike = useMemo(() => {
     const prev = history.length >= 2 ? history[history.length - 2] : null;
@@ -1077,71 +1123,91 @@ export default function App() {
   }, [displayRows]);
 
   const breakoutModel = useMemo(() => {
-    const recent = history.slice(-10);
     const defaultModel = {
       upProbability: 50,
       downProbability: 50,
       signal: "Range likely",
       confidence: 50,
-      factors: ["Insufficient rolling momentum history"],
+      factors: ["Insufficient scoring context"],
     };
-    if (!displayRows.length || !recent.length) return defaultModel;
+    if (!displayRows.length) return defaultModel;
 
-    const firstSpot = recent.find((point) => typeof point.spot === "number")?.spot;
-    const lastSpot = [...recent].reverse().find((point) => typeof point.spot === "number")?.spot;
-    const spotMomentumPct =
-      firstSpot && lastSpot && firstSpot !== 0 ? ((lastSpot - firstSpot) / firstSpot) * 100 : 0;
+    const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
+    const atmIndex = sorted.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
+    const centerIdx = atmIndex >= 0 ? atmIndex : Math.floor(sorted.length / 2);
+    const atmBand = sorted.slice(Math.max(0, centerIdx - ATM_BAND_RANGE), Math.min(sorted.length, centerIdx + ATM_BAND_RANGE + 1));
 
-    const center = displayRows.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
-    const centerIdx = center >= 0 ? center : Math.floor(displayRows.length / 2);
-    const start = Math.max(0, centerIdx - 3);
-    const end = Math.min(displayRows.length, centerIdx + 4);
-    const atmBand = displayRows.slice(start, end);
+    const priceChange = indexRow?.percChange ?? 0;
+    const atmPE_OI_change = atmBand.reduce((acc, row) => acc + (Number(row.PE_DeltaOI) || 0), 0);
+    const atmCE_OI_change = atmBand.reduce((acc, row) => acc + (Number(row.CE_DeltaOI) || 0), 0);
 
-    const callPressure = atmBand.reduce(
-      (acc, row) => acc + Math.max(0, Number(row.CE_DeltaOI) || 0),
-      0
-    );
-    const putPressure = atmBand.reduce(
-      (acc, row) => acc + Math.max(0, Number(row.PE_DeltaOI) || 0),
-      0
-    );
+    const globalAvgVolume =
+      sorted.reduce((sum, s) => sum + (Number(s.CE_Volume) || 0) + (Number(s.PE_Volume) || 0), 0) /
+      Math.max(1, sorted.length);
+    const currentVolume =
+      atmBand.reduce((sum, s) => sum + (Number(s.CE_Volume) || 0) + (Number(s.PE_Volume) || 0), 0) /
+      Math.max(1, atmBand.length);
+    const volumeExpansion = currentVolume > 1.3 * globalAvgVolume;
 
-    const prevRows = recent.length >= 2 ? recent[recent.length - 2].rows : [];
-    const prevVolume = prevRows.reduce(
-      (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
-      0
-    );
-    const currVolume = displayRows.reduce(
-      (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
-      0
-    );
-    const volumeMomentum = prevVolume > 0 ? (currVolume - prevVolume) / prevVolume : 0;
+    const putOI = sorted.reduce((sum, s) => sum + (Number(s.PE_OI) || 0), 0);
+    const callOI = sorted.reduce((sum, s) => sum + (Number(s.CE_OI) || 0), 0);
 
-    const pressureDen = callPressure + putPressure + 1;
-    const pressureTilt = (putPressure - callPressure) / pressureDen;
-    const biasBoost = bias.startsWith("Bullish") ? 0.1 : bias.startsWith("Bearish") ? -0.1 : 0;
+    const maxPut = [...sorted].sort((a, b) => (Number(b.PE_OI) || 0) - (Number(a.PE_OI) || 0))[0];
+    const strikeStep = sorted.length > 1 ? Math.abs(Number(sorted[1].strike) - Number(sorted[0].strike)) : 50;
+    const maxPutNearAtm =
+      maxPut && nearestSpotStrike !== null
+        ? Math.abs((Number(maxPut.strike) || 0) - Number(nearestSpotStrike)) <= strikeStep * 2
+        : false;
 
-    const upRaw = 0.5 + pressureTilt * 0.35 + spotMomentumPct * 0.18 + volumeMomentum * 0.08 + biasBoost;
-    const upProbability = Math.max(1, Math.min(99, Math.round(upRaw * 100)));
-    const downProbability = 100 - upProbability;
-    const confidence = Math.max(40, Math.min(95, Math.round(50 + Math.abs(upProbability - 50) * 1.2)));
+    let bullishScore = 0;
+    if (priceChange > 0) bullishScore += 20;
+    if (atmPE_OI_change > 0 && atmCE_OI_change <= 0) bullishScore += 25;
+    if (volumeExpansion) bullishScore += 20;
+    if (putOI > callOI) bullishScore += 20;
+    if (maxPutNearAtm) bullishScore += 15;
+    bullishScore = Math.max(0, Math.min(100, bullishScore));
 
+    const upProbability = bullishScore;
+    const downProbability = 100 - bullishScore;
+    const confidence = Math.max(upProbability, downProbability);
     const factors = [
-      `ATM pressure tilt: ${pressureTilt >= 0 ? "Put-side" : "Call-side"} (${(pressureTilt * 100).toFixed(1)}%)`,
-      `Spot momentum (${recent.length} snapshots): ${spotMomentumPct.toFixed(2)}%`,
-      `Volume momentum: ${(volumeMomentum * 100).toFixed(1)}%`,
+      `Price momentum: ${priceChange > 0 ? "bullish" : priceChange < 0 ? "bearish" : "flat"}`,
+      `ATM OI direction: PEΔ ${formatSigned(atmPE_OI_change)} / CEΔ ${formatSigned(atmCE_OI_change)}`,
+      `Volume expansion: ${volumeExpansion ? "yes" : "no"} (ATM avg ${formatNumber(Math.round(currentVolume))})`,
     ];
 
     const signal =
-      upProbability >= 60
+      upProbability > 60
         ? `Breakout above ${formatNumber(resistanceStrike)} more likely`
-        : upProbability <= 40
+        : downProbability > 60
           ? `Breakdown below ${formatNumber(supportStrike)} more likely`
           : "Range likely";
 
     return { upProbability, downProbability, signal, confidence, factors };
-  }, [history, displayRows, nearestSpotStrike, resistanceStrike, supportStrike, bias]);
+  }, [displayRows, nearestSpotStrike, supportStrike, resistanceStrike, indexRow?.percChange]);
+
+  const smartMoneyZones = useMemo(() => {
+    if (!displayRows.length) return { institutional: [] as number[], acceleration: [] as string[] };
+    const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
+    const totalOi = sorted.map((row) => (Number(row.CE_OI) || 0) + (Number(row.PE_OI) || 0));
+    const avgOi = totalOi.reduce((a, b) => a + b, 0) / Math.max(1, totalOi.length);
+    const institutional = sorted
+      .filter((row) => (Number(row.CE_OI) || 0) + (Number(row.PE_OI) || 0) > 2 * avgOi)
+      .map((row) => Number(row.strike))
+      .slice(0, 3);
+
+    const lowThreshold = avgOi * 0.6;
+    const acceleration: string[] = [];
+    for (let i = 0; i < sorted.length - 2; i += 1) {
+      const a = (Number(sorted[i].CE_OI) || 0) + (Number(sorted[i].PE_OI) || 0);
+      const b = (Number(sorted[i + 1].CE_OI) || 0) + (Number(sorted[i + 1].PE_OI) || 0);
+      const c = (Number(sorted[i + 2].CE_OI) || 0) + (Number(sorted[i + 2].PE_OI) || 0);
+      if (a < lowThreshold && b < lowThreshold && c < lowThreshold) {
+        acceleration.push(`${formatNumber(sorted[i].strike)}-${formatNumber(sorted[i + 2].strike)}`);
+      }
+    }
+    return { institutional, acceleration: acceleration.slice(0, 2) };
+  }, [displayRows]);
 
   const probabilityBias = useMemo(() => {
     let label: "Bullish" | "Bearish" | "Neutral" = "Neutral";
@@ -1602,7 +1668,9 @@ export default function App() {
               <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
               <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
               <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
-              <div><strong>Trap</strong><span>{intradayEngine.trapLikely ? "Likely" : "No"}</span></div>
+              <div><strong>Trap</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
+              <div><strong>Institutional</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
+              <div><strong>Acceleration</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
             </div>
           </div>
           <div className="decision-card">
@@ -1924,6 +1992,9 @@ export default function App() {
                 <div><strong>Session</strong><span>{intradayEngine.sessionPhase}</span></div>
                 <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
                 <div><strong>Trap</strong><span>{intradayEngine.trapMessage}</span></div>
+                <div><strong>Trap Risk</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
+                <div><strong>Institutional Zone</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
+                <div><strong>Acceleration Zone</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
               </div>
             </div>
           ) : null}
