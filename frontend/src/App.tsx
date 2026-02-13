@@ -67,6 +67,7 @@ const LIVE_DATA_UNAVAILABLE_MSG =
 const TRAP_BREAK_BUFFER_PCT = 0.25;
 const LOW_OI_CONFIRM_RATIO = 0.75;
 const LOW_VOLUME_CONFIRM_RATIO = 0.8;
+const ATM_BAND_RANGE = 2;
 const SHORT_COVERING_BURST_MIN_STRIKES = 2;
 const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
@@ -92,6 +93,106 @@ function formatSigned(value: number | null | undefined, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${Math.abs(value).toFixed(digits)}`;
+}
+
+type TrapStrikeData = {
+  strike: number;
+  ceOIChange: number;
+  peOIChange: number;
+  ceVolume: number;
+  peVolume: number;
+};
+
+type TrapMarketContext = {
+  spot: number;
+  resistance: number;
+  support: number;
+  strikes: TrapStrikeData[];
+};
+
+function getATMIndex(strikes: TrapStrikeData[], spot: number) {
+  let closestIndex = 0;
+  let minDiff = Number.POSITIVE_INFINITY;
+  strikes.forEach((s, i) => {
+    const diff = Math.abs(s.strike - spot);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestIndex = i;
+    }
+  });
+  return closestIndex;
+}
+
+function getATMBand(strikes: TrapStrikeData[], atmIndex: number) {
+  return strikes.slice(
+    Math.max(0, atmIndex - ATM_BAND_RANGE),
+    Math.min(strikes.length, atmIndex + ATM_BAND_RANGE + 1)
+  );
+}
+
+function checkWeakDirectionalOI(
+  context: TrapMarketContext,
+  breakoutUp: boolean,
+  breakoutDown: boolean
+) {
+  const { strikes, spot } = context;
+  const atmIndex = getATMIndex(strikes, spot);
+  const atmBand = getATMBand(strikes, atmIndex);
+  const globalAvgOI =
+    strikes.reduce((sum, s) => sum + Math.abs(s.ceOIChange) + Math.abs(s.peOIChange), 0) /
+    Math.max(1, strikes.length);
+  const atmAvgOI =
+    atmBand.reduce((sum, s) => sum + Math.abs(s.ceOIChange) + Math.abs(s.peOIChange), 0) /
+    Math.max(1, atmBand.length);
+  const weakParticipation = atmAvgOI < globalAvgOI * LOW_OI_CONFIRM_RATIO;
+
+  if (breakoutUp) {
+    const directionalSupport = atmBand.some((s) => s.ceOIChange < 0 || s.peOIChange > 0);
+    return weakParticipation || !directionalSupport;
+  }
+  if (breakoutDown) {
+    const directionalSupport = atmBand.some((s) => s.peOIChange < 0 || s.ceOIChange > 0);
+    return weakParticipation || !directionalSupport;
+  }
+  return false;
+}
+
+function checkWeakVolume(context: TrapMarketContext) {
+  const { strikes, spot } = context;
+  const atmIndex = getATMIndex(strikes, spot);
+  const atmBand = getATMBand(strikes, atmIndex);
+  const globalAvgVolume =
+    strikes.reduce((sum, s) => sum + s.ceVolume + s.peVolume, 0) / Math.max(1, strikes.length);
+  const atmAvgVolume =
+    atmBand.reduce((sum, s) => sum + s.ceVolume + s.peVolume, 0) / Math.max(1, atmBand.length);
+  return atmAvgVolume < globalAvgVolume * LOW_VOLUME_CONFIRM_RATIO;
+}
+
+function detectTrap(context: TrapMarketContext) {
+  const { spot, resistance, support } = context;
+  const breakBuffer = spot * (TRAP_BREAK_BUFFER_PCT / 100);
+  const breakoutUp = spot > resistance + breakBuffer;
+  const breakoutDown = spot < support - breakBuffer;
+  if (!breakoutUp && !breakoutDown) {
+    return { bullTrap: false, bearTrap: false, trapLikely: false, message: "No trap setup" };
+  }
+
+  const weakOI = checkWeakDirectionalOI(context, breakoutUp, breakoutDown);
+  const weakVolume = checkWeakVolume(context);
+  const bullTrap = breakoutUp && weakOI && weakVolume;
+  const bearTrap = breakoutDown && weakOI && weakVolume;
+  const trapLikely = bullTrap || bearTrap;
+
+  let message = "No trap setup";
+  if (bullTrap) {
+    message =
+      "Breakout above resistance lacks directional OI and volume confirmation: possible bull trap";
+  } else if (bearTrap) {
+    message =
+      "Breakdown below support lacks directional OI and volume confirmation: possible bear trap";
+  }
+
+  return { bullTrap, bearTrap, trapLikely, message };
 }
 
 export default function App() {
@@ -614,37 +715,7 @@ export default function App() {
     }
 
     const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
-    const center = sorted.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
-    const centerIdx = center >= 0 ? center : Math.floor(sorted.length / 2);
-    const atmRows = sorted.slice(Math.max(0, centerIdx - 2), Math.min(sorted.length, centerIdx + 3));
-    const atmAbsOIMove = atmRows.reduce(
-      (acc, row) => acc + Math.abs(Number(row.CE_DeltaOI) || 0) + Math.abs(Number(row.PE_DeltaOI) || 0),
-      0
-    );
-    const avgAbsOIMove =
-      sorted.length > 0
-        ? sorted.reduce(
-            (acc, row) =>
-              acc + Math.abs(Number(row.CE_DeltaOI) || 0) + Math.abs(Number(row.PE_DeltaOI) || 0),
-            0
-          ) / sorted.length
-        : 0;
-    const lowOIConfirmation =
-      avgAbsOIMove > 0
-        ? atmAbsOIMove / Math.max(1, atmRows.length) < avgAbsOIMove * LOW_OI_CONFIRM_RATIO
-        : false;
-
     const spot = typeof spotValue === "number" ? spotValue : null;
-    const breakBuffer = spot !== null ? (spot * TRAP_BREAK_BUFFER_PCT) / 100 : 0;
-    const breakoutUp =
-      spot !== null && resistanceStrike !== null ? spot > Number(resistanceStrike) + breakBuffer : false;
-    const breakoutDown =
-      spot !== null && supportStrike !== null ? spot < Number(supportStrike) - breakBuffer : false;
-
-    const atmCeDelta = atmRows.reduce((acc, row) => acc + (Number(row.CE_DeltaOI) || 0), 0);
-    const atmPeDelta = atmRows.reduce((acc, row) => acc + (Number(row.PE_DeltaOI) || 0), 0);
-    const weakDirectionalBullOI = !(atmCeDelta < 0 || atmPeDelta > 0);
-    const weakDirectionalBearOI = !(atmPeDelta < 0 || atmCeDelta > 0);
 
     const getLevels = (rows: SummaryRow[]) => {
       let support: number | null = null;
@@ -697,21 +768,27 @@ export default function App() {
     const atmVol = atmRow
       ? (Number(atmRow.CE_Volume) || 0) + (Number(atmRow.PE_Volume) || 0)
       : 0;
-    const lowVolumeConfirmation =
-      avgTotalVol > 0 ? atmVol < avgTotalVol * LOW_VOLUME_CONFIRM_RATIO : false;
 
-    const bullTrap = breakoutUp && weakDirectionalBullOI && lowVolumeConfirmation;
-    const bearTrap = breakoutDown && weakDirectionalBearOI && lowVolumeConfirmation;
-    const trapLikely = bullTrap || bearTrap || ((breakoutUp || breakoutDown) && lowOIConfirmation);
-    const trapMessage = trapLikely
-      ? bullTrap
-        ? "Breakout above resistance with weak directional OI and low volume: possible bull trap"
-        : bearTrap
-          ? "Breakdown below support with weak directional OI and low volume: possible bear trap"
-          : breakoutUp
-            ? "Breakout above resistance with low OI confirmation: possible bull trap"
-            : "Breakdown below support with low OI confirmation: possible bear trap"
-      : "No trap setup";
+    const trapContext: TrapMarketContext | null =
+      spot !== null && resistanceStrike !== null && supportStrike !== null
+        ? {
+            spot,
+            resistance: Number(resistanceStrike),
+            support: Number(supportStrike),
+            strikes: sorted.map((row) => ({
+              strike: Number(row.strike) || 0,
+              ceOIChange: Number(row.CE_DeltaOI) || 0,
+              peOIChange: Number(row.PE_DeltaOI) || 0,
+              ceVolume: Number(row.CE_Volume) || 0,
+              peVolume: Number(row.PE_Volume) || 0,
+            })),
+          }
+        : null;
+    const trap = trapContext
+      ? detectTrap(trapContext)
+      : { bullTrap: false, bearTrap: false, trapLikely: false, message: "No trap setup" };
+    const trapLikely = trap.trapLikely;
+    const trapMessage = trap.message;
     const atmVolumeShock = avgTotalVol > 0 && atmVol > avgTotalVol * ATM_VOLUME_SHOCK_MULTIPLIER;
     const shortCoveringBurst =
       displayRows.filter(
