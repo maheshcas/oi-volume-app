@@ -64,8 +64,9 @@ const REFRESH_MS = 15000;
 const HEATMAP_WINDOW_MINUTES = 120;
 const LIVE_DATA_UNAVAILABLE_MSG =
   "Live data temporarily unavailable. Showing last valid snapshot.";
-const TRAP_BREAK_BUFFER_PCT = 0.1;
+const TRAP_BREAK_BUFFER_PCT = 0.25;
 const LOW_OI_CONFIRM_RATIO = 0.75;
+const LOW_VOLUME_CONFIRM_RATIO = 0.8;
 const SHORT_COVERING_BURST_MIN_STRIKES = 2;
 const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
@@ -639,12 +640,11 @@ export default function App() {
       spot !== null && resistanceStrike !== null ? spot > Number(resistanceStrike) + breakBuffer : false;
     const breakoutDown =
       spot !== null && supportStrike !== null ? spot < Number(supportStrike) - breakBuffer : false;
-    const trapLikely = (breakoutUp || breakoutDown) && lowOIConfirmation;
-    const trapMessage = trapLikely
-      ? breakoutUp
-        ? "Breakout above resistance with low OI confirmation: possible bull trap"
-        : "Breakdown below support with low OI confirmation: possible bear trap"
-      : "No trap setup";
+
+    const atmCeDelta = atmRows.reduce((acc, row) => acc + (Number(row.CE_DeltaOI) || 0), 0);
+    const atmPeDelta = atmRows.reduce((acc, row) => acc + (Number(row.PE_DeltaOI) || 0), 0);
+    const weakDirectionalBullOI = !(atmCeDelta < 0 || atmPeDelta > 0);
+    const weakDirectionalBearOI = !(atmPeDelta < 0 || atmCeDelta > 0);
 
     const getLevels = (rows: SummaryRow[]) => {
       let support: number | null = null;
@@ -697,6 +697,21 @@ export default function App() {
     const atmVol = atmRow
       ? (Number(atmRow.CE_Volume) || 0) + (Number(atmRow.PE_Volume) || 0)
       : 0;
+    const lowVolumeConfirmation =
+      avgTotalVol > 0 ? atmVol < avgTotalVol * LOW_VOLUME_CONFIRM_RATIO : false;
+
+    const bullTrap = breakoutUp && weakDirectionalBullOI && lowVolumeConfirmation;
+    const bearTrap = breakoutDown && weakDirectionalBearOI && lowVolumeConfirmation;
+    const trapLikely = bullTrap || bearTrap || ((breakoutUp || breakoutDown) && lowOIConfirmation);
+    const trapMessage = trapLikely
+      ? bullTrap
+        ? "Breakout above resistance with weak directional OI and low volume: possible bull trap"
+        : bearTrap
+          ? "Breakdown below support with weak directional OI and low volume: possible bear trap"
+          : breakoutUp
+            ? "Breakout above resistance with low OI confirmation: possible bull trap"
+            : "Breakdown below support with low OI confirmation: possible bear trap"
+      : "No trap setup";
     const atmVolumeShock = avgTotalVol > 0 && atmVol > avgTotalVol * ATM_VOLUME_SHOCK_MULTIPLIER;
     const shortCoveringBurst =
       displayRows.filter(
