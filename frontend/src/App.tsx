@@ -1513,7 +1513,7 @@ export default function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">Intraday Dashboard</p>
-          <h1>NSE OI + Volume Live</h1>
+          <h1>Optionlens</h1>
           <p className="subhead">
             Live CE/PE open interest and volume across strikes. Auto refreshes every 15s.
           </p>
