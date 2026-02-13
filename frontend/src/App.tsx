@@ -62,6 +62,8 @@ type HistoryPoint = {
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const REFRESH_MS = 15000;
 const HEATMAP_WINDOW_MINUTES = 120;
+const LIVE_DATA_UNAVAILABLE_MSG =
+  "Live data temporarily unavailable. Showing last valid snapshot.";
 const TRAP_BREAK_BUFFER_PCT = 0.1;
 const LOW_OI_CONFIRM_RATIO = 0.75;
 const SHORT_COVERING_BURST_MIN_STRIKES = 2;
@@ -126,9 +128,8 @@ export default function App() {
       setExpiries(list);
       setExpiry((current) => (current && list.includes(current) ? current : list[0] ?? ""));
       setStatus(list.length ? `Loaded ${list.length} expiries.` : "No expiries returned.");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setStatus(`Failed to load expiries: ${msg}`);
+    } catch {
+      setStatus(LIVE_DATA_UNAVAILABLE_MSG);
       setExpiries([]);
       setExpiry("");
     }
@@ -170,11 +171,9 @@ export default function App() {
         return next.slice(-480);
       });
       setStatus(`Loaded ${data.rows?.length ?? 0} strikes.`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setStatus(`Failed to load summary: ${msg}`);
-      setRows([]);
-      setMeta(null);
+    } catch {
+      setStatus(LIVE_DATA_UNAVAILABLE_MSG);
+      // Preserve last valid snapshot instead of clearing UI.
     }
   }
 
@@ -186,9 +185,8 @@ export default function App() {
       const data = await res.json();
       const list = Array.isArray(data.data) ? data.data : [];
       setIndexData(list);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setStatus((current) => `${current} | Index data error: ${msg}`);
+    } catch {
+      setStatus((current) => `${current} | Index data unavailable`);
       setIndexData([]);
     }
   }
@@ -199,15 +197,12 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/health/nse`);
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        const message = data?.detail || "NSE blocked";
-        throw new Error(message);
+        throw new Error("NSE unavailable");
       }
       setNseStatus("ok");
-    } catch (error) {
+    } catch {
       setNseStatus("blocked");
-      const message = error instanceof Error ? error.message : "NSE blocked";
-      setNseMessage(message);
+      setNseMessage(LIVE_DATA_UNAVAILABLE_MSG);
     }
   }
 
@@ -1056,6 +1051,35 @@ export default function App() {
     return { upProbability, downProbability, signal, confidence, factors };
   }, [history, displayRows, nearestSpotStrike, resistanceStrike, supportStrike, bias]);
 
+  const probabilityBias = useMemo(() => {
+    let label: "Bullish" | "Bearish" | "Neutral" = "Neutral";
+    if (breakoutModel.upProbability > 60) {
+      label = "Bullish";
+    } else if (breakoutModel.downProbability > 60) {
+      label = "Bearish";
+    }
+    const confidence =
+      breakoutModel.confidence >= 80
+        ? "High"
+        : breakoutModel.confidence >= 60
+          ? "Medium"
+          : "Low";
+    return { label, confidence };
+  }, [breakoutModel]);
+
+  const probabilityFill = useMemo(() => {
+    if (probabilityBias.label === "Bearish") {
+      return { width: breakoutModel.downProbability, tone: "bear" as const };
+    }
+    if (probabilityBias.label === "Bullish") {
+      return { width: breakoutModel.upProbability, tone: "bull" as const };
+    }
+    return {
+      width: Math.max(breakoutModel.upProbability, breakoutModel.downProbability),
+      tone: "neutral" as const,
+    };
+  }, [probabilityBias.label, breakoutModel.upProbability, breakoutModel.downProbability]);
+
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
       return { ce: [] as Array<{ strike: number; doi: number; volume: number; score: number }>, pe: [] as Array<{ strike: number; doi: number; volume: number; score: number }> };
@@ -1138,6 +1162,67 @@ export default function App() {
           : "Neutral confirmation";
     return { syntheticFuture, basis, basisPct, basisType, direction, method: "Synthetic ATM parity" };
   }, [displayRows, nearestSpotStrike, spotValue]);
+
+  const interpretationNarrative = useMemo(() => {
+    const lines: string[] = [];
+    const topCeWriter = topWriters.ce[0] ?? null;
+    const topPeWriter = topWriters.pe[0] ?? null;
+
+    if (topCeWriter) {
+      lines.push(
+        `Strong CE writing near ${formatNumber(topCeWriter.strike)} suggests upside capped.`
+      );
+    } else if (resistanceStrike !== null) {
+      lines.push(`Call-side resistance remains near ${formatNumber(resistanceStrike)}.`);
+    }
+
+    if (topPeWriter) {
+      const peVsCe = topCeWriter ? topPeWriter.doi - topCeWriter.doi : topPeWriter.doi;
+      lines.push(
+        peVsCe >= 0
+          ? `PE support near ${formatNumber(topPeWriter.strike)} is holding with active participation.`
+          : `PE support near ${formatNumber(topPeWriter.strike)} is present but weaker than call pressure.`
+      );
+    } else if (supportStrike !== null) {
+      lines.push(`Support is currently seen near ${formatNumber(supportStrike)}.`);
+    }
+
+    if (supportStrike !== null && resistanceStrike !== null) {
+      if (breakoutModel.downProbability > 60) {
+        lines.push(
+          `Breakdown below ${formatNumber(supportStrike)} is likely if volume expands.`
+        );
+      } else if (breakoutModel.upProbability > 60) {
+        lines.push(
+          `Breakout above ${formatNumber(resistanceStrike)} is likely if call OI unwinds.`
+        );
+      } else {
+        lines.push(
+          `Range is likely between ${formatNumber(supportStrike)} and ${formatNumber(resistanceStrike)} unless ATM volume shocks.`
+        );
+      }
+    }
+
+    return {
+      title:
+        probabilityBias.label === "Bullish"
+          ? "Bullish structure"
+          : probabilityBias.label === "Bearish"
+            ? "Bearish structure"
+            : "Range structure",
+      lines: lines.slice(0, 3),
+      confidence: breakoutModel.confidence,
+    };
+  }, [
+    topWriters.ce,
+    topWriters.pe,
+    resistanceStrike,
+    supportStrike,
+    breakoutModel.downProbability,
+    breakoutModel.upProbability,
+    breakoutModel.confidence,
+    probabilityBias.label,
+  ]);
 
   const heatmapOption = useMemo(() => {
     const minuteMap = new Map<string, HistoryPoint>();
@@ -1355,7 +1440,7 @@ export default function App() {
 
         <div className="status">
           {status}
-          {nseStatus === "blocked" && nseMessage ? ` | NSE: ${nseMessage}` : ""}
+          {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
         </div>
 
         <div className="summary-bar">
@@ -1380,8 +1465,8 @@ export default function App() {
           <span>Max Pain: {formatNumber(maxPainStrike)}</span>
           <span>
             Trend:{" "}
-            <span className={`trend-pill ${bias.startsWith("Bullish") ? "bull" : bias.startsWith("Bearish") ? "bear" : "neutral"}`}>
-              {bias.startsWith("Bullish") ? "Bullish" : bias.startsWith("Bearish") ? "Bearish" : "Neutral"}
+            <span className={`trend-pill ${probabilityBias.label === "Bullish" ? "bull" : probabilityBias.label === "Bearish" ? "bear" : "neutral"}`}>
+              {probabilityBias.label}
             </span>
           </span>
           <span>Updated: {meta?.timestamp ?? lastUpdated ?? "-"}</span>
@@ -1393,43 +1478,50 @@ export default function App() {
             <div className="decision-main">
               <span
                 className={`bias-pill ${
-                  marketSummary.marketBias.toLowerCase().includes("bullish")
+                  probabilityBias.label === "Bullish"
                     ? "bull"
-                    : marketSummary.marketBias.toLowerCase().includes("bearish")
+                    : probabilityBias.label === "Bearish"
                       ? "bear"
                       : "neutral"
                 }`}
               >
-                {marketSummary.marketBias}
+                {probabilityBias.label}
               </span>
-              <span className="pill-inline">Conf: {marketSummary.confidence}</span>
+              <span className="pill-inline">Conf: {probabilityBias.confidence}</span>
             </div>
             <div className="prob-track">
-              <div className="prob-up" style={{ width: `${breakoutModel.upProbability}%` }} />
+              <div
+                className={`prob-up ${probabilityFill.tone}`}
+                style={{ width: `${probabilityFill.width}%` }}
+              />
             </div>
             <div className="prob-legend">
               <span>Bull {breakoutModel.upProbability}%</span>
               <span>Bear {breakoutModel.downProbability}%</span>
-              <span>{breakoutModel.confidence}%</span>
+              <span>Conf {breakoutModel.confidence}%</span>
             </div>
             <p className="decision-sub">{breakoutModel.signal}</p>
           </div>
           <div className="decision-card">
             <h3>Key Levels</h3>
-            <div className="key-levels">
-              <span>Resistance: {formatNumber(resistanceStrike)}</span>
-              <span>Support: {formatNumber(supportStrike)}</span>
-              <span>Target: {targetLevel ? formatNumber(targetLevel) : "Range"}</span>
-              <span>Phase: {intradayEngine.sessionPhase}</span>
-              <span>Shift: {intradayEngine.shiftSummary}</span>
-              <span>Trap: {intradayEngine.trapLikely ? "Likely" : "No"}</span>
+            <div className="decision-kv">
+              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
+              <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
+              <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
+              <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
+              <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
+              <div><strong>Trap</strong><span>{intradayEngine.trapLikely ? "Likely" : "No"}</span></div>
             </div>
           </div>
           <div className="decision-card">
-            <h3>Live Alerts</h3>
+            <h3>Interpretation</h3>
+            <div className="decision-main">
+              <span className="pill-inline">{interpretationNarrative.title}</span>
+              <span className="pill-inline">Conf: {interpretationNarrative.confidence}%</span>
+            </div>
             <ul className="engine-list">
-              {combinedAlerts.slice(0, 3).map((item) => (
-                <li key={`top-${item}`}>{item}</li>
+              {interpretationNarrative.lines.map((item) => (
+                <li key={`interp-${item}`}>{item}</li>
               ))}
             </ul>
           </div>
@@ -1675,11 +1767,9 @@ export default function App() {
             <div className="mini-summary">
               <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
               <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
-              <div><strong>Bias</strong><span className={`bias-pill ${bias.startsWith("Bullish") ? "bull" : bias.startsWith("Bearish") ? "bear" : "neutral"}`}>{bias}</span></div>
               <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
               <div><strong>Alerts</strong><span>{alertItems[0] ?? "-"}</span></div>
               <div><strong>ATM</strong><span>{formatNumber(atmInfo.strike)}</span></div>
-              <div><strong>ATM Bias</strong><span className={`bias-pill ${atmInfo.bias.startsWith("Bullish") ? "bull" : atmInfo.bias.startsWith("Bearish") ? "bear" : "neutral"}`}>{atmInfo.bias}</span></div>
             </div>
           </div>
           <div className="dash-card signal-card">
@@ -1698,9 +1788,6 @@ export default function App() {
             </div>
             <div className="signal-row">
               Trend: <span className="pill-inline">{marketState}</span>
-            </div>
-            <div className="signal-row">
-              Bias: <span className="pill-inline">{bias}</span>
             </div>
             <div className="signal-row">
               CE: <span className="pill-inline">{interpretationSummary.ce}</span>

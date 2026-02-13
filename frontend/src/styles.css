@@ -213,24 +213,52 @@ button:hover {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 14px;
   padding: 12px;
+  min-height: 170px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
 }
 
 .decision-card h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .decision-main {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 
 .decision-sub {
-  margin: 8px 0 0;
+  margin: 0;
   color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.decision-kv {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px 14px;
+}
+
+.decision-kv div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.decision-kv strong {
+  color: var(--ink);
   font-size: 12px;
+  font-weight: 600;
+  min-width: 72px;
 }
 
 .auto-interpret {
@@ -987,6 +1015,18 @@ button:hover {
   background: linear-gradient(90deg, #4dd07d, #f3b45a);
 }
 
+.prob-up.bull {
+  background: linear-gradient(90deg, #2fbf6a, #7be29d);
+}
+
+.prob-up.bear {
+  background: linear-gradient(90deg, #ff5c84, #d13a62);
+}
+
+.prob-up.neutral {
+  background: linear-gradient(90deg, #8ea1b9, #b7c3d1);
+}
+
 .prob-legend {
   margin-top: 8px;
   display: grid;
@@ -1276,6 +1316,10 @@ tbody tr:hover {
   }
 
   .decision-row {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-kv {
     grid-template-columns: 1fr;
   }
 
