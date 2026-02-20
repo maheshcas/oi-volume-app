@@ -190,3 +190,89 @@ def build_oi_volume_summary(nse_json):
         })
 
     return rows
+
+
+def build_target_projection(rows, spot, break_buffer_ratio=0.10, midpoint_buffer_ratio=0.10):
+    """
+    Clean target projection logic:
+    - RANGE: rotate to opposite edge based on midpoint.
+    - BREAKOUT_UP: project 0.5x and 1.0x range above resistance.
+    - BREAKOUT_DOWN: project 0.5x and 1.0x range below support.
+    """
+    if not rows or spot is None:
+        return None
+
+    valid_rows = [r for r in rows if r.get("strike") is not None]
+    if not valid_rows:
+        return None
+
+    resistance_row = max(valid_rows, key=lambda r: r.get("CE_OI", 0) or 0)
+    support_row = max(valid_rows, key=lambda r: r.get("PE_OI", 0) or 0)
+
+    resistance = resistance_row.get("strike")
+    support = support_row.get("strike")
+
+    if resistance is None or support is None:
+        return None
+
+    # Keep ordering stable even if OI-led levels invert.
+    if support > resistance:
+        support, resistance = resistance, support
+
+    range_width = max(1.0, float(resistance - support))
+    mid_point = (float(support) + float(resistance)) / 2.0
+    break_buffer = range_width * break_buffer_ratio
+    midpoint_buffer = range_width * midpoint_buffer_ratio
+
+    state = "RANGE"
+    if spot > (resistance + break_buffer):
+        state = "BREAKOUT_UP"
+    elif spot < (support - break_buffer):
+        state = "BREAKOUT_DOWN"
+
+    direction = "Range rotation"
+    target_primary = None
+    target_secondary = None
+    target_note = None
+
+    if state == "RANGE":
+        if abs(float(spot) - mid_point) < midpoint_buffer:
+            target_primary = support
+            target_secondary = resistance
+            direction = "Balanced near midpoint"
+            target_note = "Both edges possible"
+        elif float(spot) < mid_point:
+            target_primary = resistance
+            direction = "Upside range rotation"
+        else:
+            target_primary = support
+            direction = "Downside range rotation"
+    elif state == "BREAKOUT_UP":
+        direction = "Upside breakout expansion"
+        target_primary = round(resistance + (range_width * 0.5), 2)
+        target_secondary = round(resistance + range_width, 2)
+    else:
+        direction = "Downside breakout expansion"
+        target_primary = round(support - (range_width * 0.5), 2)
+        target_secondary = round(support - range_width, 2)
+
+    return {
+        "state": state,
+        "spot": spot,
+        "support": support,
+        "resistance": resistance,
+        "rangeWidth": round(range_width, 2),
+        "midPoint": round(mid_point, 2),
+        "distanceToSupport": round(float(spot) - float(support), 2),
+        "distanceToResistance": round(float(resistance) - float(spot), 2),
+        "breakBuffer": round(break_buffer, 2),
+        "midpointBuffer": round(midpoint_buffer, 2),
+        "direction": direction,
+        "targetPrimary": target_primary,
+        "targetSecondary": target_secondary,
+        "targetNote": target_note,
+        "source": {
+            "supportFrom": "Highest PE OI strike",
+            "resistanceFrom": "Highest CE OI strike",
+        },
+    }

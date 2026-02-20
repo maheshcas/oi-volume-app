@@ -49,6 +49,22 @@ type SummaryResponse = {
     spot: number | null;
     timestamp: string | null;
   };
+  target_projection?: {
+    state: "RANGE" | "BREAKOUT_UP" | "BREAKOUT_DOWN";
+    spot: number;
+    support: number;
+    resistance: number;
+    rangeWidth: number;
+    midPoint: number;
+    distanceToSupport: number;
+    distanceToResistance: number;
+    breakBuffer: number;
+    midpointBuffer: number;
+    direction: string;
+    targetPrimary: number | null;
+    targetSecondary: number | null;
+    targetNote: string | null;
+  } | null;
   rows: SummaryRow[];
 };
 
@@ -244,6 +260,7 @@ export default function App() {
   const [nseMessage, setNseMessage] = useState<string>("");
   const [indexData, setIndexData] = useState<IndexRow[]>([]);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
   const [secondaryTab, setSecondaryTab] = useState<"heatmap" | "shift" | "writers" | "basis">("heatmap");
   const [showTable, setShowTable] = useState(false);
 
@@ -284,6 +301,7 @@ export default function App() {
       const data = (await res.json()) as SummaryResponse;
       setRows(data.rows ?? []);
       setMeta(data.meta ?? null);
+      setApiTargetProjection(data.target_projection ?? null);
       const fetchedAt = Date.now();
       const displayLabel = new Date(fetchedAt).toLocaleTimeString("en-IN", {
         hour: "2-digit",
@@ -1186,6 +1204,301 @@ export default function App() {
     return { upProbability, downProbability, signal, confidence, factors };
   }, [displayRows, nearestSpotStrike, supportStrike, resistanceStrike, indexRow?.percChange]);
 
+  const autoTargetProjection = useMemo(() => {
+    const sorted = [...displayRows]
+      .map((row) => ({ ...row, strikeNum: Number(row.strike) }))
+      .filter((row) => !Number.isNaN(row.strikeNum))
+      .sort((a, b) => a.strikeNum - b.strikeNum);
+    const spot = typeof spotValue === "number" ? spotValue : null;
+    if (!sorted.length || spot === null || resistanceStrike === null || supportStrike === null) {
+      return {
+        breakoutUp: false,
+        breakoutDown: false,
+        target1: null as number | null,
+        target2: null as number | null,
+        accelerationMode: false,
+        status: "No breakout",
+      };
+    }
+
+    const bufferPct = getBreakBufferPct(symbol);
+    const breakBuffer = (spot * bufferPct) / 100;
+    const breakoutUp = spot > Number(resistanceStrike) + breakBuffer;
+    const breakoutDown = spot < Number(supportStrike) - breakBuffer;
+    const avgStrikeOI =
+      sorted.reduce(
+        (sum, row) => sum + (Number(row.CE_OI) || 0) + (Number(row.PE_OI) || 0),
+        0
+      ) / Math.max(1, sorted.length);
+
+    let target1: number | null = null;
+    let target2: number | null = null;
+    let accelerationMode = false;
+
+    if (breakoutUp) {
+      const nextCall = sorted
+        .filter((row) => row.strikeNum > Number(resistanceStrike))
+        .sort((a, b) => (Number(b.CE_OI) || 0) - (Number(a.CE_OI) || 0))[0];
+      if (nextCall) {
+        target1 = nextCall.strikeNum;
+        target2 = target1 + (target1 - Number(resistanceStrike));
+        const nextTwo = sorted
+          .filter((row) => row.strikeNum > Number(resistanceStrike))
+          .slice(0, 2);
+        if (
+          nextTwo.length === 2 &&
+          nextTwo.every(
+            (row) => (Number(row.CE_OI) || 0) + (Number(row.PE_OI) || 0) < 0.5 * avgStrikeOI
+          )
+        ) {
+          accelerationMode = true;
+          target2 = target1 + 1.5 * (target2 - target1);
+        }
+      }
+    } else if (breakoutDown) {
+      const nextPut = sorted
+        .filter((row) => row.strikeNum < Number(supportStrike))
+        .sort((a, b) => (Number(b.PE_OI) || 0) - (Number(a.PE_OI) || 0))[0];
+      if (nextPut) {
+        target1 = nextPut.strikeNum;
+        target2 = target1 - (Number(supportStrike) - target1);
+        const nextTwo = sorted
+          .filter((row) => row.strikeNum < Number(supportStrike))
+          .slice(-2);
+        if (
+          nextTwo.length === 2 &&
+          nextTwo.every(
+            (row) => (Number(row.CE_OI) || 0) + (Number(row.PE_OI) || 0) < 0.5 * avgStrikeOI
+          )
+        ) {
+          accelerationMode = true;
+          target2 = target1 - 1.5 * (target1 - target2);
+        }
+      }
+    }
+
+    const status = breakoutUp
+      ? "Breakout up confirmed"
+      : breakoutDown
+        ? "Breakout down confirmed"
+        : "No breakout";
+    return { breakoutUp, breakoutDown, target1, target2, accelerationMode, status };
+  }, [displayRows, spotValue, resistanceStrike, supportStrike, symbol]);
+
+  const effectiveTargetProjection = useMemo(() => {
+    if (apiTargetProjection) {
+      return {
+        target1: apiTargetProjection.targetPrimary,
+        target2: apiTargetProjection.targetSecondary,
+        status:
+          apiTargetProjection.state === "BREAKOUT_UP"
+            ? "Breakout up confirmed"
+            : apiTargetProjection.state === "BREAKOUT_DOWN"
+              ? "Breakout down confirmed"
+              : "No breakout",
+        direction: apiTargetProjection.direction,
+        note: apiTargetProjection.targetNote,
+      };
+    }
+    return {
+      target1: autoTargetProjection.target1,
+      target2: autoTargetProjection.target2,
+      status: autoTargetProjection.status,
+      direction: null as string | null,
+      note: null as string | null,
+    };
+  }, [apiTargetProjection, autoTargetProjection]);
+
+  const projectionState = useMemo(() => {
+    if (!apiTargetProjection?.state) {
+      return { label: "N/A", tone: "neutral" as const };
+    }
+    if (apiTargetProjection.state === "BREAKOUT_UP") {
+      return { label: "Breakout Up", tone: "bull" as const };
+    }
+    if (apiTargetProjection.state === "BREAKOUT_DOWN") {
+      return { label: "Breakout Down", tone: "bear" as const };
+    }
+    return { label: "Range", tone: "neutral" as const };
+  }, [apiTargetProjection]);
+
+  const scalpingEngine = useMemo(() => {
+    const sorted = [...displayRows]
+      .map((row) => ({ ...row, strikeNum: Number(row.strike) }))
+      .filter((row) => !Number.isNaN(row.strikeNum))
+      .sort((a, b) => a.strikeNum - b.strikeNum);
+    const spot = typeof spotValue === "number" ? spotValue : null;
+    if (!sorted.length || spot === null) {
+      return {
+        momentumScore: 0,
+        vwapBias: "Unavailable",
+        quickTarget: null as number | null,
+        reversalRisk: 0,
+        fastMove: false,
+        exitSignal: false,
+      };
+    }
+
+    const atmIndex = sorted.findIndex((row) => String(row.strike) === String(nearestSpotStrike));
+    const center = atmIndex >= 0 ? atmIndex : Math.floor(sorted.length / 2);
+    const band = sorted.slice(Math.max(0, center - 3), Math.min(sorted.length, center + 4));
+    const atm = sorted[Math.max(0, center)];
+
+    const priceChange = indexRow?.percChange ?? 0;
+    const globalAvgVol =
+      sorted.reduce((sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0), 0) /
+      Math.max(1, sorted.length);
+    const bandAvgVol =
+      band.reduce((sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0), 0) /
+      Math.max(1, band.length);
+    const volumeExpansion = bandAvgVol > 1.5 * globalAvgVol;
+    const directionalOI =
+      ((Number(atm.PE_DeltaOI) || 0) > 0 && (Number(atm.CE_DeltaOI) || 0) <= 0) ||
+      ((Number(atm.CE_DeltaOI) || 0) > 0 && (Number(atm.PE_DeltaOI) || 0) <= 0);
+    const fastMove = Math.abs(priceChange) > 0.25 && volumeExpansion && directionalOI;
+
+    const avgSpot =
+      history.length > 0
+        ? history
+            .map((h) => (typeof h.spot === "number" ? h.spot : null))
+            .filter((v): v is number => v !== null)
+            .reduce((a, b) => a + b, 0) /
+          Math.max(
+            1,
+            history
+              .map((h) => (typeof h.spot === "number" ? h.spot : null))
+              .filter((v): v is number => v !== null).length
+          )
+        : spot;
+    const vwapBias = spot > avgSpot ? "Above VWAP" : spot < avgSpot ? "Below VWAP" : "At VWAP";
+
+    const bullishSetup =
+      vwapBias === "Above VWAP" &&
+      (Number(atm.PE_DeltaOI) || 0) > 0 &&
+      (Number(atm.CE_DeltaOI) || 0) <= 0 &&
+      volumeExpansion;
+    const bearishSetup =
+      vwapBias === "Below VWAP" &&
+      (Number(atm.CE_DeltaOI) || 0) > 0 &&
+      (Number(atm.PE_DeltaOI) || 0) <= 0 &&
+      volumeExpansion;
+
+    let quickTarget: number | null = null;
+    if (bullishSetup && center < sorted.length - 1) quickTarget = sorted[center + 1].strikeNum;
+    if (bearishSetup && center > 0) quickTarget = sorted[center - 1].strikeNum;
+
+    const prev = history.length >= 2 ? history[history.length - 2] : null;
+    const prevBandVol =
+      prev && band.length
+        ? band.reduce((sum, row) => {
+            const r = prev.rows.find((x) => String(x.strike) === String(row.strike));
+            return sum + ((r ? Number(r.CE_Volume) || 0 : 0) + (r ? Number(r.PE_Volume) || 0 : 0));
+          }, 0)
+        : bandAvgVol;
+    const currBandVol = band.reduce(
+      (sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
+      0
+    );
+    const volumeDrops = prevBandVol > 0 ? currBandVol < prevBandVol * 0.9 : false;
+    const oiStopsIncreasing =
+      bullishSetup
+        ? (Number(atm.PE_DeltaOI) || 0) <= 0
+        : bearishSetup
+          ? (Number(atm.CE_DeltaOI) || 0) <= 0
+          : Math.abs(Number(atm.CE_DeltaOI) || 0) + Math.abs(Number(atm.PE_DeltaOI) || 0) < 1;
+    const exitSignal = volumeDrops && oiStopsIncreasing;
+
+    let momentumScore = 0;
+    if (Math.abs(priceChange) > 0.25) momentumScore += 30;
+    if (volumeExpansion) momentumScore += 30;
+    if (directionalOI) momentumScore += 25;
+    if (bullishSetup || bearishSetup) momentumScore += 15;
+    momentumScore = Math.max(0, Math.min(100, momentumScore));
+
+    const reversalRisk = Math.max(
+      0,
+      Math.min(
+        100,
+        (intradayEngine?.trapScore ?? 0) * 0.6 + (volumeDrops ? 20 : 0) + (!directionalOI ? 20 : 0)
+      )
+    );
+
+    return {
+      momentumScore,
+      vwapBias,
+      quickTarget,
+      reversalRisk: Math.round(reversalRisk),
+      fastMove,
+      exitSignal,
+    };
+  }, [displayRows, spotValue, nearestSpotStrike, indexRow?.percChange, history, intradayEngine?.trapScore]);
+
+  const expiryEngine = useMemo(() => {
+    const spot = typeof spotValue === "number" ? spotValue : null;
+    if (spot === null || maxPainStrike === null) {
+      return {
+        pinningZone: false,
+        pinningProbability: 0,
+        expiryTrapLikely: false,
+        premiumCrush: false,
+        expiryRangeLock: false,
+        manipulationRisk: 0,
+      };
+    }
+    const distancePct = Math.abs(spot - Number(maxPainStrike)) / Math.max(1, spot) * 100;
+    const pinningZone = distancePct < 0.3;
+    const pinningProbability = Math.max(0, Math.min(100, Math.round((0.3 - distancePct) / 0.3 * 100)));
+
+    const prev = history.length >= 2 ? history[history.length - 2] : null;
+    const prevVol = prev
+      ? prev.rows.reduce((sum, r) => sum + (Number(r.CE_Volume) || 0) + (Number(r.PE_Volume) || 0), 0)
+      : 0;
+    const currVol = displayRows.reduce((sum, r) => sum + (Number(r.CE_Volume) || 0) + (Number(r.PE_Volume) || 0), 0);
+    const quickVolumeDrop = prevVol > 0 ? currVol < prevVol * 0.85 : false;
+
+    const expiryTrapLikely =
+      (autoTargetProjection.breakoutUp || autoTargetProjection.breakoutDown) &&
+      intradayEngine.weakParticipation &&
+      quickVolumeDrop;
+
+    const expiryRangeLock =
+      supportStrike !== null &&
+      resistanceStrike !== null &&
+      spot >= Number(supportStrike) &&
+      spot <= Number(resistanceStrike);
+
+    const premiumCrush = false;
+    const manipulationRisk = Math.max(
+      0,
+      Math.min(
+        100,
+        (pinningZone ? 30 : 0) +
+          (expiryTrapLikely ? 40 : 0) +
+          (expiryRangeLock ? 20 : 0) +
+          (quickVolumeDrop ? 10 : 0)
+      )
+    );
+
+    return {
+      pinningZone,
+      pinningProbability,
+      expiryTrapLikely,
+      premiumCrush,
+      expiryRangeLock,
+      manipulationRisk,
+    };
+  }, [
+    spotValue,
+    maxPainStrike,
+    history,
+    displayRows,
+    autoTargetProjection.breakoutUp,
+    autoTargetProjection.breakoutDown,
+    intradayEngine.weakParticipation,
+    supportStrike,
+    resistanceStrike,
+  ]);
+
   const smartMoneyZones = useMemo(() => {
     if (!displayRows.length) return { institutional: [] as number[], acceleration: [] as string[] };
     const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
@@ -1622,6 +1935,10 @@ export default function App() {
           <span>PCR: {pcr ? pcr.toFixed(2) : "-"}</span>
           <span>Max Pain: {formatNumber(maxPainStrike)}</span>
           <span>
+            Projection:{" "}
+            <span className={`trend-pill ${projectionState.tone}`}>{projectionState.label}</span>
+          </span>
+          <span>
             Trend:{" "}
             <span className={`trend-pill ${probabilityBias.label === "Bullish" ? "bull" : probabilityBias.label === "Bearish" ? "bear" : "neutral"}`}>
               {probabilityBias.label}
@@ -1665,12 +1982,22 @@ export default function App() {
             <div className="decision-kv">
               <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
               <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
-              <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
+              <div><strong>Target 1</strong><span>{formatNumber(effectiveTargetProjection.target1)}</span></div>
+              <div><strong>Target 2</strong><span>{formatNumber(effectiveTargetProjection.target2)}</span></div>
+              <div><strong>Target State</strong><span>{effectiveTargetProjection.status}</span></div>
+              <div><strong>Target Flow</strong><span>{effectiveTargetProjection.direction ?? "-"}</span></div>
+              <div><strong>Target Note</strong><span>{effectiveTargetProjection.note ?? "-"}</span></div>
               <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
               <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
               <div><strong>Trap</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
               <div><strong>Institutional</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
               <div><strong>Acceleration</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
+              <div><strong>Scalp Momentum</strong><span>{scalpingEngine.momentumScore}%</span></div>
+              <div><strong>VWAP Bias</strong><span>{scalpingEngine.vwapBias}</span></div>
+              <div><strong>Quick Target</strong><span>{formatNumber(scalpingEngine.quickTarget)}</span></div>
+              <div><strong>Reversal Risk</strong><span>{scalpingEngine.reversalRisk}%</span></div>
+              <div><strong>Expiry Risk</strong><span>{expiryEngine.manipulationRisk}%</span></div>
+              <div><strong>Pinning</strong><span>{expiryEngine.pinningZone ? `Yes (${expiryEngine.pinningProbability}%)` : "No"}</span></div>
             </div>
           </div>
           <div className="decision-card">
@@ -1995,6 +2322,10 @@ export default function App() {
                 <div><strong>Trap Risk</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
                 <div><strong>Institutional Zone</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
                 <div><strong>Acceleration Zone</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
+                <div><strong>Scalp Fast Move</strong><span>{scalpingEngine.fastMove ? "Yes" : "No"}</span></div>
+                <div><strong>Scalp Exit</strong><span>{scalpingEngine.exitSignal ? "Exit likely" : "Hold"}</span></div>
+                <div><strong>Expiry Trap</strong><span>{expiryEngine.expiryTrapLikely ? "Likely" : "No"}</span></div>
+                <div><strong>Range Lock</strong><span>{expiryEngine.expiryRangeLock ? "Yes" : "No"}</span></div>
               </div>
             </div>
           ) : null}

@@ -8,7 +8,7 @@ from app.services.nse_client import (
     fetch_option_chain,
     fetch_option_chain_contract_info,
 )
-from app.services.parser import build_oi_volume_summary
+from app.services.parser import build_oi_volume_summary, build_target_projection
 
 router = APIRouter()
 
@@ -81,15 +81,60 @@ def option_chain_summary(
     if not rows:
         raise HTTPException(status_code=502, detail="No option chain data returned from NSE.")
 
+    spot = records.get("underlyingValue")
+    target_projection = build_target_projection(rows, spot)
+
     return {
         "meta": {
             "symbol": symbol,
             "instrument_type": instrument_type,
             "expiry": inferred_expiry,
+            "spot": spot,
+            "timestamp": records.get("timestamp"),
+        },
+        "target_projection": target_projection,
+        "rows": rows,
+    }
+
+
+@router.get("/option-chain/target-projection")
+def option_chain_target_projection(
+    symbol: str = "NIFTY",
+    expiry: Optional[str] = None,
+    instrument_type: str = "Indices",
+    use_sample: bool = False,
+):
+    """
+    Returns clean target projection using support/resistance inferred from max OI strikes.
+    """
+    if expiry == "":
+        expiry = None
+
+    try:
+        raw = _load_sample() if use_sample else fetch_option_chain(
+            symbol=symbol, expiry=expiry, instrument_type=instrument_type
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    records = raw.get("records", {})
+    rows = build_oi_volume_summary(raw)
+    if not rows:
+        raise HTTPException(status_code=502, detail="No option chain data returned from NSE.")
+
+    projection = build_target_projection(rows, records.get("underlyingValue"))
+    if not projection:
+        raise HTTPException(status_code=502, detail="Unable to derive target projection from option chain.")
+
+    return {
+        "meta": {
+            "symbol": symbol,
+            "instrument_type": instrument_type,
+            "expiry": expiry,
             "spot": records.get("underlyingValue"),
             "timestamp": records.get("timestamp"),
         },
-        "rows": rows,
+        "projection": projection,
     }
 
 
