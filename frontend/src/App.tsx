@@ -60,10 +60,35 @@ type SummaryResponse = {
     distanceToResistance: number;
     breakBuffer: number;
     midpointBuffer: number;
+    targetMode?: string;
+    confidenceScore?: number;
+    volatilityMethod?: string;
+    atmCallLtp?: number;
+    atmPutLtp?: number;
+    expectedMove?: number;
+    structuralRange?: number;
+    blendedMove?: number;
+    projectedMove?: number;
     direction: string;
     targetPrimary: number | null;
     targetSecondary: number | null;
     targetNote: string | null;
+    confirmation?: {
+      bullish?: {
+        atm_oi_rising: boolean;
+        ce_unwinding: boolean;
+        pe_aggressive_build: boolean;
+        confirmed: boolean;
+      };
+      bearish?: {
+        pe_unwinding: boolean;
+        ce_aggressive_build: boolean;
+        pcr_below_085: boolean;
+        confirmed: boolean;
+      };
+      pcr?: number | null;
+      atmStrike?: number | null;
+    };
   } | null;
   rows: SummaryRow[];
 };
@@ -110,6 +135,19 @@ function formatSigned(value: number | null | undefined, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${Math.abs(value).toFixed(digits)}`;
+}
+
+function directionArrow(direction?: string) {
+  if (direction === "↑") return "↑";
+  if (direction === "↓") return "↓";
+  return "→";
+}
+
+function strengthLabel(score: number | null | undefined) {
+  const value = Number(score ?? 0);
+  if (value >= 80) return "Strong";
+  if (value >= 60) return "Moderate";
+  return "Weak";
 }
 
 type TrapStrikeData = {
@@ -244,6 +282,11 @@ function detectTrap(context: TrapMarketContext) {
 }
 
 export default function App() {
+  const [appStage, setAppStage] = useState<"landing" | "disclaimer" | "auth" | "dashboard">("landing");
+  const [disclaimerChecked, setDisclaimerChecked] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
   const [instrumentType, setInstrumentType] = useState("Indices");
   const [expiries, setExpiries] = useState<string[]>([]);
@@ -263,6 +306,16 @@ export default function App() {
   const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
   const [secondaryTab, setSecondaryTab] = useState<"heatmap" | "shift" | "writers" | "basis">("heatmap");
   const [showTable, setShowTable] = useState(false);
+
+  useEffect(() => {
+    const accepted = localStorage.getItem("optionlens_disclaimer_accepted") === "1";
+    const loggedIn = localStorage.getItem("optionlens_logged_in") === "1";
+    if (!accepted) {
+      setAppStage("landing");
+      return;
+    }
+    setAppStage(loggedIn ? "dashboard" : "auth");
+  }, []);
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -358,12 +411,20 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    setExpiry("");
-    loadExpiries();
-  }, [symbol, instrumentType, useSample]);
+  async function handleManualRefresh() {
+    await checkNseHealth();
+    await loadIndexData();
+    await loadSummary();
+  }
 
   useEffect(() => {
+    if (appStage !== "dashboard") return;
+    setExpiry("");
+    loadExpiries();
+  }, [appStage, symbol, instrumentType, useSample]);
+
+  useEffect(() => {
+    if (appStage !== "dashboard") return;
     if (!expiry) return;
     checkNseHealth();
     loadIndexData();
@@ -375,7 +436,7 @@ export default function App() {
       loadSummary();
     }, REFRESH_MS);
     return () => clearInterval(timer);
-  }, [expiry, symbol, instrumentType, useSample, autoRefresh]);
+  }, [appStage, expiry, symbol, instrumentType, useSample, autoRefresh]);
 
   const filteredRows = useMemo(() => rows, [rows]);
   const rangeFilteredRows = useMemo(() => {
@@ -539,7 +600,8 @@ export default function App() {
     FINNIFTY: "NIFTY FIN SERVICE",
   };
   const indexRow = indexData.find((row) => row.indexName === indexNameMap[symbol]);
-  const spotValue = meta?.spot ?? indexRow?.last ?? null;
+  // Prefer index quote for faster visible updates; fallback to option-chain spot.
+  const spotValue = indexRow?.last ?? meta?.spot ?? null;
   const spotChange =
     indexRow && typeof indexRow.previousClose === "number"
       ? indexRow.last - indexRow.previousClose
@@ -1140,6 +1202,14 @@ export default function App() {
     return { supportTop, resistanceTop };
   }, [displayRows]);
 
+  const spotRow = useMemo(
+    () => displayRows.find((row) => String(row.strike) === String(nearestSpotStrike)) ?? null,
+    [displayRows, nearestSpotStrike]
+  );
+
+  const supportStrengthScore = dynamicLevels.supportTop[0]?.score ?? null;
+  const resistanceStrengthScore = dynamicLevels.resistanceTop[0]?.score ?? null;
+
   const breakoutModel = useMemo(() => {
     const defaultModel = {
       upProbability: 50,
@@ -1696,22 +1766,17 @@ export default function App() {
   ]);
 
   const heatmapOption = useMemo(() => {
-    const minuteMap = new Map<string, HistoryPoint>();
-    history.forEach((point) => {
-      const key = new Date(point.fetchedAtMs).toLocaleTimeString("en-IN", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      const existing = minuteMap.get(key);
-      if (!existing || point.fetchedAtMs > existing.fetchedAtMs) {
-        minuteMap.set(key, point);
-      }
-    });
-    const recent = [...minuteMap.values()]
+    const recent = [...history]
       .sort((a, b) => a.fetchedAtMs - b.fetchedAtMs)
       .slice(-120);
-    if (!recent.length || !displayRows.length) return null;
-    const xLabels = recent.map((point) => point.label);
+    if (recent.length < 2 || !displayRows.length) return null;
+    const xLabels = recent.map((point) =>
+      new Date(point.fetchedAtMs).toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    );
     const strikeLabels = [...displayRows]
       .map((row) => Number(row.strike))
       .filter((value) => !Number.isNaN(value))
@@ -1725,6 +1790,10 @@ export default function App() {
       const prevRowsByStrike = new Map(
         (prevSnap?.rows ?? []).map((row) => [String(row.strike), row] as const)
       );
+      const currentTotals = snap.rows.map(
+        (row) => (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0)
+      );
+      const maxCurrentVol = Math.max(1, ...currentTotals);
       const minuteVolDeltas = snap.rows.map((row) => {
         const prev = prevRowsByStrike.get(String(row.strike));
         const currVol = (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0);
@@ -1755,10 +1824,24 @@ export default function App() {
         const volFactor = volDelta / maxVolDelta;
         const directional =
           ((peOiDelta - ceOiDelta) / (Math.abs(peOiDelta) + Math.abs(ceOiDelta) + 1)) * 100;
-        points.push([xIdx, yIdx, Number((directional * volFactor).toFixed(2))]);
+        const pressureNow =
+          (((Number(row.PE_DeltaOI) || 0) - (Number(row.CE_DeltaOI) || 0)) /
+            (Math.abs(Number(row.PE_DeltaOI) || 0) + Math.abs(Number(row.CE_DeltaOI) || 0) + 1)) *
+          100;
+        const currentVolFactor = currVol / maxCurrentVol;
+        let rawValue = directional * volFactor;
+        if (Math.abs(rawValue) < 2) {
+          // Fallback keeps heatmap visible when minute deltas are tiny.
+          rawValue = pressureNow * (0.35 + 0.65 * currentVolFactor);
+        }
+        // Contrast boost: lifts low/mid values without blowing up large values.
+        const enhanced = Math.sign(rawValue) * Math.pow(Math.abs(rawValue), 0.78);
+        points.push([xIdx, yIdx, Number(enhanced.toFixed(2))]);
       });
     });
-    const maxAbs = Math.max(1, ...points.map((point) => Math.abs(point[2])));
+    const absValues = points.map((point) => Math.abs(point[2])).sort((a, b) => a - b);
+    const p95Index = Math.max(0, Math.floor(absValues.length * 0.95) - 1);
+    const maxAbs = Math.max(6, absValues[p95Index] ?? 6);
 
     return {
       tooltip: {
@@ -1816,10 +1899,98 @@ export default function App() {
           data: points,
           progressive: 3000,
           emphasis: { itemStyle: { borderColor: "#fff", borderWidth: 1 } },
+          markLine:
+            nearestSpotStrike !== null
+              ? {
+                  silent: true,
+                  symbol: "none",
+                  lineStyle: {
+                    color: "#f3b45a",
+                    width: 2,
+                    type: "dashed",
+                  },
+                  label: {
+                    show: true,
+                    formatter: `Spot ${nearestSpotStrike}`,
+                    color: "#111",
+                    backgroundColor: "#f3b45a",
+                    borderRadius: 4,
+                    padding: [2, 6],
+                  },
+                  data: [{ yAxis: String(nearestSpotStrike) }],
+                }
+              : undefined,
         },
       ],
     };
   }, [history, displayRows, nearestSpotStrike]);
+
+  function acceptDisclaimerAndContinue() {
+    if (!disclaimerChecked) return;
+    localStorage.setItem("optionlens_disclaimer_accepted", "1");
+    setAppStage("auth");
+  }
+
+  function handleLoginContinue() {
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      setAuthError("Enter email and password.");
+      return;
+    }
+    localStorage.setItem("optionlens_logged_in", "1");
+    setAuthError("");
+    setAppStage("dashboard");
+  }
+
+  if (appStage !== "dashboard") {
+    return (
+      <div className="gate-page">
+        <div className="gate-card">
+          {appStage === "landing" ? (
+            <>
+              <h2>OptionLens</h2>
+              <p>See what smart money is doing today.</p>
+              <button type="button" onClick={() => setAppStage("disclaimer")}>Start Free</button>
+            </>
+          ) : null}
+          {appStage === "disclaimer" ? (
+            <>
+              <h2>Risk Disclosure & Disclaimer</h2>
+              <div className="gate-scroll">
+                <p>OptionLens is an independent analytical tool. We are not affiliated with NSE or SEBI.</p>
+                <p>Trading in derivatives, futures and options involves substantial risk of loss.</p>
+                <p>The analysis is for educational and informational purposes only.</p>
+                <p>It does not constitute investment advice and does not guarantee profits.</p>
+                <p>Market data may be delayed or inaccurate. Users are fully responsible for decisions.</p>
+                <p>By continuing, you accept full responsibility and agree not to hold OptionLens liable for losses.</p>
+              </div>
+              <label className="field inline">
+                <input type="checkbox" checked={disclaimerChecked} onChange={(e) => setDisclaimerChecked(e.target.checked)} />
+                <span>I understand and agree</span>
+              </label>
+              <button type="button" disabled={!disclaimerChecked} onClick={acceptDisclaimerAndContinue}>
+                I Agree & Continue
+              </button>
+            </>
+          ) : null}
+          {appStage === "auth" ? (
+            <>
+              <h2>Login / Register</h2>
+              <label className="field">
+                <span>Email</span>
+                <input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="you@example.com" />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="Password" />
+              </label>
+              {authError ? <p className="gate-error">{authError}</p> : null}
+              <button type="button" onClick={handleLoginContinue}>Continue</button>
+            </>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -1832,6 +2003,9 @@ export default function App() {
           </p>
         </div>
         <div className="meta">
+          <button type="button" className="upgrade-disabled" disabled>
+            Upgrade to Pro (Soon)
+          </button>
           <span className="pill">React</span>
           <span className="pill">ECharts</span>
           <span className="pill">FastAPI</span>
@@ -1904,7 +2078,7 @@ export default function App() {
             />
             <span>Auto refresh</span>
           </label>
-          <button type="button" onClick={loadSummary}>
+          <button type="button" onClick={handleManualRefresh}>
             Refresh now
           </button>
         </div>
@@ -1914,10 +2088,10 @@ export default function App() {
           {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
         </div>
 
-        <div className="summary-bar">
+        <div className="summary-bar sticky-summary">
           <span className="summary-title">{indexNameMap[symbol] ?? symbol}</span>
           <span>
-            Spot: {formatNumber(spotValue)}{" "}
+            Spot: <span className="spot-main">{formatNumber(spotValue)}</span>{" "}
             {spotChange !== null ? (
               <span className={`spot-change ${spotChange >= 0 ? "up" : "down"}`}>
                 {spotChange >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(spotChange))}
@@ -1944,7 +2118,7 @@ export default function App() {
               {probabilityBias.label}
             </span>
           </span>
-          <span>Updated: {meta?.timestamp ?? lastUpdated ?? "-"}</span>
+          <span>Updated: {lastUpdated || meta?.timestamp || "-"}</span>
         </div>
 
         <div className="decision-row">
@@ -1962,31 +2136,43 @@ export default function App() {
               >
                 {probabilityBias.label}
               </span>
-              <span className="pill-inline">Conf: {probabilityBias.confidence}</span>
             </div>
             <div className="prob-track">
-              <div
-                className={`prob-up ${probabilityFill.tone}`}
-                style={{ width: `${probabilityFill.width}%` }}
-              />
+              <div className="prob-bull" style={{ width: `${breakoutModel.upProbability}%` }} />
+              <div className="prob-bear" style={{ width: `${breakoutModel.downProbability}%` }} />
             </div>
             <div className="prob-legend">
               <span>Bull {breakoutModel.upProbability}%</span>
               <span>Bear {breakoutModel.downProbability}%</span>
-              <span>Conf {breakoutModel.confidence}%</span>
+            </div>
+            <div className="confidence-meter">
+              <span>Confidence</span>
+              <div className="confidence-track">
+                <div className={`confidence-fill ${probabilityFill.tone}`} style={{ width: `${breakoutModel.confidence}%` }} />
+              </div>
+              <span>{breakoutModel.confidence}%</span>
             </div>
             <p className="decision-sub">{breakoutModel.signal}</p>
           </div>
           <div className="decision-card">
             <h3>Key Levels</h3>
             <div className="decision-kv">
-              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
-              <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
+              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)} <span className={`strength-pill ${(strengthLabel(resistanceStrengthScore)).toLowerCase()}`}>{strengthLabel(resistanceStrengthScore)}</span></span></div>
+              <div><strong>Support</strong><span>{formatNumber(supportStrike)} <span className={`strength-pill ${(strengthLabel(supportStrengthScore)).toLowerCase()}`}>{strengthLabel(supportStrengthScore)}</span></span></div>
               <div><strong>Target 1</strong><span>{formatNumber(effectiveTargetProjection.target1)}</span></div>
               <div><strong>Target 2</strong><span>{formatNumber(effectiveTargetProjection.target2)}</span></div>
               <div><strong>Target State</strong><span>{effectiveTargetProjection.status}</span></div>
               <div><strong>Target Flow</strong><span>{effectiveTargetProjection.direction ?? "-"}</span></div>
               <div><strong>Target Note</strong><span>{effectiveTargetProjection.note ?? "-"}</span></div>
+              <div><strong>ATM CE OI</strong><span>{formatNumber(spotRow?.CE_OI ?? null)} {directionArrow(spotRow?.CE_OIDir)}</span></div>
+              <div><strong>ATM PE OI</strong><span>{formatNumber(spotRow?.PE_OI ?? null)} {directionArrow(spotRow?.PE_OIDir)}</span></div>
+              <div><strong>ATM CE Vol</strong><span>{formatNumber(spotRow?.CE_Volume ?? null)} {directionArrow(spotRow?.CE_VolDir)}</span></div>
+              <div><strong>ATM PE Vol</strong><span>{formatNumber(spotRow?.PE_Volume ?? null)} {directionArrow(spotRow?.PE_VolDir)}</span></div>
+              <div><strong>Vol Method</strong><span>{apiTargetProjection?.volatilityMethod ?? "-"}</span></div>
+              <div><strong>Expected Move</strong><span>{formatNumber(apiTargetProjection?.expectedMove ?? null)}</span></div>
+              <div><strong>Blended Move</strong><span>{formatNumber(apiTargetProjection?.blendedMove ?? null)}</span></div>
+              <div><strong>ATM CE LTP</strong><span>{formatNumber(apiTargetProjection?.atmCallLtp ?? null)}</span></div>
+              <div><strong>ATM PE LTP</strong><span>{formatNumber(apiTargetProjection?.atmPutLtp ?? null)}</span></div>
               <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
               <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
               <div><strong>Trap</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
@@ -1999,6 +2185,36 @@ export default function App() {
               <div><strong>Expiry Risk</strong><span>{expiryEngine.manipulationRisk}%</span></div>
               <div><strong>Pinning</strong><span>{expiryEngine.pinningZone ? `Yes (${expiryEngine.pinningProbability}%)` : "No"}</span></div>
             </div>
+            {apiTargetProjection?.confirmation ? (
+              <div className="target-checklist">
+                <div className="checklist-block">
+                  <strong>Bull Breakout Check</strong>
+                  <span className={`pill-inline ${apiTargetProjection.confirmation.bullish?.confirmed ? "badge-bull" : "badge-bear"}`}>
+                    {apiTargetProjection.confirmation.bullish?.confirmed ? "Confirmed" : "Not Confirmed"}
+                  </span>
+                  <ul className="engine-list compact">
+                    <li>{apiTargetProjection.confirmation.bullish?.atm_oi_rising ? "✅" : "❌"} ATM OI Rising</li>
+                    <li>{apiTargetProjection.confirmation.bullish?.ce_unwinding ? "✅" : "❌"} CE Unwinding</li>
+                    <li>{apiTargetProjection.confirmation.bullish?.pe_aggressive_build ? "✅" : "❌"} PE Aggressive Build</li>
+                  </ul>
+                </div>
+                <div className="checklist-block">
+                  <strong>Bear Breakdown Check</strong>
+                  <span className={`pill-inline ${apiTargetProjection.confirmation.bearish?.confirmed ? "badge-bear" : "badge-bull"}`}>
+                    {apiTargetProjection.confirmation.bearish?.confirmed ? "Confirmed" : "Not Confirmed"}
+                  </span>
+                  <ul className="engine-list compact">
+                    <li>{apiTargetProjection.confirmation.bearish?.pe_unwinding ? "✅" : "❌"} PE Unwinding</li>
+                    <li>{apiTargetProjection.confirmation.bearish?.ce_aggressive_build ? "✅" : "❌"} CE Aggressive Build</li>
+                    <li>{apiTargetProjection.confirmation.bearish?.pcr_below_085 ? "✅" : "❌"} PCR &lt; 0.85</li>
+                  </ul>
+                </div>
+                <div className="checklist-meta">
+                  <span><strong>ATM:</strong> {formatNumber(apiTargetProjection.confirmation.atmStrike ?? null)}</span>
+                  <span><strong>PCR:</strong> {apiTargetProjection.confirmation.pcr ?? "-"}</span>
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="decision-card">
             <h3>Interpretation</h3>
@@ -2401,7 +2617,7 @@ export default function App() {
         </div>
 
         {showTable ? <div className="table-wrap">
-          <table>
+          <table className="option-chain-table">
             <thead>
               <tr>
                 <th>CE OI</th>
@@ -2485,7 +2701,7 @@ export default function App() {
 
         <div className="disclaimer">
           This dashboard is for educational and analytical purposes only. We are not SEBI registered.
-          No buy/sell recommendation.
+          No buy/sell recommendation. Market data may be delayed. Contact: <a href="mailto:contact@optionlense.com">contact@optionlense.com</a>
         </div>
       </section>
     </div>

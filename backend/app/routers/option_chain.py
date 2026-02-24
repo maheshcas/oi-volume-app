@@ -55,6 +55,8 @@ def option_chain_summary(
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
     use_sample: bool = False,
+    target_mode: str = "fixed",
+    confidence_score: float = 1.0,
 ):
     """
     Returns OI vs Volume summary. If use_sample=True, loads sample JSON instead of NSE.
@@ -82,7 +84,13 @@ def option_chain_summary(
         raise HTTPException(status_code=502, detail="No option chain data returned from NSE.")
 
     spot = records.get("underlyingValue")
-    target_projection = build_target_projection(rows, spot)
+    mode = "dynamic" if str(target_mode).lower() == "dynamic" else "fixed"
+    target_projection = build_target_projection(
+        rows,
+        spot,
+        target_mode=mode,
+        confidence_score=confidence_score,
+    )
 
     return {
         "meta": {
@@ -103,6 +111,8 @@ def option_chain_target_projection(
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
     use_sample: bool = False,
+    target_mode: str = "fixed",
+    confidence_score: float = 1.0,
 ):
     """
     Returns clean target projection using support/resistance inferred from max OI strikes.
@@ -122,7 +132,13 @@ def option_chain_target_projection(
     if not rows:
         raise HTTPException(status_code=502, detail="No option chain data returned from NSE.")
 
-    projection = build_target_projection(rows, records.get("underlyingValue"))
+    mode = "dynamic" if str(target_mode).lower() == "dynamic" else "fixed"
+    projection = build_target_projection(
+        rows,
+        records.get("underlyingValue"),
+        target_mode=mode,
+        confidence_score=confidence_score,
+    )
     if not projection:
         raise HTTPException(status_code=502, detail="Unable to derive target projection from option chain.")
 

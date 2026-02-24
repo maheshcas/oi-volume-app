@@ -192,7 +192,14 @@ def build_oi_volume_summary(nse_json):
     return rows
 
 
-def build_target_projection(rows, spot, break_buffer_ratio=0.10, midpoint_buffer_ratio=0.10):
+def build_target_projection(
+    rows,
+    spot,
+    break_buffer_ratio=0.10,
+    midpoint_buffer_ratio=0.10,
+    target_mode="fixed",
+    confidence_score=1.0,
+):
     """
     Clean target projection logic:
     - RANGE: rotate to opposite edge based on midpoint.
@@ -235,26 +242,79 @@ def build_target_projection(rows, spot, break_buffer_ratio=0.10, midpoint_buffer
     target_secondary = None
     target_note = None
 
+    # Breakout confirmation checks (doc-aligned)
+    atm_row = min(valid_rows, key=lambda r: abs(float(r.get("strike", 0)) - float(spot)))
+    ce_avg_volume = sum((r.get("CE_Volume", 0) or 0) for r in valid_rows) / max(1, len(valid_rows))
+    pe_avg_volume = sum((r.get("PE_Volume", 0) or 0) for r in valid_rows) / max(1, len(valid_rows))
+    total_ce_oi = sum((r.get("CE_OI", 0) or 0) for r in valid_rows)
+    total_pe_oi = sum((r.get("PE_OI", 0) or 0) for r in valid_rows)
+    pcr = (total_pe_oi / total_ce_oi) if total_ce_oi else None
+
+    atm_oi_rising = ((atm_row.get("CE_DeltaOI", 0) or 0) + (atm_row.get("PE_DeltaOI", 0) or 0)) > 0
+    ce_unwinding = (atm_row.get("CE_DeltaOI", 0) or 0) < 0
+    pe_aggressive_build = (atm_row.get("PE_DeltaOI", 0) or 0) > 0 and (atm_row.get("PE_Volume", 0) or 0) >= (
+        pe_avg_volume * 1.2
+    )
+
+    pe_unwinding = (atm_row.get("PE_DeltaOI", 0) or 0) < 0
+    ce_aggressive_build = (atm_row.get("CE_DeltaOI", 0) or 0) > 0 and (atm_row.get("CE_Volume", 0) or 0) >= (
+        ce_avg_volume * 1.2
+    )
+    pcr_below_085 = pcr is not None and pcr < 0.85
+
+    confirmation = {
+        "bullish": {
+            "atm_oi_rising": atm_oi_rising,
+            "ce_unwinding": ce_unwinding,
+            "pe_aggressive_build": pe_aggressive_build,
+            "confirmed": atm_oi_rising and ce_unwinding and pe_aggressive_build,
+        },
+        "bearish": {
+            "pe_unwinding": pe_unwinding,
+            "ce_aggressive_build": ce_aggressive_build,
+            "pcr_below_085": pcr_below_085,
+            "confirmed": pe_unwinding and ce_aggressive_build and pcr_below_085,
+        },
+        "pcr": round(pcr, 4) if pcr is not None else None,
+        "atmStrike": atm_row.get("strike"),
+    }
+
+    c = max(0.1, min(1.5, float(confidence_score or 1.0)))
+
+    # Volatility-adjusted expected move using ATM straddle (CE LTP + PE LTP).
+    atm_ce_ltp = float(atm_row.get("CE_LastPrice", 0) or 0)
+    atm_pe_ltp = float(atm_row.get("PE_LastPrice", 0) or 0)
+    expected_move = max(1.0, atm_ce_ltp + atm_pe_ltp)
+    structural_range = range_width
+    blended_move = (structural_range * 0.6) + (expected_move * 0.4)
+
+    if target_mode == "dynamic":
+        projected_move = blended_move * c
+    else:
+        projected_move = blended_move
+
     if state == "RANGE":
+        target_primary = round(float(spot) + expected_move, 2)
+        target_secondary = round(float(spot) - expected_move, 2)
+        direction = "Volatility range"
         if abs(float(spot) - mid_point) < midpoint_buffer:
-            target_primary = support
-            target_secondary = resistance
-            direction = "Balanced near midpoint"
-            target_note = "Both edges possible"
+            target_note = "Balanced near midpoint; both edges possible"
         elif float(spot) < mid_point:
-            target_primary = resistance
-            direction = "Upside range rotation"
+            target_note = "Bias to upside edge within range"
         else:
-            target_primary = support
-            direction = "Downside range rotation"
+            target_note = "Bias to downside edge within range"
     elif state == "BREAKOUT_UP":
         direction = "Upside breakout expansion"
-        target_primary = round(resistance + (range_width * 0.5), 2)
-        target_secondary = round(resistance + range_width, 2)
+        target_primary = round(resistance + (0.8 * projected_move), 2)
+        target_secondary = round(resistance + projected_move, 2)
+        if not confirmation["bullish"]["confirmed"]:
+            target_note = "Possible bull trap: breakout confirmation weak"
     else:
         direction = "Downside breakout expansion"
-        target_primary = round(support - (range_width * 0.5), 2)
-        target_secondary = round(support - range_width, 2)
+        target_primary = round(support - (0.8 * projected_move), 2)
+        target_secondary = round(support - projected_move, 2)
+        if not confirmation["bearish"]["confirmed"]:
+            target_note = "Possible bear trap: breakdown confirmation weak"
 
     return {
         "state": state,
@@ -267,10 +327,20 @@ def build_target_projection(rows, spot, break_buffer_ratio=0.10, midpoint_buffer
         "distanceToResistance": round(float(resistance) - float(spot), 2),
         "breakBuffer": round(break_buffer, 2),
         "midpointBuffer": round(midpoint_buffer, 2),
+        "targetMode": target_mode,
+        "confidenceScore": round(c, 2),
+        "volatilityMethod": "atm_straddle",
+        "atmCallLtp": round(atm_ce_ltp, 2),
+        "atmPutLtp": round(atm_pe_ltp, 2),
+        "expectedMove": round(expected_move, 2),
+        "structuralRange": round(structural_range, 2),
+        "blendedMove": round(blended_move, 2),
+        "projectedMove": round(projected_move, 2),
         "direction": direction,
         "targetPrimary": target_primary,
         "targetSecondary": target_secondary,
         "targetNote": target_note,
+        "confirmation": confirmation,
         "source": {
             "supportFrom": "Highest PE OI strike",
             "resistanceFrom": "Highest CE OI strike",
