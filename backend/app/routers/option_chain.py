@@ -9,6 +9,17 @@ from app.services.nse_client import (
     fetch_option_chain_contract_info,
 )
 from app.services.parser import build_oi_volume_summary, build_target_projection
+from app.services.decision_engine import build_decision_input, master_decision_engine
+from app.engines.data_fetcher import fetch_option_chain_data
+from app.engines.preprocessing import normalize_chain, build_feature_frame
+from app.engines.oi_analyzer import run_oi_analysis
+from app.engines.volume_analyzer import run_volume_analysis
+from app.engines.sr_engine import run_sr_engine
+from app.engines.breakout_engine import run_breakout_engine
+from app.engines.trap_engine import run_trap_engine
+from app.engines.target_engine import run_target_engine
+from app.engines.regime_engine import run_regime_engine
+from app.engines.decision_engine import master_arbitration_layer
 
 router = APIRouter()
 
@@ -91,6 +102,11 @@ def option_chain_summary(
         target_mode=mode,
         confidence_score=confidence_score,
     )
+    support = target_projection.get("support") if target_projection else None
+    resistance = target_projection.get("resistance") if target_projection else None
+    break_buffer = float(target_projection.get("breakBuffer", 0) or 0) if target_projection else 0.0
+    decision_input = build_decision_input(rows, spot, support, resistance, break_buffer)
+    master_decision = master_decision_engine(decision_input)
 
     return {
         "meta": {
@@ -101,6 +117,8 @@ def option_chain_summary(
             "timestamp": records.get("timestamp"),
         },
         "target_projection": target_projection,
+        "decision_input": decision_input,
+        "master_decision": master_decision,
         "rows": rows,
     }
 
@@ -249,3 +267,85 @@ def index_data(names: Optional[str] = None):
     requested = {name.strip().upper() for name in names.split(",") if name.strip()}
     filtered = [row for row in data if str(row.get("indexName", "")).upper() in requested]
     return {"data": filtered}
+
+
+@router.get("/v2/intelligence/summary")
+def intelligence_summary_v2(
+    symbol: str = "NIFTY",
+    expiry: Optional[str] = None,
+    instrument_type: str = "Indices",
+    use_sample: bool = False,
+):
+    """
+    Modular intelligence pipeline (v2):
+    data_fetcher -> preprocessing -> analyzers/engines -> arbitration.
+    """
+    if expiry == "":
+        expiry = None
+
+    try:
+        raw = _load_sample() if use_sample else fetch_option_chain_data(
+            symbol=symbol, expiry=expiry, instrument_type=instrument_type
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    records = raw.get("records", {})
+    rows = build_oi_volume_summary(raw)
+    if not rows:
+        raise HTTPException(status_code=502, detail="No option chain data returned from NSE.")
+
+    normalized = normalize_chain(rows)
+    features = build_feature_frame(
+        normalized,
+        spot=records.get("underlyingValue"),
+        symbol=symbol,
+        expiry=expiry,
+        timestamp=records.get("timestamp"),
+    )
+
+    oi = run_oi_analysis(features)
+    volume = run_volume_analysis(features)
+    sr = run_sr_engine(features)
+    breakout = run_breakout_engine(features, sr)
+    trap = run_trap_engine(features, breakout, oi, volume)
+    target = run_target_engine(features, sr, breakout, oi, trap, volume)
+    regime = run_regime_engine(oi, volume, breakout, trap)
+    decision = master_arbitration_layer(oi, volume, breakout, trap, regime)
+
+    return {
+        "meta": features["meta"],
+        "market_state": {
+            "bias": decision["bias"],
+            "regime": regime.get("regime"),
+            "probability_bull": decision["probability_bull"],
+            "probability_bear": decision["probability_bear"],
+            "confidence": decision["confidence"],
+            "trap_risk_pct": trap.get("trap_probability_pct"),
+            "explanation": decision["explanation"],
+        },
+        "levels": {
+            "resistance": sr.get("resistance"),
+            "support": sr.get("support"),
+            "target_1": target.get("target_1"),
+            "target_2": target.get("target_2"),
+            "acceleration_zone": target.get("acceleration_zone"),
+        },
+        "signals": {
+            "oi": oi,
+            "volume": volume,
+            "breakout": breakout,
+            "trap": trap,
+        },
+        "advanced": {
+            "writers_activity": {
+                "ce_top": sr.get("resistance", {}).get("levels", [])[:3],
+                "pe_top": sr.get("support", {}).get("levels", [])[:3],
+            },
+            "futures_basis": {"basis": None, "type": "Unavailable"},
+            "shift_tracker": {"support_shift": 0, "resistance_shift": 0},
+            "pinning_pct": 0,
+            "expiry_risk": trap.get("trap_probability_pct", 0),
+            "institutional_zones": [sr.get("support", {}).get("strike"), sr.get("resistance", {}).get("strike")],
+        },
+    }

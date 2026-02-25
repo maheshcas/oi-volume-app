@@ -100,6 +100,25 @@ type HistoryPoint = {
   rows: SummaryRow[];
 };
 
+type IntelligenceResponse = {
+  market_state?: {
+    bias: "Bullish" | "Bearish" | "Neutral";
+    regime: string;
+    probability_bull: number;
+    probability_bear: number;
+    confidence: number;
+    trap_risk_pct: number;
+    explanation: string;
+  };
+  levels?: {
+    support?: { strike?: number; score?: number };
+    resistance?: { strike?: number; score?: number };
+    target_1?: number | null;
+    target_2?: number | null;
+    acceleration_zone?: string | null;
+  };
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const REFRESH_MS = 15000;
 const HEATMAP_WINDOW_MINUTES = 120;
@@ -304,8 +323,10 @@ export default function App() {
   const [indexData, setIndexData] = useState<IndexRow[]>([]);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
+  const [intelligence, setIntelligence] = useState<IntelligenceResponse | null>(null);
   const [secondaryTab, setSecondaryTab] = useState<"heatmap" | "shift" | "writers" | "basis">("heatmap");
   const [showTable, setShowTable] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     const accepted = localStorage.getItem("optionlens_disclaimer_accepted") === "1";
@@ -376,6 +397,17 @@ export default function App() {
         return next.slice(-480);
       });
       setStatus(`Loaded ${data.rows?.length ?? 0} strikes.`);
+
+      // v2 intelligence (single source of truth for bias/regime/probabilities)
+      try {
+        const resV2 = await fetch(`${API_BASE}/v2/intelligence/summary?${params}`);
+        if (resV2.ok) {
+          const dataV2 = (await resV2.json()) as IntelligenceResponse;
+          setIntelligence(dataV2);
+        }
+      } catch {
+        // Keep existing UI state if v2 call fails.
+      }
     } catch {
       setStatus(LIVE_DATA_UNAVAILABLE_MSG);
       // Preserve last valid snapshot instead of clearing UI.
@@ -606,17 +638,6 @@ export default function App() {
     indexRow && typeof indexRow.previousClose === "number"
       ? indexRow.last - indexRow.previousClose
       : null;
-  const bias =
-    totals.ceOi > totals.peOi
-      ? totals.ceDoi >= totals.peDoi
-        ? "Bearish (CE buildup)"
-        : "Bearish (CE dominance)"
-      : totals.peOi > totals.ceOi
-        ? totals.peDoi >= totals.ceDoi
-          ? "Bullish (PE buildup)"
-          : "Bullish (PE dominance)"
-        : "Neutral";
-
   const strikesSorted = useMemo(
     () => [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike)),
     [displayRows]
@@ -685,15 +706,6 @@ export default function App() {
     return best?.strike ?? null;
   }, [displayRows]);
 
-  const targetLevel = useMemo(() => {
-    if (bias.startsWith("Bullish")) return resistanceStrike;
-    if (bias.startsWith("Bearish")) return supportStrike;
-    return null;
-  }, [bias, resistanceStrike, supportStrike]);
-
-  const marketState =
-    pcr === null ? "UNKNOWN" : pcr > 1.15 ? "BULLISH" : pcr < 0.85 ? "BEARISH" : "RANGE";
-
   const callMiniOption = useMemo(
     () => ({
       tooltip: { trigger: "axis" },
@@ -721,26 +733,6 @@ export default function App() {
     }),
     [displayStrikes, displayPeOi, displayPeVol]
   );
-
-  const interpretationSummary = useMemo(() => {
-    const count = (key: "CE_Interpretation" | "PE_Interpretation") => {
-      const map = new Map<string, number>();
-      displayRows.forEach((row) => {
-        const value = row[key] ?? "Mixed";
-        map.set(value, (map.get(value) ?? 0) + 1);
-      });
-      let top = "Mixed";
-      let topCount = 0;
-      map.forEach((val, k) => {
-        if (val > topCount) {
-          top = k;
-          topCount = val;
-        }
-      });
-      return top;
-    };
-    return { ce: count("CE_Interpretation"), pe: count("PE_Interpretation") };
-  }, [displayRows]);
 
   const highlight = useMemo(() => {
     const pickThreshold = (values: number[]) => {
@@ -998,149 +990,6 @@ export default function App() {
       ceVol: max(displayRows.map((row) => Number(row.CE_Volume) || 0)),
       peVol: max(displayRows.map((row) => Number(row.PE_Volume) || 0)),
     };
-  }, [displayRows]);
-
-  const marketSummary = useMemo(() => {
-    const sorted = [...displayRows]
-      .map((row) => Number(row.strike))
-      .filter((value) => !Number.isNaN(value))
-      .sort((a, b) => a - b);
-    if (!sorted.length) {
-      return {
-        marketBias: "Neutral",
-        confidence: "Low",
-        reasons: ["Insufficient data"],
-        tag: null as string | null,
-        keyLevels: { support: supportStrike, resistance: resistanceStrike },
-      };
-    }
-
-    const atmIndex = sorted.findIndex((strike) => String(strike) === String(nearestSpotStrike));
-    const center = atmIndex >= 0 ? atmIndex : Math.floor(sorted.length / 2);
-    const start = Math.max(0, center - 3);
-    const end = Math.min(sorted.length, start + 7);
-    const atmWindow = new Set(sorted.slice(start, end).map(String));
-    const atmRows = displayRows.filter((row) => atmWindow.has(String(row.strike)));
-
-    let total_ce_oi_change = 0;
-    let total_pe_oi_change = 0;
-    let ce_short_buildup_count = 0;
-    let pe_short_buildup_count = 0;
-    let ce_long_buildup_count = 0;
-    let pe_long_buildup_count = 0;
-    let ce_short_covering_count = 0;
-    let pe_short_covering_count = 0;
-    let high_volume_strikes = 0;
-
-    atmRows.forEach((row) => {
-      total_ce_oi_change += Number(row.CE_DeltaOI) || 0;
-      total_pe_oi_change += Number(row.PE_DeltaOI) || 0;
-
-      if ((row.CE_Interpretation || "").includes("Short Build-up")) ce_short_buildup_count += 1;
-      if ((row.PE_Interpretation || "").includes("Short Build-up")) pe_short_buildup_count += 1;
-      if ((row.CE_Interpretation || "").includes("Long Build-up")) ce_long_buildup_count += 1;
-      if ((row.PE_Interpretation || "").includes("Long Build-up")) pe_long_buildup_count += 1;
-      if ((row.CE_Interpretation || "").includes("Short Covering")) ce_short_covering_count += 1;
-      if ((row.PE_Interpretation || "").includes("Short Covering")) pe_short_covering_count += 1;
-
-      if (row.CE_VolDir === "↑" || row.PE_VolDir === "↑") high_volume_strikes += 1;
-    });
-
-    const call_writing_score =
-      ce_short_buildup_count + (total_ce_oi_change > total_pe_oi_change ? 1 : 0);
-    const put_writing_score =
-      pe_short_buildup_count + (total_pe_oi_change > total_ce_oi_change ? 1 : 0);
-
-    const bullish_pressure = pe_short_covering_count + ce_long_buildup_count;
-    const bearish_pressure = ce_short_covering_count + pe_long_buildup_count;
-
-    const spot_change_pct = indexRow?.percChange ?? 0;
-    const approxEqual = (a: number, b: number) => Math.abs(a - b) <= 1;
-
-    let marketBias = "Neutral";
-    const reasons: string[] = [];
-
-    if (call_writing_score >= 3 && put_writing_score <= 1 && bullish_pressure === 0) {
-      marketBias = "Strongly Bearish";
-      reasons.push("Heavy call writing near ATM");
-      reasons.push("Limited put support below spot");
-      reasons.push("No signs of short covering");
-    } else if (call_writing_score > put_writing_score && bearish_pressure > bullish_pressure) {
-      marketBias = "Bearish";
-      reasons.push("Call writers dominating near spot");
-      reasons.push("Put support weakening");
-      reasons.push("Selling pressure visible");
-    } else if (
-      approxEqual(call_writing_score, put_writing_score) &&
-      approxEqual(bullish_pressure, bearish_pressure) &&
-      Math.abs(spot_change_pct) <= 0.4
-    ) {
-      marketBias = "Range-Bound";
-      reasons.push("Both call and put writing visible");
-      reasons.push("No aggressive build-up");
-      reasons.push("Price lacks directional conviction");
-    } else if (put_writing_score > call_writing_score && bullish_pressure > bearish_pressure) {
-      marketBias = "Bullish";
-      reasons.push("Strong put writing near support");
-      reasons.push("Call short covering visible");
-      reasons.push("Buyers gaining control");
-    } else if (put_writing_score >= 3 && call_writing_score <= 1 && bearish_pressure === 0) {
-      marketBias = "Strongly Bullish";
-      reasons.push("Aggressive put writing");
-      reasons.push("Calls being covered rapidly");
-      reasons.push("Strong downside support formed");
-    } else {
-      reasons.push("No dominant build-up signals near spot");
-    }
-
-    const tag =
-      ce_short_covering_count >= 2 && pe_short_covering_count >= 2 && high_volume_strikes >= 3
-        ? "Volatility Expansion Possible"
-        : null;
-
-    const confidenceScore = Math.min(5, Math.abs(call_writing_score - put_writing_score)) * 20;
-    const confidence = confidenceScore >= 80 ? "High" : confidenceScore >= 50 ? "Medium" : "Low";
-
-    return {
-      marketBias,
-      reasons,
-      tag,
-      confidence,
-      keyLevels: { support: supportStrike, resistance: resistanceStrike },
-    };
-  }, [displayRows, nearestSpotStrike, indexRow?.percChange, supportStrike, resistanceStrike]);
-
-  const topInterpretation = useMemo(() => {
-    let best = null as null | {
-      strike: number;
-      optionType: "CE" | "PE";
-      label: string;
-      desc: string;
-      score: number;
-    };
-    displayRows.forEach((row) => {
-      const ceScore = row.CE_ConfidenceScore ?? 0;
-      if (!best || ceScore > best.score) {
-        best = {
-          strike: row.strike,
-          optionType: "CE",
-          label: row.CE_Interpretation ?? "Mixed",
-          desc: row.CE_InterpretationDesc ?? "Signals are not aligned.",
-          score: ceScore,
-        };
-      }
-      const peScore = row.PE_ConfidenceScore ?? 0;
-      if (!best || peScore > best.score) {
-        best = {
-          strike: row.strike,
-          optionType: "PE",
-          label: row.PE_Interpretation ?? "Mixed",
-          desc: row.PE_InterpretationDesc ?? "Signals are not aligned.",
-          score: peScore,
-        };
-      }
-    });
-    return best;
   }, [displayRows]);
 
   const atmInfo = useMemo(() => {
@@ -1608,18 +1457,18 @@ export default function App() {
     return { label, confidence };
   }, [breakoutModel]);
 
-  const probabilityFill = useMemo(() => {
-    if (probabilityBias.label === "Bearish") {
-      return { width: breakoutModel.downProbability, tone: "bear" as const };
-    }
-    if (probabilityBias.label === "Bullish") {
-      return { width: breakoutModel.upProbability, tone: "bull" as const };
-    }
-    return {
-      width: Math.max(breakoutModel.upProbability, breakoutModel.downProbability),
-      tone: "neutral" as const,
-    };
-  }, [probabilityBias.label, breakoutModel.upProbability, breakoutModel.downProbability]);
+  const displayBias = intelligence?.market_state?.bias ?? probabilityBias.label;
+  const displayBullProbability = intelligence?.market_state?.probability_bull ?? breakoutModel.upProbability;
+  const displayBearProbability = intelligence?.market_state?.probability_bear ?? breakoutModel.downProbability;
+  const displayConfidence = intelligence?.market_state?.confidence ?? breakoutModel.confidence;
+  const displayRegime = intelligence?.market_state?.regime ?? "Range";
+  const displayTrapRiskPct = intelligence?.market_state?.trap_risk_pct ?? intradayEngine.trapScore;
+  const displayDecisionText = intelligence?.market_state?.explanation ?? breakoutModel.signal;
+  const displaySupport = intelligence?.levels?.support?.strike ?? supportStrike;
+  const displayResistance = intelligence?.levels?.resistance?.strike ?? resistanceStrike;
+  const displayTarget1 = intelligence?.levels?.target_1 ?? effectiveTargetProjection.target1;
+  const displayTarget2 = intelligence?.levels?.target_2 ?? effectiveTargetProjection.target2;
+  const displayAccelerationZone = intelligence?.levels?.acceleration_zone ?? "-";
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -2108,14 +1957,15 @@ export default function App() {
           <span>Phase: {intradayEngine.sessionPhase}</span>
           <span>PCR: {pcr ? pcr.toFixed(2) : "-"}</span>
           <span>Max Pain: {formatNumber(maxPainStrike)}</span>
+          <span>Regime: {displayRegime}</span>
           <span>
             Projection:{" "}
             <span className={`trend-pill ${projectionState.tone}`}>{projectionState.label}</span>
           </span>
           <span>
             Trend:{" "}
-            <span className={`trend-pill ${probabilityBias.label === "Bullish" ? "bull" : probabilityBias.label === "Bearish" ? "bear" : "neutral"}`}>
-              {probabilityBias.label}
+            <span className={`trend-pill ${displayBias === "Bullish" ? "bull" : displayBias === "Bearish" ? "bear" : "neutral"}`}>
+              {displayBias}
             </span>
           </span>
           <span>Updated: {lastUpdated || meta?.timestamp || "-"}</span>
@@ -2127,40 +1977,44 @@ export default function App() {
             <div className="decision-main">
               <span
                 className={`bias-pill ${
-                  probabilityBias.label === "Bullish"
+                  displayBias === "Bullish"
                     ? "bull"
-                    : probabilityBias.label === "Bearish"
+                    : displayBias === "Bearish"
                       ? "bear"
                       : "neutral"
                 }`}
               >
-                {probabilityBias.label}
+                {displayBias}
               </span>
             </div>
             <div className="prob-track">
-              <div className="prob-bull" style={{ width: `${breakoutModel.upProbability}%` }} />
-              <div className="prob-bear" style={{ width: `${breakoutModel.downProbability}%` }} />
+              <div className="prob-bull" style={{ width: `${displayBullProbability}%` }} />
+              <div className="prob-bear" style={{ width: `${displayBearProbability}%` }} />
             </div>
             <div className="prob-legend">
-              <span>Bull {breakoutModel.upProbability}%</span>
-              <span>Bear {breakoutModel.downProbability}%</span>
+              <span>Bull {displayBullProbability}%</span>
+              <span>Bear {displayBearProbability}%</span>
             </div>
             <div className="confidence-meter">
               <span>Confidence</span>
               <div className="confidence-track">
-                <div className={`confidence-fill ${probabilityFill.tone}`} style={{ width: `${breakoutModel.confidence}%` }} />
+                <div className={`confidence-fill ${displayBias === "Bullish" ? "bull" : displayBias === "Bearish" ? "bear" : "neutral"}`} style={{ width: `${displayConfidence}%` }} />
               </div>
-              <span>{breakoutModel.confidence}%</span>
+              <span>{displayConfidence}%</span>
             </div>
-            <p className="decision-sub">{breakoutModel.signal}</p>
+            <div className="prob-legend">
+              <span>Trap Risk {displayTrapRiskPct}%</span>
+            </div>
+            <p className="decision-sub">{displayDecisionText}</p>
           </div>
           <div className="decision-card">
             <h3>Key Levels</h3>
             <div className="decision-kv">
-              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)} <span className={`strength-pill ${(strengthLabel(resistanceStrengthScore)).toLowerCase()}`}>{strengthLabel(resistanceStrengthScore)}</span></span></div>
-              <div><strong>Support</strong><span>{formatNumber(supportStrike)} <span className={`strength-pill ${(strengthLabel(supportStrengthScore)).toLowerCase()}`}>{strengthLabel(supportStrengthScore)}</span></span></div>
-              <div><strong>Target 1</strong><span>{formatNumber(effectiveTargetProjection.target1)}</span></div>
-              <div><strong>Target 2</strong><span>{formatNumber(effectiveTargetProjection.target2)}</span></div>
+              <div><strong>Resistance</strong><span>{formatNumber(displayResistance)} <span className={`strength-pill ${(strengthLabel(resistanceStrengthScore)).toLowerCase()}`}>{strengthLabel(resistanceStrengthScore)}</span></span></div>
+              <div><strong>Support</strong><span>{formatNumber(displaySupport)} <span className={`strength-pill ${(strengthLabel(supportStrengthScore)).toLowerCase()}`}>{strengthLabel(supportStrengthScore)}</span></span></div>
+              <div><strong>Target 1</strong><span>{formatNumber(displayTarget1)}</span></div>
+              <div><strong>Target 2</strong><span>{formatNumber(displayTarget2)}</span></div>
+              <div><strong>Acceleration Zone</strong><span>{displayAccelerationZone}</span></div>
               <div><strong>Target State</strong><span>{effectiveTargetProjection.status}</span></div>
               <div><strong>Target Flow</strong><span>{effectiveTargetProjection.direction ?? "-"}</span></div>
               <div><strong>Target Note</strong><span>{effectiveTargetProjection.note ?? "-"}</span></div>
@@ -2175,7 +2029,7 @@ export default function App() {
               <div><strong>ATM PE LTP</strong><span>{formatNumber(apiTargetProjection?.atmPutLtp ?? null)}</span></div>
               <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
               <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
-              <div><strong>Trap</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
+              <div><strong>Trap</strong><span>{displayTrapRiskPct}%</span></div>
               <div><strong>Institutional</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
               <div><strong>Acceleration</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
               <div><strong>Scalp Momentum</strong><span>{scalpingEngine.momentumScore}%</span></div>
@@ -2217,171 +2071,17 @@ export default function App() {
             ) : null}
           </div>
           <div className="decision-card">
-            <h3>Interpretation</h3>
-            <div className="decision-main">
-              <span className="pill-inline">{interpretationNarrative.title}</span>
-              <span className="pill-inline">Conf: {interpretationNarrative.confidence}%</span>
-            </div>
+            <h3>Today&apos;s Playbook</h3>
             <ul className="engine-list">
-              {interpretationNarrative.lines.map((item) => (
-                <li key={`interp-${item}`}>{item}</li>
-              ))}
+              <li>{displayDecisionText}</li>
+              {displaySupport !== null && displayResistance !== null ? (
+                <li>
+                  Range {formatNumber(displaySupport)} - {formatNumber(displayResistance)}. Buy near support or sell near resistance unless ATM volume expands.
+                </li>
+              ) : null}
+              <li>{interpretationNarrative.lines[0] ?? "Wait for cleaner OI and volume alignment."}</li>
             </ul>
           </div>
-        </div>
-
-        <div className="auto-interpret">
-          <div className="market-summary">
-            <h4>
-              Market Summary{" "}
-              <span
-                className={`bias-pill ${
-                  marketSummary.marketBias.toLowerCase().includes("bullish")
-                    ? "bull"
-                    : marketSummary.marketBias.toLowerCase().includes("bearish")
-                      ? "bear"
-                      : "neutral"
-                }`}
-              >
-                {marketSummary.marketBias}
-              </span>
-              <span className="pill-inline">Confidence: {marketSummary.confidence}</span>
-            </h4>
-            <ul>
-              {marketSummary.reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-              {marketSummary.tag ? <li>⚠ {marketSummary.tag}</li> : null}
-            </ul>
-            <div className="key-levels">
-              <span>Resistance: {formatNumber(marketSummary.keyLevels.resistance)}</span>
-              <span>Support: {formatNumber(marketSummary.keyLevels.support)}</span>
-            </div>
-          </div>
-          <div className="interpret-card">
-            <h4>Interpretation</h4>
-            <div className="interpret-label">
-              {topInterpretation
-                ? `${topInterpretation.label} at ${formatNumber(topInterpretation.strike)} ${topInterpretation.optionType}`
-                : "Mixed"}
-            </div>
-            <ul>
-              <li>{topInterpretation?.desc ?? "Signals are not aligned."}</li>
-              <li>Confidence: {topInterpretation?.score ?? 0}</li>
-            </ul>
-          </div>
-        </div>
-
-        <div className="impact-grid">
-          <div className="impact-card">
-            <h3>Intraday Decision Engine</h3>
-            <div className="basis-grid">
-              <div><strong>Session</strong><span>{intradayEngine.sessionPhase}</span></div>
-              <div><strong>Trap Detector</strong><span className={intradayEngine.trapLikely ? "down" : "up"}>{intradayEngine.trapLikely ? "Likely false move" : "No trap setup"}</span></div>
-              <div><strong>Shift Tracker</strong><span>{intradayEngine.shiftSummary}</span></div>
-            </div>
-            <ul className="engine-list">
-              {intradayEngine.engineAlerts.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="impact-card">
-            <h3>Breakout Probability</h3>
-            <div className="prob-track">
-              <div className="prob-up" style={{ width: `${breakoutModel.upProbability}%` }} />
-            </div>
-            <div className="prob-legend">
-              <span>Bullish: {breakoutModel.upProbability}%</span>
-              <span>Bearish: {breakoutModel.downProbability}%</span>
-              <span>Confidence: {breakoutModel.confidence}%</span>
-            </div>
-            <p className="impact-signal">{breakoutModel.signal}</p>
-            <ul>
-              {breakoutModel.factors.map((factor) => (
-                <li key={factor}>{factor}</li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="impact-card">
-            <h3>Dynamic S/R Score</h3>
-            <div className="sr-columns">
-              <div>
-                <strong>Support (PE)</strong>
-                {dynamicLevels.supportTop.map((entry) => (
-                  <div key={`sup-${entry.strike}`} className="sr-item support">
-                    <span>{formatNumber(entry.strike)}</span>
-                    <span>{entry.score}</span>
-                  </div>
-                ))}
-              </div>
-              <div>
-                <strong>Resistance (CE)</strong>
-                {dynamicLevels.resistanceTop.map((entry) => (
-                  <div key={`res-${entry.strike}`} className="sr-item resistance">
-                    <span>{formatNumber(entry.strike)}</span>
-                    <span>{entry.score}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="impact-card">
-            <h3>Top Writers Activity (Proxy)</h3>
-            <div className="writers-grid">
-              <div>
-                <strong>Call Writers (CE)</strong>
-                {topWriters.ce.length ? (
-                  topWriters.ce.map((item) => (
-                    <div key={`cew-${item.strike}`} className="writer-item ce">
-                      <span>{formatNumber(item.strike)}</span>
-                      <span>OI+ {formatNumber(item.doi)}</span>
-                      <span>Vol {formatNumber(item.volume)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="writer-empty">No large CE writing bursts</div>
-                )}
-              </div>
-              <div>
-                <strong>Put Writers (PE)</strong>
-                {topWriters.pe.length ? (
-                  topWriters.pe.map((item) => (
-                    <div key={`pew-${item.strike}`} className="writer-item pe">
-                      <span>{formatNumber(item.strike)}</span>
-                      <span>OI+ {formatNumber(item.doi)}</span>
-                      <span>Vol {formatNumber(item.volume)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="writer-empty">No large PE writing bursts</div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="impact-card">
-            <h3>Futures Basis Confirmation</h3>
-            <div className="basis-grid">
-              <div><strong>Method</strong><span>{futuresBasis.method}</span></div>
-              <div><strong>Synthetic Future</strong><span>{formatNumber(futuresBasis.syntheticFuture)}</span></div>
-              <div><strong>Basis</strong><span>{futuresBasis.basis !== null ? `${formatNumber(futuresBasis.basis)} (${futuresBasis.basisPct?.toFixed(2)}%)` : "-"}</span></div>
-              <div><strong>Status</strong><span className={`basis-status ${futuresBasis.basisType.toLowerCase()}`}>{futuresBasis.basisType}</span></div>
-              <div><strong>Directional Check</strong><span>{futuresBasis.direction}</span></div>
-            </div>
-          </div>
-        </div>
-
-        <div className="chart-card heatmap-card">
-          <h3>OI + Volume Change Heatmap (rolling {HEATMAP_WINDOW_MINUTES}m)</h3>
-          {heatmapOption ? (
-            <ReactECharts option={heatmapOption} style={{ height: 320 }} />
-          ) : (
-            <p className="heatmap-empty">Collecting intraday snapshots. Heatmap appears after a few refreshes.</p>
-          )}
         </div>
 
         <div className="dashboard-grid">
@@ -2399,8 +2099,8 @@ export default function App() {
                 const ceVol = Number(row.CE_Volume) || 0;
                 const peVol = Number(row.PE_Volume) || 0;
                 const isSpot = String(row.strike) === String(nearestSpotStrike);
-                const isRes = String(row.strike) === String(resistanceStrike);
-                const isSup = String(row.strike) === String(supportStrike);
+                const isRes = String(row.strike) === String(displayResistance);
+                const isSup = String(row.strike) === String(displaySupport);
                 const interpret =
                   row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
                     ? row.PE_Interpretation
@@ -2468,54 +2168,31 @@ export default function App() {
             <h3>Put OI & Volume</h3>
             <ReactECharts option={putMiniOption} style={{ height: 240 }} />
             <div className="mini-summary">
-              <div><strong>Support</strong><span>{formatNumber(supportStrike)}</span></div>
-              <div><strong>Resistance</strong><span>{formatNumber(resistanceStrike)}</span></div>
-              <div><strong>Target</strong><span>{targetLevel ? formatNumber(targetLevel) : "Range"}</span></div>
+              <div><strong>Support</strong><span>{formatNumber(displaySupport)}</span></div>
+              <div><strong>Resistance</strong><span>{formatNumber(displayResistance)}</span></div>
+              <div><strong>Target</strong><span>{formatNumber(displayTarget1)}</span></div>
               <div><strong>Alerts</strong><span>{alertItems[0] ?? "-"}</span></div>
               <div><strong>ATM</strong><span>{formatNumber(atmInfo.strike)}</span></div>
             </div>
           </div>
           <div className="dash-card signal-card">
-            <h3>Market Signals</h3>
-            <div className="signal-row support">
-              <span className="dot support" /> Support:
-              <span className="pill-inline">{formatNumber(supportStrike)} PE</span>
-            </div>
-            <div className="signal-row resistance">
-              <span className="dot resistance" /> Resistance:
-              <span className="pill-inline">{formatNumber(resistanceStrike)} CE</span>
-            </div>
-            <div className="signal-row battle">
-              <span className="dot battle" /> Max Volume:
-              <span className="pill-inline">{formatNumber(maxVolumeStrike)}</span>
-            </div>
-            <div className="signal-row">
-              Trend: <span className="pill-inline">{marketState}</span>
-            </div>
-            <div className="signal-row">
-              CE: <span className="pill-inline">{interpretationSummary.ce}</span>
-            </div>
-            <div className="signal-row">
-              PE: <span className="pill-inline">{interpretationSummary.pe}</span>
-            </div>
-            <div className="signal-section">Actions</div>
-            <div className="signal-row">Watch for OI Unwinding</div>
-            <div className="signal-row">
-              Range:
-              <span className="pill-inline">
-                {formatNumber(supportStrike)} - {formatNumber(resistanceStrike)}
-              </span>
-            </div>
+            <h3>Execution Notes</h3>
+            {alertItems.slice(0, 4).map((item) => (
+              <div key={item} className="signal-row">{item}</div>
+            ))}
+            <div className="signal-section">ATM</div>
+            <div className="signal-row">Strike: <span className="pill-inline">{formatNumber(atmInfo.strike)}</span></div>
+            <div className="signal-row">Bias: <span className="pill-inline">{atmInfo.bias}</span></div>
           </div>
         </div>
 
-        <div className="legend">
-          <span className="legend-item resistance">Highest CE OI =&gt; Resistance</span>
-          <span className="legend-item support">Highest PE OI =&gt; Support</span>
-          <span className="legend-item battle">Highest Volume =&gt; Battle zone</span>
+        <div className="advanced-wrap">
+          <button type="button" className="advanced-toggle" onClick={() => setShowAdvanced((prev) => !prev)}>
+            Advanced Diagnostics {showAdvanced ? "Hide" : "Show"}
+          </button>
         </div>
 
-        <div className="secondary-tabs">
+        {showAdvanced ? <div className="secondary-tabs">
           <div className="tab-head">
             <button type="button" className={secondaryTab === "heatmap" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("heatmap")}>Heatmap</button>
             <button type="button" className={secondaryTab === "shift" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("shift")}>Shift</button>
@@ -2581,7 +2258,7 @@ export default function App() {
               </div>
             </div>
           ) : null}
-        </div>
+        </div> : null}
 
         <div className="alert-bar">
           {combinedAlerts.map((item) => (

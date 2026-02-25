@@ -1372,6 +1372,29 @@ button:hover {
   font-size: 13px;
 }
 
+.advanced-wrap {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.advanced-toggle {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+
+.advanced-toggle:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.chart-grid {
+  display: none;
+}
+
 .table-wrap {
   margin-top: 18px;
   overflow-x: auto;
