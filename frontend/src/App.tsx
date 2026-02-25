@@ -1796,7 +1796,7 @@ export default function App() {
         <div className="gate-card">
           {appStage === "landing" ? (
             <>
-              <h2>OptionLens</h2>
+              <img src="/optionlens-logo.svg" alt="OptionLens" className="brand-logo" />
               <p>See what smart money is doing today.</p>
               <button type="button" onClick={() => setAppStage("disclaimer")}>Start Free</button>
             </>
@@ -1846,7 +1846,7 @@ export default function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">Intraday Dashboard</p>
-          <h1>Optionlens</h1>
+          <img src="/optionlens-logo.svg" alt="OptionLens" className="brand-logo" />
           <p className="subhead">
             Live CE/PE open interest and volume across strikes. Auto refreshes every 15s.
           </p>

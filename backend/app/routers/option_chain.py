@@ -311,7 +311,19 @@ def intelligence_summary_v2(
     trap = run_trap_engine(features, breakout, oi, volume)
     target = run_target_engine(features, sr, breakout, oi, trap, volume)
     regime = run_regime_engine(oi, volume, breakout, trap)
-    decision = master_arbitration_layer(oi, volume, breakout, trap, regime)
+    pcr = float(features.get("pcr") or 1.0)
+    pcr_bias_score = max(-1.0, min(1.0, (pcr - 1.0)))
+    atr_threshold = float(breakout.get("atr_threshold") or 0.0)
+    volatility_factor = max(0.0, min(1.0, atr_threshold / 200.0))
+    decision = master_arbitration_layer(
+        oi,
+        volume,
+        breakout,
+        trap,
+        regime,
+        pcr_bias_score=pcr_bias_score,
+        volatility_factor=volatility_factor,
+    )
 
     return {
         "meta": features["meta"],
