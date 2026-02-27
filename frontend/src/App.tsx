@@ -108,16 +108,20 @@ type HistoryPoint = {
 type IntelligenceResponse = {
   market_state?: {
     bias: "Bullish" | "Bearish" | "Neutral";
-    regime: string;
     probability_bull: number;
     probability_bear: number;
     confidence: number;
-    trap_risk_pct: number;
+    trap_risk?: number;
+    reversal_risk?: number;
+    support?: number;
+    resistance?: number;
+    target1?: number;
+    target2?: number;
+    summary_line?: string;
+    alignment_ratio?: number;
     volatility_state?: "Expanding" | "Contracting" | "Stable";
-    volatility_ratio?: number;
     freshness_state?: "live" | "stale" | "delayed";
     delta_seconds?: number | null;
-    explanation: string;
   };
   levels?: {
     support?: { strike?: number; score?: number };
@@ -141,6 +145,14 @@ type IntelligenceResponse = {
       validity_score?: number;
       trap_raw?: number;
     };
+  };
+  trade_plan?: {
+    strategy_type?: string;
+    entry_zone?: string;
+    stop_hint?: string;
+    target_primary?: number | null;
+    target_extended?: number | null;
+    caution_note?: string;
   };
 };
 
@@ -600,10 +612,6 @@ export default function App() {
   const indexRow = indexData.find((row) => row.indexName === indexNameMap[symbol]);
   // Prefer index quote for faster visible updates; fallback to option-chain spot.
   const spotValue = indexRow?.last ?? meta?.spot ?? null;
-  const spotChange =
-    indexRow && typeof indexRow.previousClose === "number"
-      ? indexRow.last - indexRow.previousClose
-      : null;
   const strikesSorted = useMemo(
     () => [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike)),
     [displayRows]
@@ -1277,8 +1285,12 @@ export default function App() {
   const displayBullProbability = intelligence?.market_state?.probability_bull ?? breakoutModel.upProbability;
   const displayBearProbability = intelligence?.market_state?.probability_bear ?? breakoutModel.downProbability;
   const displayConfidence = intelligence?.market_state?.confidence ?? breakoutModel.confidence;
-  const displayRegime = intelligence?.market_state?.regime ?? "Range";
-  const displayTrapRiskPct = intelligence?.market_state?.trap_risk_pct ?? intradayEngine.trapScore;
+  const displayTrapRiskPct = intelligence?.market_state?.trap_risk ?? intradayEngine.trapScore;
+  const displayReversalRisk = intelligence?.market_state?.reversal_risk ?? scalpingEngine.reversalRisk;
+  const displayAlignmentCount = Math.max(
+    0,
+    Math.min(4, Math.round(((intelligence?.market_state?.alignment_ratio ?? (displayConfidence / 100)) || 0) * 4))
+  );
   const displayVolatilityState = intelligence?.market_state?.volatility_state ?? "Stable";
   const displayFreshnessState = intelligence?.market_state?.freshness_state;
   const bannerLiveStatus: "live" | "stale" | "delayed" | "blocked" | "checking" =
@@ -1293,63 +1305,26 @@ export default function App() {
   const rawTrapType = intelligence?.signals?.trap?.trap_type;
   const displayTrapType = rawTrapType ?? "No active trap";
   const showTrapAffectedLevel = intelligence?.signals?.trap?.show_affected_level ?? (rawTrapType !== null && rawTrapType !== undefined);
-  const displayDecisionText = intelligence?.market_state?.explanation ?? breakoutModel.signal;
-  const displaySupport = intelligence?.levels?.support?.strike ?? supportStrike;
-  const displayResistance = intelligence?.levels?.resistance?.strike ?? resistanceStrike;
-  const displayTarget1 = intelligence?.levels?.target_1 ?? effectiveTargetProjection.target1;
-  const displayTarget2 = intelligence?.levels?.target_2 ?? effectiveTargetProjection.target2;
-  const displayAccelerationZone = intelligence?.levels?.acceleration_zone ?? "-";
+  const displayDecisionText = intelligence?.market_state?.summary_line ?? breakoutModel.signal;
+  const displaySupport = intelligence?.market_state?.support ?? supportStrike;
+  const displayResistance = intelligence?.market_state?.resistance ?? resistanceStrike;
+  const displayTarget1 = intelligence?.market_state?.target1 ?? effectiveTargetProjection.target1;
+  const displayTarget2 = intelligence?.market_state?.target2 ?? effectiveTargetProjection.target2;
+  const tradePlan = intelligence?.trade_plan;
+  const displayTradePlan = {
+    strategy_type: tradePlan?.strategy_type ?? "Balanced / Selective",
+    entry_zone: tradePlan?.entry_zone ?? "Wait for confirmation near key levels.",
+    stop_hint: tradePlan?.stop_hint ?? "Use defined risk beyond nearby structure.",
+    target_primary: tradePlan?.target_primary ?? displayTarget1,
+    target_extended: tradePlan?.target_extended ?? displayTarget2,
+    caution_note: tradePlan?.caution_note ?? "Keep size controlled when signals are mixed.",
+  };
   const trapSuggestedAction =
     displayTrapLevel === "High"
       ? "Avoid fresh breakout entries. Wait for re-test confirmation with stronger ATM participation."
       : displayTrapLevel === "Moderate"
         ? "Reduce size and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
-
-  const displayPcr = useMemo(() => {
-    const pcrVal = apiTargetProjection?.confirmation?.pcr;
-    if (typeof pcrVal !== "number" || Number.isNaN(pcrVal)) return "-";
-    return pcrVal.toFixed(2);
-  }, [apiTargetProjection?.confirmation?.pcr]);
-
-  const displayMaxPain = useMemo(() => {
-    if (!displayRows.length) return "-";
-    const strikes = [...displayRows].map((r) => Number(r.strike)).filter((v) => Number.isFinite(v));
-    if (!strikes.length) return "-";
-    let bestStrike = strikes[0];
-    let bestPain = Number.POSITIVE_INFINITY;
-    for (const candidate of strikes) {
-      let pain = 0;
-      for (const row of displayRows) {
-        const strike = Number(row.strike) || 0;
-        const ceOi = Number(row.CE_OI) || 0;
-        const peOi = Number(row.PE_OI) || 0;
-        pain += Math.max(0, candidate - strike) * ceOi;
-        pain += Math.max(0, strike - candidate) * peOi;
-      }
-      if (pain < bestPain) {
-        bestPain = pain;
-        bestStrike = candidate;
-      }
-    }
-    return formatNumber(bestStrike);
-  }, [displayRows]);
-
-  const displayProjection = useMemo(() => {
-    const state = apiTargetProjection?.state;
-    let projection = "Neutral";
-    if (state === "BREAKOUT_UP") projection = "Breakout Up";
-    else if (state === "BREAKOUT_DOWN") projection = "Breakout Down";
-    else if (state === "RANGE") projection = "Range";
-
-    const isTrendRegime = displayRegime.toLowerCase().includes("trend");
-    if (isTrendRegime && projection === "Range") {
-      if (displayBullProbability > displayBearProbability) return "Breakout Up";
-      if (displayBearProbability > displayBullProbability) return "Breakout Down";
-      return "Trend Continuation";
-    }
-    return projection;
-  }, [apiTargetProjection?.state, displayRegime, displayBullProbability, displayBearProbability]);
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -1433,67 +1408,6 @@ export default function App() {
           : "Neutral confirmation";
     return { syntheticFuture, basis, basisPct, basisType, direction, method: "Synthetic ATM parity" };
   }, [displayRows, nearestSpotStrike, spotValue]);
-
-  const interpretationNarrative = useMemo(() => {
-    const lines: string[] = [];
-    const topCeWriter = topWriters.ce[0] ?? null;
-    const topPeWriter = topWriters.pe[0] ?? null;
-
-    if (topCeWriter) {
-      lines.push(
-        `Strong CE writing near ${formatNumber(topCeWriter.strike)} suggests upside capped.`
-      );
-    } else if (resistanceStrike !== null) {
-      lines.push(`Call-side resistance remains near ${formatNumber(resistanceStrike)}.`);
-    }
-
-    if (topPeWriter) {
-      const peVsCe = topCeWriter ? topPeWriter.doi - topCeWriter.doi : topPeWriter.doi;
-      lines.push(
-        peVsCe >= 0
-          ? `PE support near ${formatNumber(topPeWriter.strike)} is holding with active participation.`
-          : `PE support near ${formatNumber(topPeWriter.strike)} is present but weaker than call pressure.`
-      );
-    } else if (supportStrike !== null) {
-      lines.push(`Support is currently seen near ${formatNumber(supportStrike)}.`);
-    }
-
-    if (supportStrike !== null && resistanceStrike !== null) {
-      if (breakoutModel.downProbability > 60) {
-        lines.push(
-          `Breakdown below ${formatNumber(supportStrike)} is likely if volume expands.`
-        );
-      } else if (breakoutModel.upProbability > 60) {
-        lines.push(
-          `Breakout above ${formatNumber(resistanceStrike)} is likely if call OI unwinds.`
-        );
-      } else {
-        lines.push(
-          `Range is likely between ${formatNumber(supportStrike)} and ${formatNumber(resistanceStrike)} unless ATM volume shocks.`
-        );
-      }
-    }
-
-    return {
-      title:
-        probabilityBias.label === "Bullish"
-          ? "Bullish structure"
-          : probabilityBias.label === "Bearish"
-            ? "Bearish structure"
-            : "Range structure",
-      lines: lines.slice(0, 3),
-      confidence: breakoutModel.confidence,
-    };
-  }, [
-    topWriters.ce,
-    topWriters.pe,
-    resistanceStrike,
-    supportStrike,
-    breakoutModel.downProbability,
-    breakoutModel.upProbability,
-    breakoutModel.confidence,
-    probabilityBias.label,
-  ]);
 
   const heatmapOption = useMemo(() => {
     const recent = [...history]
@@ -1754,21 +1668,18 @@ export default function App() {
         <MarketBanner
           indexName={indexNameMap[symbol] ?? symbol}
           spot={formatNumber(spotValue)}
-          spotChange={
-            spotChange !== null
-              ? `${spotChange >= 0 ? "▲" : "▼"} ${formatNumber(Math.abs(spotChange))}`
-              : "-"
+          spotDelta={
+            indexRow?.last !== undefined && indexRow?.previousClose !== undefined
+              ? `${indexRow.last >= indexRow.previousClose ? "▲" : "▼"} ${Math.abs(indexRow.last - indexRow.previousClose).toFixed(1)}`
+              : undefined
           }
           pctChange={indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
-          expiry={expiry || "-"}
-          pcr={displayPcr}
-          maxPain={displayMaxPain}
-          regime={displayRegime}
-          projection={displayProjection}
-          trend={displayBias}
-          phase={intradayEngine.sessionPhase}
+          volatilityState={displayVolatilityState}
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
+          phase={intradayEngine.sessionPhase}
+          projection={effectiveTargetProjection.status}
+          trend={displayBias}
         />
 
         <div className="ia-grid-3">
@@ -1777,26 +1688,18 @@ export default function App() {
             bullProbability={displayBullProbability}
             bearProbability={displayBearProbability}
             confidence={displayConfidence}
-            trapRisk={displayTrapRiskPct}
-            reversalRisk={scalpingEngine.reversalRisk}
-            volatilityState={displayVolatilityState}
+            reversalRisk={displayReversalRisk}
+            summaryLine={displayDecisionText}
+            alignmentCount={displayAlignmentCount}
           />
           <KeyLevelsCard
             support={formatNumber(displaySupport)}
             resistance={formatNumber(displayResistance)}
             target1={formatNumber(displayTarget1)}
             target2={formatNumber(displayTarget2)}
-            accelerationZone={displayAccelerationZone}
           />
           <div className="ia-card">
-            <h3 className="ia-card-title">Playbook</h3>
-            <ul className="ia-playbook-list">
-              <li>{displayDecisionText}</li>
-              <li>{interpretationNarrative.lines[0] ?? "Wait for cleaner OI and volume alignment."}</li>
-              {displaySupport !== null && displayResistance !== null ? (
-                <li>Range {formatNumber(displaySupport)} - {formatNumber(displayResistance)}</li>
-              ) : null}
-            </ul>
+            <h3 className="ia-card-title">Trap</h3>
             <TrapCard
               trap_probability={displayTrapRiskPct}
               trap_level={displayTrapLevel}
@@ -1805,6 +1708,44 @@ export default function App() {
               suggested_action={trapSuggestedAction}
               show_affected_level={showTrapAffectedLevel}
             />
+          </div>
+        </div>
+
+        <div className="ia-section-gap">
+          <div className="ia-card">
+            <h3 className="ia-card-title">Trade Plan</h3>
+            <div className="ia-kpi-grid">
+              <div>
+                <div className="ia-kpi-label">Strategy</div>
+                <div className="ia-kpi-value">{displayTradePlan.strategy_type}</div>
+              </div>
+              <div>
+                <div className="ia-kpi-label">Primary Target</div>
+                <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_primary)}</div>
+              </div>
+              <div>
+                <div className="ia-kpi-label">Extended Target</div>
+                <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_extended)}</div>
+              </div>
+            </div>
+            <div className="ia-kpi-label" style={{ marginTop: 10 }}>
+              Entry Zone
+            </div>
+            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+              {displayTradePlan.entry_zone}
+            </div>
+            <div className="ia-kpi-label" style={{ marginTop: 8 }}>
+              Stop Hint
+            </div>
+            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+              {displayTradePlan.stop_hint}
+            </div>
+            <div className="ia-kpi-label" style={{ marginTop: 8 }}>
+              Caution
+            </div>
+            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+              {displayTradePlan.caution_note}
+            </div>
           </div>
         </div>
 

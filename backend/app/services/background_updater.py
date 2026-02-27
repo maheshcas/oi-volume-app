@@ -17,6 +17,7 @@ from app.engines.preprocessing import build_feature_frame, normalize_chain
 from app.engines.regime_engine import run_regime_engine
 from app.engines.sr_engine import run_sr_engine
 from app.engines.target_engine import run_target_engine
+from app.engines.trade_plan_engine import generate_trade_plan
 from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
 from app.services.decision_engine import build_decision_input, master_decision_engine
@@ -83,6 +84,7 @@ def _build_v2_intelligence(
     timestamp: str | None,
     previous_score: float | None = None,
     last_10_scores: list[float] | None = None,
+    previous_bias_score: float | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_chain(rows)
     features = build_feature_frame(
@@ -124,7 +126,6 @@ def _build_v2_intelligence(
     volume = run_volume_analysis(features, expansion_threshold=volume_threshold)
     breakout = run_breakout_engine(features, sr, atr_multiplier=breakout_atr_multiplier)
     trap = run_trap_engine(features, breakout, oi, volume)
-    target = run_target_engine(features, sr, breakout, oi, trap, volume)
     regime = run_regime_engine(oi, volume, breakout, trap)
     adjusted_thresholds = regime.get("adjusted_thresholds", pre_adjusted_thresholds)
 
@@ -150,6 +151,7 @@ def _build_v2_intelligence(
         atr_value=atr_threshold,
         avg_atr=avg_atr,
     )
+    target = run_target_engine(features, sr, breakout, oi, trap, volume, decision=decision, regime=regime)
 
     bias_input = {
         "records": {
@@ -172,10 +174,21 @@ def _build_v2_intelligence(
         }
     }
     bias_result = compute_bias_probability(bias_input)
+    bias_score = float(bias_result.get("probability_bull", bias_result.get("bullishProbability", 50.0)) or 50.0)
+    prev_bias_score = float(previous_bias_score) if previous_bias_score is not None else None
+    if prev_bias_score is not None and abs(bias_score - prev_bias_score) < 5.0:
+        if prev_bias_score > 52.5:
+            stable_bias = "Bullish"
+        elif prev_bias_score < 47.5:
+            stable_bias = "Bearish"
+        else:
+            stable_bias = "Neutral"
+    else:
+        stable_bias = str(bias_result.get("bias", bias_result.get("biasLabel", "Neutral")))
     trap_conf_adj = adjust_trap_by_confidence(
         base_trap=float(trap.get("trap_probability_pct", 0) or 0),
         smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
-        confidence_percent=float(decision.get("confidence_percent", decision.get("confidence", 0)) or 0),
+        confidence_percent=float(bias_result.get("confidence", 0) or 0),
     )
     trap["trap_probability_pct"] = int(trap_conf_adj["trap_probability"])
     trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
@@ -214,29 +227,48 @@ def _build_v2_intelligence(
             }
         )
 
+    support_level = sr.get("support", {}).get("strike")
+    resistance_level = sr.get("resistance", {}).get("strike")
+    reversal_risk = int(max(10, min(90, (trap.get("trap_probability_pct", 0) or 0) * 0.6 + (100 - float(bias_result.get("confidence", 50))) * 0.25)))
+    summary_line = (
+        f"Put writers defending {support_level}; upside momentum building."
+        if stable_bias == "Bullish"
+        else f"Call writers active near {resistance_level}; downside pressure holding."
+        if stable_bias == "Bearish"
+        else f"Price balancing between {support_level} and {resistance_level}; wait for cleaner move."
+    )
+    trade_plan = generate_trade_plan(
+        bias=stable_bias,
+        probability_bull=float(
+            bias_result.get("probability_bull", bias_result.get("bullishProbability", 50.0))
+        ),
+        confidence=float(bias_result.get("confidence", 50.0)),
+        support=support_level,
+        resistance=resistance_level,
+        target1=target.get("target_1"),
+        target2=target.get("target_2"),
+        trap_risk=int(trap.get("trap_probability_pct", 0) or 0),
+        volatility_state=decision.get("volatility_state"),
+    )
+
     return {
         "meta": features["meta"],
+        "_internal": {
+            "smoothed_score": decision.get("weighted_score"),
+        },
         "market_state": {
-            "bias": bias_result["biasLabel"],
-            "regime": regime.get("regime"),
-            "probability_bull": bias_result["bullishProbability"],
-            "probability_bear": bias_result["bearishProbability"],
-            "confidence": bias_result["confidence"],
-            "trap_risk_pct": trap.get("trap_probability_pct"),
-            "weighted_score": decision.get("weighted_score"),
             "volatility_state": decision.get("volatility_state"),
-            "volatility_ratio": decision.get("volatility_ratio"),
-            "explanation": decision["summary_statement"],
-            "bias_detail": bias_result.get("detail", {}),
-            "arbitration": {
-                "bias": decision.get("bias"),
-                "probability_bull": decision.get("probability_bull"),
-                "probability_bear": decision.get("probability_bear"),
-                "confidence": decision.get("confidence"),
-            },
-            "adjusted_thresholds": adjusted_thresholds,
-            "weight_distribution": decision.get("weight_distribution", {}),
-            "regime_used": decision.get("regime_used"),
+            "bias": stable_bias,
+            "probability_bull": round(float(bias_result.get("probability_bull", bias_result.get("bullishProbability", 50.0))), 2),
+            "probability_bear": round(float(bias_result.get("probability_bear", bias_result.get("bearishProbability", 50.0))), 2),
+            "confidence": float(bias_result.get("confidence", 50.0)),
+            "trap_risk": int(trap.get("trap_probability_pct", 0) or 0),
+            "reversal_risk": reversal_risk,
+            "support": support_level,
+            "resistance": resistance_level,
+            "target1": target.get("target_1"),
+            "target2": target.get("target_2"),
+            "summary_line": summary_line,
         },
         "levels": {
             "resistance": sr.get("resistance"),
@@ -272,6 +304,7 @@ def _build_v2_intelligence(
                 sr.get("resistance", {}).get("strike"),
             ],
         },
+        "trade_plan": trade_plan.get("trade_plan", {}),
     }
 
 
@@ -311,6 +344,7 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
 
         key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
         previous_score = await cache.get_previous_score(key)
+        previous_bias_score = await cache.get_previous_score(f"BIAS::{key}")
         last_10_scores = await cache.get_score_history(key, limit=10)
         meta = {
             "symbol": symbol,
@@ -375,12 +409,16 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
                 timestamp=records.get("timestamp"),
                 previous_score=previous_score,
                 last_10_scores=last_10_scores,
+                previous_bias_score=previous_bias_score,
             ),
         }
-        weighted_score = summary_section[key]["v2"].get("market_state", {}).get("weighted_score")
+        weighted_score = summary_section[key]["v2"].get("_internal", {}).get("smoothed_score")
         if isinstance(weighted_score, (int, float)):
             await cache.set_previous_score(key, float(weighted_score))
             await cache.append_score_history(key, float(weighted_score))
+        current_bias_score = summary_section[key]["v2"].get("market_state", {}).get("probability_bull")
+        if isinstance(current_bias_score, (int, float)):
+            await cache.set_previous_score(f"BIAS::{key}", float(current_bias_score))
 
     return option_chain_section, summary_section
 
