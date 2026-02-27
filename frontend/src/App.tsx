@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import TrapCard from "./components/TrapCard";
+import MarketBanner from "./components/MarketBanner";
+import DecisionPanel from "./components/DecisionPanel";
+import KeyLevelsCard from "./components/KeyLevelsCard";
+import StructuralDiagnostics from "./components/StructuralDiagnostics";
 
 type SummaryRow = {
   strike: number;
@@ -108,6 +113,10 @@ type IntelligenceResponse = {
     probability_bear: number;
     confidence: number;
     trap_risk_pct: number;
+    volatility_state?: "Expanding" | "Contracting" | "Stable";
+    volatility_ratio?: number;
+    freshness_state?: "live" | "stale" | "delayed";
+    delta_seconds?: number | null;
     explanation: string;
   };
   levels?: {
@@ -117,6 +126,27 @@ type IntelligenceResponse = {
     target_2?: number | null;
     acceleration_zone?: string | null;
   };
+  signals?: {
+    alerts?: Array<{
+      message: string;
+      direction: "up" | "down" | "neutral";
+      type: "primary" | "counter";
+    }>;
+    trap?: {
+      trap_probability_pct?: number;
+      trap_risk?: number;
+      trap_level?: "Low" | "Moderate" | "High";
+      trap_type?: string;
+      show_affected_level?: boolean;
+      validity_score?: number;
+      trap_raw?: number;
+    };
+  };
+};
+
+type UiAlert = {
+  message: string;
+  type: "primary" | "counter";
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
@@ -156,17 +186,20 @@ function formatSigned(value: number | null | undefined, digits = 0) {
   return `${sign}${Math.abs(value).toFixed(digits)}`;
 }
 
-function directionArrow(direction?: string) {
-  if (direction === "↑") return "↑";
-  if (direction === "↓") return "↓";
-  return "→";
+type DirectionKind = "up" | "down" | "flat";
+
+function normalizeDirection(direction?: string): DirectionKind {
+  const d = String(direction ?? "").trim().toUpperCase();
+  if (d === "\u2191" || d === "\u25B2" || d === "UP") return "up";
+  if (d === "\u2193" || d === "\u25BC" || d === "DOWN") return "down";
+  return "flat";
 }
 
-function strengthLabel(score: number | null | undefined) {
-  const value = Number(score ?? 0);
-  if (value >= 80) return "Strong";
-  if (value >= 60) return "Moderate";
-  return "Weak";
+function directionArrow(direction?: string) {
+  const kind = normalizeDirection(direction);
+  if (kind === "up") return "\u25B2";
+  if (kind === "down") return "\u25BC";
+  return "\u2192";
 }
 
 type TrapStrikeData = {
@@ -301,11 +334,6 @@ function detectTrap(context: TrapMarketContext) {
 }
 
 export default function App() {
-  const [appStage, setAppStage] = useState<"landing" | "disclaimer" | "auth" | "dashboard">("landing");
-  const [disclaimerChecked, setDisclaimerChecked] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [authError, setAuthError] = useState("");
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
   const [instrumentType, setInstrumentType] = useState("Indices");
   const [expiries, setExpiries] = useState<string[]>([]);
@@ -324,19 +352,10 @@ export default function App() {
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
   const [intelligence, setIntelligence] = useState<IntelligenceResponse | null>(null);
-  const [secondaryTab, setSecondaryTab] = useState<"heatmap" | "shift" | "writers" | "basis">("heatmap");
-  const [showTable, setShowTable] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  useEffect(() => {
-    const accepted = localStorage.getItem("optionlens_disclaimer_accepted") === "1";
-    const loggedIn = localStorage.getItem("optionlens_logged_in") === "1";
-    if (!accepted) {
-      setAppStage("landing");
-      return;
-    }
-    setAppStage(loggedIn ? "dashboard" : "auth");
-  }, []);
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
+  >("overview");
+  const [showStructural, setShowStructural] = useState(false);
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -450,13 +469,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (appStage !== "dashboard") return;
     setExpiry("");
     loadExpiries();
-  }, [appStage, symbol, instrumentType, useSample]);
+  }, [symbol, instrumentType, useSample]);
 
   useEffect(() => {
-    if (appStage !== "dashboard") return;
     if (!expiry) return;
     checkNseHealth();
     loadIndexData();
@@ -468,7 +485,7 @@ export default function App() {
       loadSummary();
     }, REFRESH_MS);
     return () => clearInterval(timer);
-  }, [appStage, expiry, symbol, instrumentType, useSample, autoRefresh]);
+  }, [expiry, symbol, instrumentType, useSample, autoRefresh]);
 
   const filteredRows = useMemo(() => rows, [rows]);
   const rangeFilteredRows = useMemo(() => {
@@ -502,8 +519,6 @@ export default function App() {
   const displayPeOi = useMemo(() => displayRows.map((row) => row.PE_OI), [displayRows]);
   const displayCeVol = useMemo(() => displayRows.map((row) => row.CE_Volume), [displayRows]);
   const displayPeVol = useMemo(() => displayRows.map((row) => row.PE_Volume), [displayRows]);
-  const displayCeDoi = useMemo(() => displayRows.map((row) => row.CE_DeltaOI), [displayRows]);
-  const displayPeDoi = useMemo(() => displayRows.map((row) => row.PE_DeltaOI), [displayRows]);
 
   const nearestSpotStrike = useMemo(() => {
     if (!displayRows.length) return null;
@@ -577,55 +592,6 @@ export default function App() {
     [displayStrikes, displayCeOi, displayPeOi, nearestSpotStrike, meta?.symbol, meta?.spot]
   );
 
-  const volumeOption = useMemo(
-    () => ({
-      tooltip: { trigger: "axis" },
-      legend: { data: ["CE Volume", "PE Volume"], textStyle: { color: "#f8f5ee" } },
-      grid: { left: 48, right: 32, top: 32, bottom: 60 },
-      xAxis: {
-        type: "category",
-        data: displayStrikes,
-        axisLabel: { color: "#d2d8d8", rotate: 45 },
-      },
-      yAxis: { type: "value", axisLabel: { color: "#d2d8d8" } },
-      series: [
-        { name: "PE Volume", type: "bar", data: displayPeVol, itemStyle: { color: "#58df7c" } },
-        {
-          name: "CE Volume",
-          type: "bar",
-          data: displayCeVol,
-          itemStyle: { color: "#f06c6c" },
-          markLine: nearestSpotStrike
-            ? {
-                symbol: "none",
-                label: {
-                  formatter: `${meta?.symbol ?? "Spot"} ${meta?.spot ?? ""}`,
-                  color: "#e6e6e6",
-                },
-                lineStyle: { color: "#e6e6e6", width: 2, type: "dashed" },
-                data: [{ xAxis: String(nearestSpotStrike) }],
-              }
-            : undefined,
-        },
-      ],
-    }),
-    [displayStrikes, displayCeVol, displayPeVol, nearestSpotStrike, meta?.symbol, meta?.spot]
-  );
-
-  const totals = useMemo(() => {
-    const sum = (vals: number[]) => vals.reduce((acc, v) => acc + (Number(v) || 0), 0);
-    return {
-      ceOi: sum(displayCeOi),
-      peOi: sum(displayPeOi),
-      ceVol: sum(displayCeVol),
-      peVol: sum(displayPeVol),
-      ceDoi: sum(displayCeDoi),
-      peDoi: sum(displayPeDoi),
-    };
-  }, [displayCeOi, displayPeOi, displayCeVol, displayPeVol, displayCeDoi, displayPeDoi]);
-
-  const pcr = totals.ceOi > 0 ? totals.peOi / totals.ceOi : null;
-
   const indexNameMap: Record<string, string> = {
     NIFTY: "NIFTY 50",
     BANKNIFTY: "NIFTY BANK",
@@ -665,32 +631,6 @@ export default function App() {
       if (!best || row.CE_OI > best.CE_OI) best = row;
     });
     return best?.strike ?? null;
-  }, [displayRows]);
-
-  const maxPainStrike = useMemo(() => {
-    if (!displayRows.length) return null;
-    const strikesNumeric = displayRows
-      .map((row) => Number(row.strike))
-      .filter((value) => !Number.isNaN(value))
-      .sort((a, b) => a - b);
-    if (!strikesNumeric.length) return null;
-    let minPain = Number.POSITIVE_INFINITY;
-    let maxPain = strikesNumeric[0];
-    strikesNumeric.forEach((strike) => {
-      let pain = 0;
-      displayRows.forEach((row) => {
-        const k = Number(row.strike);
-        if (Number.isNaN(k)) return;
-        const cePain = Math.max(0, strike - k) * (row.CE_OI || 0);
-        const pePain = Math.max(0, k - strike) * (row.PE_OI || 0);
-        pain += cePain + pePain;
-      });
-      if (pain < minPain) {
-        minPain = pain;
-        maxPain = strike;
-      }
-    });
-    return maxPain;
   }, [displayRows]);
 
   const maxVolumeStrike = useMemo(() => {
@@ -977,10 +917,25 @@ export default function App() {
   }, [history]);
 
   const combinedAlerts = useMemo(() => {
-    const merged = [...intradayEngine.engineAlerts, ...alertItems];
-    const unique = Array.from(new Set(merged));
-    return unique.slice(0, 8);
-  }, [intradayEngine.engineAlerts, alertItems]);
+    const apiAlerts: UiAlert[] = (intelligence?.signals?.alerts ?? []).map((a) => ({
+      message: a.message,
+      type: a.type,
+    }));
+    const localAlerts: UiAlert[] = [...intradayEngine.engineAlerts, ...alertItems].map((msg) => ({
+      message: msg,
+      type: "primary",
+    }));
+    const merged = [...apiAlerts, ...localAlerts];
+    const deduped: UiAlert[] = [];
+    const seen = new Set<string>();
+    for (const item of merged) {
+      const key = `${item.type}::${item.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(item);
+    }
+    return deduped.slice(0, 8);
+  }, [intelligence?.signals?.alerts, intradayEngine.engineAlerts, alertItems]);
 
   const maxMetrics = useMemo(() => {
     const max = (values: number[]) => (values.length ? Math.max(...values) : 1);
@@ -992,72 +947,12 @@ export default function App() {
     };
   }, [displayRows]);
 
-  const atmInfo = useMemo(() => {
-    const atmRow = displayRows.find((row) => String(row.strike) === String(nearestSpotStrike));
-    if (!atmRow) return { strike: null, bias: "Neutral" };
-    const atmVol = (Number(atmRow.CE_Volume) || 0) + (Number(atmRow.PE_Volume) || 0);
-    const avgVol =
-      displayRows.length
-        ? displayRows.reduce(
-            (acc, row) => acc + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
-            0
-          ) / displayRows.length
-        : 0;
-    if (avgVol && atmVol > avgVol * 1.2) {
-      return { strike: atmRow.strike, bias: "Directional move loading" };
-    }
-    if (atmRow.CE_DeltaOI > 0 && atmRow.PE_DeltaOI < 0) {
-      return { strike: atmRow.strike, bias: "Bullish bias" };
-    }
-    if (atmRow.PE_DeltaOI > 0 && atmRow.CE_DeltaOI < 0) {
-      return { strike: atmRow.strike, bias: "Bearish bias" };
-    }
-    return { strike: atmRow.strike, bias: "Neutral" };
-  }, [displayRows, nearestSpotStrike]);
-
-  const dynamicLevels = useMemo(() => {
-    if (!displayRows.length) {
-      return { supportTop: [] as Array<{ strike: number; score: number }>, resistanceTop: [] as Array<{ strike: number; score: number }> };
-    }
-    const maxCeOi = Math.max(...displayRows.map((row) => Number(row.CE_OI) || 0), 1);
-    const maxPeOi = Math.max(...displayRows.map((row) => Number(row.PE_OI) || 0), 1);
-    const maxCeDoi = Math.max(...displayRows.map((row) => Math.max(0, Number(row.CE_DeltaOI) || 0)), 1);
-    const maxPeDoi = Math.max(...displayRows.map((row) => Math.max(0, Number(row.PE_DeltaOI) || 0)), 1);
-    const maxCeVol = Math.max(...displayRows.map((row) => Number(row.CE_Volume) || 0), 1);
-    const maxPeVol = Math.max(...displayRows.map((row) => Number(row.PE_Volume) || 0), 1);
-
-    const resistanceTop = [...displayRows]
-      .map((row) => {
-        const score =
-          (0.5 * (Number(row.CE_OI) || 0)) / maxCeOi +
-          (0.3 * Math.max(0, Number(row.CE_DeltaOI) || 0)) / maxCeDoi +
-          (0.2 * (Number(row.CE_Volume) || 0)) / maxCeVol;
-        return { strike: row.strike, score: Math.round(score * 100) };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-
-    const supportTop = [...displayRows]
-      .map((row) => {
-        const score =
-          (0.5 * (Number(row.PE_OI) || 0)) / maxPeOi +
-          (0.3 * Math.max(0, Number(row.PE_DeltaOI) || 0)) / maxPeDoi +
-          (0.2 * (Number(row.PE_Volume) || 0)) / maxPeVol;
-        return { strike: row.strike, score: Math.round(score * 100) };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-
-    return { supportTop, resistanceTop };
-  }, [displayRows]);
-
   const spotRow = useMemo(
     () => displayRows.find((row) => String(row.strike) === String(nearestSpotStrike)) ?? null,
     [displayRows, nearestSpotStrike]
   );
 
-  const supportStrengthScore = dynamicLevels.supportTop[0]?.score ?? null;
-  const resistanceStrengthScore = dynamicLevels.resistanceTop[0]?.score ?? null;
+
 
   const breakoutModel = useMemo(() => {
     const defaultModel = {
@@ -1228,19 +1123,6 @@ export default function App() {
     };
   }, [apiTargetProjection, autoTargetProjection]);
 
-  const projectionState = useMemo(() => {
-    if (!apiTargetProjection?.state) {
-      return { label: "N/A", tone: "neutral" as const };
-    }
-    if (apiTargetProjection.state === "BREAKOUT_UP") {
-      return { label: "Breakout Up", tone: "bull" as const };
-    }
-    if (apiTargetProjection.state === "BREAKOUT_DOWN") {
-      return { label: "Breakout Down", tone: "bear" as const };
-    }
-    return { label: "Range", tone: "neutral" as const };
-  }, [apiTargetProjection]);
-
   const scalpingEngine = useMemo(() => {
     const sorted = [...displayRows]
       .map((row) => ({ ...row, strikeNum: Number(row.strike) }))
@@ -1352,72 +1234,6 @@ export default function App() {
     };
   }, [displayRows, spotValue, nearestSpotStrike, indexRow?.percChange, history, intradayEngine?.trapScore]);
 
-  const expiryEngine = useMemo(() => {
-    const spot = typeof spotValue === "number" ? spotValue : null;
-    if (spot === null || maxPainStrike === null) {
-      return {
-        pinningZone: false,
-        pinningProbability: 0,
-        expiryTrapLikely: false,
-        premiumCrush: false,
-        expiryRangeLock: false,
-        manipulationRisk: 0,
-      };
-    }
-    const distancePct = Math.abs(spot - Number(maxPainStrike)) / Math.max(1, spot) * 100;
-    const pinningZone = distancePct < 0.3;
-    const pinningProbability = Math.max(0, Math.min(100, Math.round((0.3 - distancePct) / 0.3 * 100)));
-
-    const prev = history.length >= 2 ? history[history.length - 2] : null;
-    const prevVol = prev
-      ? prev.rows.reduce((sum, r) => sum + (Number(r.CE_Volume) || 0) + (Number(r.PE_Volume) || 0), 0)
-      : 0;
-    const currVol = displayRows.reduce((sum, r) => sum + (Number(r.CE_Volume) || 0) + (Number(r.PE_Volume) || 0), 0);
-    const quickVolumeDrop = prevVol > 0 ? currVol < prevVol * 0.85 : false;
-
-    const expiryTrapLikely =
-      (autoTargetProjection.breakoutUp || autoTargetProjection.breakoutDown) &&
-      intradayEngine.weakParticipation &&
-      quickVolumeDrop;
-
-    const expiryRangeLock =
-      supportStrike !== null &&
-      resistanceStrike !== null &&
-      spot >= Number(supportStrike) &&
-      spot <= Number(resistanceStrike);
-
-    const premiumCrush = false;
-    const manipulationRisk = Math.max(
-      0,
-      Math.min(
-        100,
-        (pinningZone ? 30 : 0) +
-          (expiryTrapLikely ? 40 : 0) +
-          (expiryRangeLock ? 20 : 0) +
-          (quickVolumeDrop ? 10 : 0)
-      )
-    );
-
-    return {
-      pinningZone,
-      pinningProbability,
-      expiryTrapLikely,
-      premiumCrush,
-      expiryRangeLock,
-      manipulationRisk,
-    };
-  }, [
-    spotValue,
-    maxPainStrike,
-    history,
-    displayRows,
-    autoTargetProjection.breakoutUp,
-    autoTargetProjection.breakoutDown,
-    intradayEngine.weakParticipation,
-    supportStrike,
-    resistanceStrike,
-  ]);
-
   const smartMoneyZones = useMemo(() => {
     if (!displayRows.length) return { institutional: [] as number[], acceleration: [] as string[] };
     const sorted = [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike));
@@ -1463,12 +1279,77 @@ export default function App() {
   const displayConfidence = intelligence?.market_state?.confidence ?? breakoutModel.confidence;
   const displayRegime = intelligence?.market_state?.regime ?? "Range";
   const displayTrapRiskPct = intelligence?.market_state?.trap_risk_pct ?? intradayEngine.trapScore;
+  const displayVolatilityState = intelligence?.market_state?.volatility_state ?? "Stable";
+  const displayFreshnessState = intelligence?.market_state?.freshness_state;
+  const bannerLiveStatus: "live" | "stale" | "delayed" | "blocked" | "checking" =
+    nseStatus === "blocked"
+      ? "blocked"
+      : nseStatus === "checking"
+        ? "checking"
+        : displayFreshnessState ?? "live";
+  const displayTrapLevel =
+    intelligence?.signals?.trap?.trap_level ??
+    (displayTrapRiskPct > 65 ? "High" : displayTrapRiskPct > 45 ? "Moderate" : "Low");
+  const rawTrapType = intelligence?.signals?.trap?.trap_type;
+  const displayTrapType = rawTrapType ?? "No active trap";
+  const showTrapAffectedLevel = intelligence?.signals?.trap?.show_affected_level ?? (rawTrapType !== null && rawTrapType !== undefined);
   const displayDecisionText = intelligence?.market_state?.explanation ?? breakoutModel.signal;
   const displaySupport = intelligence?.levels?.support?.strike ?? supportStrike;
   const displayResistance = intelligence?.levels?.resistance?.strike ?? resistanceStrike;
   const displayTarget1 = intelligence?.levels?.target_1 ?? effectiveTargetProjection.target1;
   const displayTarget2 = intelligence?.levels?.target_2 ?? effectiveTargetProjection.target2;
   const displayAccelerationZone = intelligence?.levels?.acceleration_zone ?? "-";
+  const trapSuggestedAction =
+    displayTrapLevel === "High"
+      ? "Avoid fresh breakout entries. Wait for re-test confirmation with stronger ATM participation."
+      : displayTrapLevel === "Moderate"
+        ? "Reduce size and wait for one more confirmation candle."
+        : "Trap risk low. Follow primary setup with normal risk controls.";
+
+  const displayPcr = useMemo(() => {
+    const pcrVal = apiTargetProjection?.confirmation?.pcr;
+    if (typeof pcrVal !== "number" || Number.isNaN(pcrVal)) return "-";
+    return pcrVal.toFixed(2);
+  }, [apiTargetProjection?.confirmation?.pcr]);
+
+  const displayMaxPain = useMemo(() => {
+    if (!displayRows.length) return "-";
+    const strikes = [...displayRows].map((r) => Number(r.strike)).filter((v) => Number.isFinite(v));
+    if (!strikes.length) return "-";
+    let bestStrike = strikes[0];
+    let bestPain = Number.POSITIVE_INFINITY;
+    for (const candidate of strikes) {
+      let pain = 0;
+      for (const row of displayRows) {
+        const strike = Number(row.strike) || 0;
+        const ceOi = Number(row.CE_OI) || 0;
+        const peOi = Number(row.PE_OI) || 0;
+        pain += Math.max(0, candidate - strike) * ceOi;
+        pain += Math.max(0, strike - candidate) * peOi;
+      }
+      if (pain < bestPain) {
+        bestPain = pain;
+        bestStrike = candidate;
+      }
+    }
+    return formatNumber(bestStrike);
+  }, [displayRows]);
+
+  const displayProjection = useMemo(() => {
+    const state = apiTargetProjection?.state;
+    let projection = "Neutral";
+    if (state === "BREAKOUT_UP") projection = "Breakout Up";
+    else if (state === "BREAKOUT_DOWN") projection = "Breakout Down";
+    else if (state === "RANGE") projection = "Range";
+
+    const isTrendRegime = displayRegime.toLowerCase().includes("trend");
+    if (isTrendRegime && projection === "Range") {
+      if (displayBullProbability > displayBearProbability) return "Breakout Up";
+      if (displayBearProbability > displayBullProbability) return "Breakout Down";
+      return "Trend Continuation";
+    }
+    return projection;
+  }, [apiTargetProjection?.state, displayRegime, displayBullProbability, displayBearProbability]);
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -1774,73 +1655,6 @@ export default function App() {
     };
   }, [history, displayRows, nearestSpotStrike]);
 
-  function acceptDisclaimerAndContinue() {
-    if (!disclaimerChecked) return;
-    localStorage.setItem("optionlens_disclaimer_accepted", "1");
-    setAppStage("auth");
-  }
-
-  function handleLoginContinue() {
-    if (!loginEmail.trim() || !loginPassword.trim()) {
-      setAuthError("Enter email and password.");
-      return;
-    }
-    localStorage.setItem("optionlens_logged_in", "1");
-    setAuthError("");
-    setAppStage("dashboard");
-  }
-
-  if (appStage !== "dashboard") {
-    return (
-      <div className="gate-page">
-        <div className="gate-card">
-          {appStage === "landing" ? (
-            <>
-              <img src="/optionlens-logo.svg" alt="OptionLens" className="brand-logo" />
-              <p>See what smart money is doing today.</p>
-              <button type="button" onClick={() => setAppStage("disclaimer")}>Start Free</button>
-            </>
-          ) : null}
-          {appStage === "disclaimer" ? (
-            <>
-              <h2>Risk Disclosure & Disclaimer</h2>
-              <div className="gate-scroll">
-                <p>OptionLens is an independent analytical tool. We are not affiliated with NSE or SEBI.</p>
-                <p>Trading in derivatives, futures and options involves substantial risk of loss.</p>
-                <p>The analysis is for educational and informational purposes only.</p>
-                <p>It does not constitute investment advice and does not guarantee profits.</p>
-                <p>Market data may be delayed or inaccurate. Users are fully responsible for decisions.</p>
-                <p>By continuing, you accept full responsibility and agree not to hold OptionLens liable for losses.</p>
-              </div>
-              <label className="field inline">
-                <input type="checkbox" checked={disclaimerChecked} onChange={(e) => setDisclaimerChecked(e.target.checked)} />
-                <span>I understand and agree</span>
-              </label>
-              <button type="button" disabled={!disclaimerChecked} onClick={acceptDisclaimerAndContinue}>
-                I Agree & Continue
-              </button>
-            </>
-          ) : null}
-          {appStage === "auth" ? (
-            <>
-              <h2>Login / Register</h2>
-              <label className="field">
-                <span>Email</span>
-                <input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="you@example.com" />
-              </label>
-              <label className="field">
-                <span>Password</span>
-                <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="Password" />
-              </label>
-              {authError ? <p className="gate-error">{authError}</p> : null}
-              <button type="button" onClick={handleLoginContinue}>Continue</button>
-            </>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="page">
       <header className="hero">
@@ -1937,293 +1751,227 @@ export default function App() {
           {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
         </div>
 
-        <div className="summary-bar sticky-summary">
-          <span className="summary-title">{indexNameMap[symbol] ?? symbol}</span>
-          <span>
-            Spot: <span className="spot-main">{formatNumber(spotValue)}</span>{" "}
-            {spotChange !== null ? (
-              <span className={`spot-change ${spotChange >= 0 ? "up" : "down"}`}>
-                {spotChange >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(spotChange))}
-              </span>
-            ) : null}
-          </span>
-          <span>
-            % Change:{" "}
-            <span className={`spot-change ${(indexRow?.percChange ?? 0) >= 0 ? "up" : "down"}`}>
-              {indexRow?.percChange !== undefined ? `${indexRow?.percChange.toFixed(2)}%` : "-"}
-            </span>
-          </span>
-          <span>Exp: {meta?.expiry ?? "-"}</span>
-          <span>Phase: {intradayEngine.sessionPhase}</span>
-          <span>PCR: {pcr ? pcr.toFixed(2) : "-"}</span>
-          <span>Max Pain: {formatNumber(maxPainStrike)}</span>
-          <span>Regime: {displayRegime}</span>
-          <span>
-            Projection:{" "}
-            <span className={`trend-pill ${projectionState.tone}`}>{projectionState.label}</span>
-          </span>
-          <span>
-            Trend:{" "}
-            <span className={`trend-pill ${displayBias === "Bullish" ? "bull" : displayBias === "Bearish" ? "bear" : "neutral"}`}>
-              {displayBias}
-            </span>
-          </span>
-          <span>Updated: {lastUpdated || meta?.timestamp || "-"}</span>
+        <MarketBanner
+          indexName={indexNameMap[symbol] ?? symbol}
+          spot={formatNumber(spotValue)}
+          spotChange={
+            spotChange !== null
+              ? `${spotChange >= 0 ? "▲" : "▼"} ${formatNumber(Math.abs(spotChange))}`
+              : "-"
+          }
+          pctChange={indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
+          expiry={expiry || "-"}
+          pcr={displayPcr}
+          maxPain={displayMaxPain}
+          regime={displayRegime}
+          projection={displayProjection}
+          trend={displayBias}
+          phase={intradayEngine.sessionPhase}
+          updatedAt={lastUpdated || meta?.timestamp || "-"}
+          liveStatus={bannerLiveStatus}
+        />
+
+        <div className="ia-grid-3">
+          <DecisionPanel
+            bias={displayBias}
+            bullProbability={displayBullProbability}
+            bearProbability={displayBearProbability}
+            confidence={displayConfidence}
+            trapRisk={displayTrapRiskPct}
+            reversalRisk={scalpingEngine.reversalRisk}
+            volatilityState={displayVolatilityState}
+          />
+          <KeyLevelsCard
+            support={formatNumber(displaySupport)}
+            resistance={formatNumber(displayResistance)}
+            target1={formatNumber(displayTarget1)}
+            target2={formatNumber(displayTarget2)}
+            accelerationZone={displayAccelerationZone}
+          />
+          <div className="ia-card">
+            <h3 className="ia-card-title">Playbook</h3>
+            <ul className="ia-playbook-list">
+              <li>{displayDecisionText}</li>
+              <li>{interpretationNarrative.lines[0] ?? "Wait for cleaner OI and volume alignment."}</li>
+              {displaySupport !== null && displayResistance !== null ? (
+                <li>Range {formatNumber(displaySupport)} - {formatNumber(displayResistance)}</li>
+              ) : null}
+            </ul>
+            <TrapCard
+              trap_probability={displayTrapRiskPct}
+              trap_level={displayTrapLevel}
+              trap_type={displayTrapType ?? "-"}
+              trap_zone={Number(displayResistance ?? displaySupport ?? nearestSpotStrike ?? 0)}
+              suggested_action={trapSuggestedAction}
+              show_affected_level={showTrapAffectedLevel}
+            />
+          </div>
         </div>
 
-        <div className="decision-row">
-          <div className="decision-card">
-            <h3>Market Bias + Probability</h3>
-            <div className="decision-main">
-              <span
-                className={`bias-pill ${
-                  displayBias === "Bullish"
-                    ? "bull"
-                    : displayBias === "Bearish"
-                      ? "bear"
-                      : "neutral"
+        <div className="ia-section-gap">
+          <StructuralDiagnostics
+            open={showStructural}
+            onToggle={() => setShowStructural((prev) => !prev)}
+            atmCeOi={`${formatNumber(spotRow?.CE_OI ?? null)} ${directionArrow(spotRow?.CE_OIDir)}`}
+            atmPeOi={`${formatNumber(spotRow?.PE_OI ?? null)} ${directionArrow(spotRow?.PE_OIDir)}`}
+            atmCeVol={`${formatNumber(spotRow?.CE_Volume ?? null)} ${directionArrow(spotRow?.CE_VolDir)}`}
+            atmPeVol={`${formatNumber(spotRow?.PE_Volume ?? null)} ${directionArrow(spotRow?.PE_VolDir)}`}
+            institutionalLevels={
+              smartMoneyZones.institutional.length
+                ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ")
+                : "-"
+            }
+            expectedMove={formatNumber(apiTargetProjection?.expectedMove ?? null)}
+            shift={intradayEngine.shiftSummary}
+            checklist={[
+              { label: "ATM OI Rising", confirmed: !!apiTargetProjection?.confirmation?.bullish?.atm_oi_rising },
+              { label: "CE Unwinding", confirmed: !!apiTargetProjection?.confirmation?.bullish?.ce_unwinding },
+              { label: "PE Aggressive Build", confirmed: !!apiTargetProjection?.confirmation?.bullish?.pe_aggressive_build },
+              { label: "PCR < 0.85", confirmed: !!apiTargetProjection?.confirmation?.bearish?.pcr_below_085 },
+            ]}
+          />
+        </div>
+
+        <div className="ia-tabs-wrap">
+          <div className="ia-tabs">
+            {(["overview", "charts", "heatmap", "writers", "basis", "option-chain"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={`ia-tab-btn ${
+                  activeTab === tab
+                    ? "ia-tab-btn-active"
+                    : ""
                 }`}
               >
-                {displayBias}
-              </span>
-            </div>
-            <div className="prob-track">
-              <div className="prob-bull" style={{ width: `${displayBullProbability}%` }} />
-              <div className="prob-bear" style={{ width: `${displayBearProbability}%` }} />
-            </div>
-            <div className="prob-legend">
-              <span>Bull {displayBullProbability}%</span>
-              <span>Bear {displayBearProbability}%</span>
-            </div>
-            <div className="confidence-meter">
-              <span>Confidence</span>
-              <div className="confidence-track">
-                <div className={`confidence-fill ${displayBias === "Bullish" ? "bull" : displayBias === "Bearish" ? "bear" : "neutral"}`} style={{ width: `${displayConfidence}%` }} />
-              </div>
-              <span>{displayConfidence}%</span>
-            </div>
-            <div className="prob-legend">
-              <span>Trap Risk {displayTrapRiskPct}%</span>
-            </div>
-            <p className="decision-sub">{displayDecisionText}</p>
-          </div>
-          <div className="decision-card">
-            <h3>Key Levels</h3>
-            <div className="decision-kv">
-              <div><strong>Resistance</strong><span>{formatNumber(displayResistance)} <span className={`strength-pill ${(strengthLabel(resistanceStrengthScore)).toLowerCase()}`}>{strengthLabel(resistanceStrengthScore)}</span></span></div>
-              <div><strong>Support</strong><span>{formatNumber(displaySupport)} <span className={`strength-pill ${(strengthLabel(supportStrengthScore)).toLowerCase()}`}>{strengthLabel(supportStrengthScore)}</span></span></div>
-              <div><strong>Target 1</strong><span>{formatNumber(displayTarget1)}</span></div>
-              <div><strong>Target 2</strong><span>{formatNumber(displayTarget2)}</span></div>
-              <div><strong>Acceleration Zone</strong><span>{displayAccelerationZone}</span></div>
-              <div><strong>Target State</strong><span>{effectiveTargetProjection.status}</span></div>
-              <div><strong>Target Flow</strong><span>{effectiveTargetProjection.direction ?? "-"}</span></div>
-              <div><strong>Target Note</strong><span>{effectiveTargetProjection.note ?? "-"}</span></div>
-              <div><strong>ATM CE OI</strong><span>{formatNumber(spotRow?.CE_OI ?? null)} {directionArrow(spotRow?.CE_OIDir)}</span></div>
-              <div><strong>ATM PE OI</strong><span>{formatNumber(spotRow?.PE_OI ?? null)} {directionArrow(spotRow?.PE_OIDir)}</span></div>
-              <div><strong>ATM CE Vol</strong><span>{formatNumber(spotRow?.CE_Volume ?? null)} {directionArrow(spotRow?.CE_VolDir)}</span></div>
-              <div><strong>ATM PE Vol</strong><span>{formatNumber(spotRow?.PE_Volume ?? null)} {directionArrow(spotRow?.PE_VolDir)}</span></div>
-              <div><strong>Vol Method</strong><span>{apiTargetProjection?.volatilityMethod ?? "-"}</span></div>
-              <div><strong>Expected Move</strong><span>{formatNumber(apiTargetProjection?.expectedMove ?? null)}</span></div>
-              <div><strong>Blended Move</strong><span>{formatNumber(apiTargetProjection?.blendedMove ?? null)}</span></div>
-              <div><strong>ATM CE LTP</strong><span>{formatNumber(apiTargetProjection?.atmCallLtp ?? null)}</span></div>
-              <div><strong>ATM PE LTP</strong><span>{formatNumber(apiTargetProjection?.atmPutLtp ?? null)}</span></div>
-              <div><strong>Phase</strong><span>{intradayEngine.sessionPhase}</span></div>
-              <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
-              <div><strong>Trap</strong><span>{displayTrapRiskPct}%</span></div>
-              <div><strong>Institutional</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
-              <div><strong>Acceleration</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
-              <div><strong>Scalp Momentum</strong><span>{scalpingEngine.momentumScore}%</span></div>
-              <div><strong>VWAP Bias</strong><span>{scalpingEngine.vwapBias}</span></div>
-              <div><strong>Quick Target</strong><span>{formatNumber(scalpingEngine.quickTarget)}</span></div>
-              <div><strong>Reversal Risk</strong><span>{scalpingEngine.reversalRisk}%</span></div>
-              <div><strong>Expiry Risk</strong><span>{expiryEngine.manipulationRisk}%</span></div>
-              <div><strong>Pinning</strong><span>{expiryEngine.pinningZone ? `Yes (${expiryEngine.pinningProbability}%)` : "No"}</span></div>
-            </div>
-            {apiTargetProjection?.confirmation ? (
-              <div className="target-checklist">
-                <div className="checklist-block">
-                  <strong>Bull Breakout Check</strong>
-                  <span className={`pill-inline ${apiTargetProjection.confirmation.bullish?.confirmed ? "badge-bull" : "badge-bear"}`}>
-                    {apiTargetProjection.confirmation.bullish?.confirmed ? "Confirmed" : "Not Confirmed"}
-                  </span>
-                  <ul className="engine-list compact">
-                    <li>{apiTargetProjection.confirmation.bullish?.atm_oi_rising ? "✅" : "❌"} ATM OI Rising</li>
-                    <li>{apiTargetProjection.confirmation.bullish?.ce_unwinding ? "✅" : "❌"} CE Unwinding</li>
-                    <li>{apiTargetProjection.confirmation.bullish?.pe_aggressive_build ? "✅" : "❌"} PE Aggressive Build</li>
-                  </ul>
-                </div>
-                <div className="checklist-block">
-                  <strong>Bear Breakdown Check</strong>
-                  <span className={`pill-inline ${apiTargetProjection.confirmation.bearish?.confirmed ? "badge-bear" : "badge-bull"}`}>
-                    {apiTargetProjection.confirmation.bearish?.confirmed ? "Confirmed" : "Not Confirmed"}
-                  </span>
-                  <ul className="engine-list compact">
-                    <li>{apiTargetProjection.confirmation.bearish?.pe_unwinding ? "✅" : "❌"} PE Unwinding</li>
-                    <li>{apiTargetProjection.confirmation.bearish?.ce_aggressive_build ? "✅" : "❌"} CE Aggressive Build</li>
-                    <li>{apiTargetProjection.confirmation.bearish?.pcr_below_085 ? "✅" : "❌"} PCR &lt; 0.85</li>
-                  </ul>
-                </div>
-                <div className="checklist-meta">
-                  <span><strong>ATM:</strong> {formatNumber(apiTargetProjection.confirmation.atmStrike ?? null)}</span>
-                  <span><strong>PCR:</strong> {apiTargetProjection.confirmation.pcr ?? "-"}</span>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="decision-card">
-            <h3>Today&apos;s Playbook</h3>
-            <ul className="engine-list">
-              <li>{displayDecisionText}</li>
-              {displaySupport !== null && displayResistance !== null ? (
-                <li>
-                  Range {formatNumber(displaySupport)} - {formatNumber(displayResistance)}. Buy near support or sell near resistance unless ATM volume expands.
-                </li>
-              ) : null}
-              <li>{interpretationNarrative.lines[0] ?? "Wait for cleaner OI and volume alignment."}</li>
-            </ul>
-          </div>
-        </div>
-
-        <div className="dashboard-grid">
-          <div className="dash-card strike-card">
-            <h3>Strike Prices</h3>
-            <div className="ladder">
-              <div className="ladder-header">
-                <span>Call Options (CE OI)</span>
-                <span>Strike</span>
-                <span>Put Options (PE OI)</span>
-              </div>
-              {strikeSlice.map((row) => {
-                const ceOi = Number(row.CE_OI) || 0;
-                const peOi = Number(row.PE_OI) || 0;
-                const ceVol = Number(row.CE_Volume) || 0;
-                const peVol = Number(row.PE_Volume) || 0;
-                const isSpot = String(row.strike) === String(nearestSpotStrike);
-                const isRes = String(row.strike) === String(displayResistance);
-                const isSup = String(row.strike) === String(displaySupport);
-                const interpret =
-                  row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
-                    ? row.PE_Interpretation
-                    : row.CE_Interpretation ?? "Mixed";
-                return (
-                  <div
-                    key={row.strike}
-                    className={[
-                      "ladder-row",
-                      isSpot ? "spot-row" : "",
-                      isRes ? "resistance-row" : "",
-                      isSup ? "support-row" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                  >
-                    <div className="ladder-side">
-                      <div className="bar-wrap red">
-                        <div className="bar" style={{ width: `${(ceOi / maxMetrics.ceOi) * 100}%` }} />
-                      </div>
-                      <div className="bar-meta">
-                        <span>{formatNumber(ceOi)}</span>
-                        <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
-                          {row.CE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.CE_DeltaOI))}
-                        </span>
-                      </div>
-                      <div className="bar-sub">
-                        {formatNumber(ceVol)}{" "}
-                        <span className={row.CE_VolDir === "↑" ? "up" : row.CE_VolDir === "↓" ? "down" : ""}>
-                          {row.CE_VolDir ?? "→"}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="ladder-center">
-                      <div className="strike">{formatNumber(row.strike)}</div>
-                      <div className="interp">{interpret}</div>
-                    </div>
-                    <div className="ladder-side right">
-                      <div className="bar-wrap green">
-                        <div className="bar" style={{ width: `${(peOi / maxMetrics.peOi) * 100}%` }} />
-                      </div>
-                      <div className="bar-meta">
-                        <span>{formatNumber(peOi)}</span>
-                        <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
-                          {row.PE_DeltaOI >= 0 ? "↑" : "↓"} {formatNumber(Math.abs(row.PE_DeltaOI))}
-                        </span>
-                      </div>
-                      <div className="bar-sub">
-                        {formatNumber(peVol)}{" "}
-                        <span className={row.PE_VolDir === "↑" ? "up" : row.PE_VolDir === "↓" ? "down" : ""}>
-                          {row.PE_VolDir ?? "→"}
-                        </span>
-                      </div>
-                    </div>
-                    {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
-                    {isSup ? <span className="tag support">SUPPORT</span> : null}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div className="dash-card double-chart">
-            <h3>Call OI & Volume</h3>
-            <ReactECharts option={callMiniOption} style={{ height: 240 }} />
-            <h3>Put OI & Volume</h3>
-            <ReactECharts option={putMiniOption} style={{ height: 240 }} />
-            <div className="mini-summary">
-              <div><strong>Support</strong><span>{formatNumber(displaySupport)}</span></div>
-              <div><strong>Resistance</strong><span>{formatNumber(displayResistance)}</span></div>
-              <div><strong>Target</strong><span>{formatNumber(displayTarget1)}</span></div>
-              <div><strong>Alerts</strong><span>{alertItems[0] ?? "-"}</span></div>
-              <div><strong>ATM</strong><span>{formatNumber(atmInfo.strike)}</span></div>
-            </div>
-          </div>
-          <div className="dash-card signal-card">
-            <h3>Execution Notes</h3>
-            {alertItems.slice(0, 4).map((item) => (
-              <div key={item} className="signal-row">{item}</div>
+                {tab}
+              </button>
             ))}
-            <div className="signal-section">ATM</div>
-            <div className="signal-row">Strike: <span className="pill-inline">{formatNumber(atmInfo.strike)}</span></div>
-            <div className="signal-row">Bias: <span className="pill-inline">{atmInfo.bias}</span></div>
           </div>
-        </div>
 
-        <div className="advanced-wrap">
-          <button type="button" className="advanced-toggle" onClick={() => setShowAdvanced((prev) => !prev)}>
-            Advanced Diagnostics {showAdvanced ? "Hide" : "Show"}
-          </button>
-        </div>
-
-        {showAdvanced ? <div className="secondary-tabs">
-          <div className="tab-head">
-            <button type="button" className={secondaryTab === "heatmap" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("heatmap")}>Heatmap</button>
-            <button type="button" className={secondaryTab === "shift" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("shift")}>Shift</button>
-            <button type="button" className={secondaryTab === "writers" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("writers")}>Writers</button>
-            <button type="button" className={secondaryTab === "basis" ? "tab-btn active" : "tab-btn"} onClick={() => setSecondaryTab("basis")}>Basis</button>
-          </div>
-          {secondaryTab === "heatmap" ? (
-            <div className="chart-card">
-              <h3>OI + Volume Change Heatmap</h3>
-              {heatmapOption ? <ReactECharts option={heatmapOption} style={{ height: 320 }} /> : <p className="heatmap-empty">Collecting intraday snapshots.</p>}
-            </div>
-          ) : null}
-          {secondaryTab === "shift" ? (
-            <div className="impact-card">
-              <h3>Shift Tracker</h3>
-              <div className="basis-grid">
-                <div><strong>Session</strong><span>{intradayEngine.sessionPhase}</span></div>
-                <div><strong>Shift</strong><span>{intradayEngine.shiftSummary}</span></div>
-                <div><strong>Trap</strong><span>{intradayEngine.trapMessage}</span></div>
-                <div><strong>Trap Risk</strong><span>{intradayEngine.trapRisk} ({intradayEngine.trapScore}%)</span></div>
-                <div><strong>Institutional Zone</strong><span>{smartMoneyZones.institutional.length ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ") : "-"}</span></div>
-                <div><strong>Acceleration Zone</strong><span>{smartMoneyZones.acceleration.length ? smartMoneyZones.acceleration.join(" | ") : "-"}</span></div>
-                <div><strong>Scalp Fast Move</strong><span>{scalpingEngine.fastMove ? "Yes" : "No"}</span></div>
-                <div><strong>Scalp Exit</strong><span>{scalpingEngine.exitSignal ? "Exit likely" : "Hold"}</span></div>
-                <div><strong>Expiry Trap</strong><span>{expiryEngine.expiryTrapLikely ? "Likely" : "No"}</span></div>
-                <div><strong>Range Lock</strong><span>{expiryEngine.expiryRangeLock ? "Yes" : "No"}</span></div>
+          {activeTab === "overview" ? (
+            <div className="ia-tab-pane dashboard-grid">
+              <div className="dash-card strike-card">
+                <h3>Strike Ladder</h3>
+                <div className="ladder">
+                  <div className="ladder-header">
+                    <span>Call Options (CE OI)</span>
+                    <span>Strike</span>
+                    <span>Put Options (PE OI)</span>
+                  </div>
+                  {strikeSlice.map((row) => {
+                    const ceOi = Number(row.CE_OI) || 0;
+                    const peOi = Number(row.PE_OI) || 0;
+                    const ceVol = Number(row.CE_Volume) || 0;
+                    const peVol = Number(row.PE_Volume) || 0;
+                    const isSpot = String(row.strike) === String(nearestSpotStrike);
+                    const isRes = String(row.strike) === String(displayResistance);
+                    const isSup = String(row.strike) === String(displaySupport);
+                    const interpret =
+                      row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
+                        ? row.PE_Interpretation
+                        : row.CE_Interpretation ?? "Mixed";
+                    return (
+                      <div
+                        key={row.strike}
+                        className={[
+                          "ladder-row",
+                          isSpot ? "spot-row" : "",
+                          isRes ? "resistance-row" : "",
+                          isSup ? "support-row" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                      >
+                        <div className="ladder-side">
+                          <div className="bar-wrap red">
+                            <div
+                              className="bar"
+                              style={{
+                                width: `${(ceOi / maxMetrics.ceOi) * 100}%`,
+                                minWidth: ceOi > 0 ? "2px" : "0px",
+                              }}
+                            />
+                          </div>
+                          <div className="bar-meta">
+                            <span>{formatNumber(ceOi)}</span>
+                            <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
+                              {row.CE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.CE_DeltaOI))}
+                            </span>
+                          </div>
+                          <div className="bar-sub">
+                            {formatNumber(ceVol)}{" "}
+                            <span className={normalizeDirection(row.CE_VolDir) === "up" ? "up" : normalizeDirection(row.CE_VolDir) === "down" ? "down" : ""}>
+                              {directionArrow(row.CE_VolDir)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="ladder-center">
+                          <div className="strike">{formatNumber(row.strike)}</div>
+                          <div className="interp">{interpret}</div>
+                        </div>
+                        <div className="ladder-side right">
+                          <div className="bar-wrap green">
+                            <div
+                              className="bar"
+                              style={{
+                                width: `${(peOi / maxMetrics.peOi) * 100}%`,
+                                minWidth: peOi > 0 ? "2px" : "0px",
+                              }}
+                            />
+                          </div>
+                          <div className="bar-meta">
+                            <span>{formatNumber(peOi)}</span>
+                            <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
+                              {row.PE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.PE_DeltaOI))}
+                            </span>
+                          </div>
+                          <div className="bar-sub">
+                            {formatNumber(peVol)}{" "}
+                            <span className={normalizeDirection(row.PE_VolDir) === "up" ? "up" : normalizeDirection(row.PE_VolDir) === "down" ? "down" : ""}>
+                              {directionArrow(row.PE_VolDir)}
+                            </span>
+                          </div>
+                        </div>
+                        {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
+                        {isSup ? <span className="tag support">SUPPORT</span> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="dash-card double-chart">
+                <h3>Call OI & Volume</h3>
+                <ReactECharts option={callMiniOption} style={{ height: 240 }} />
+                <h3>Put OI & Volume</h3>
+                <ReactECharts option={putMiniOption} style={{ height: 240 }} />
               </div>
             </div>
           ) : null}
-          {secondaryTab === "writers" ? (
-            <div className="impact-card">
+
+          {activeTab === "charts" ? (
+            <div className="ia-tab-pane chart-grid">
+              <div className="chart-card">
+                <h3>Open Interest by Strike</h3>
+                <ReactECharts option={oiOption} style={{ height: 320 }} />
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "heatmap" ? (
+            <div className="ia-tab-pane chart-card">
+              <h3>OI + Volume Change Heatmap</h3>
+              {heatmapOption ? (
+                <ReactECharts option={heatmapOption} style={{ height: 320 }} />
+              ) : (
+                <p className="heatmap-empty">Collecting intraday snapshots.</p>
+              )}
+            </div>
+          ) : null}
+
+          {activeTab === "writers" ? (
+            <div className="ia-tab-pane impact-card">
               <h3>Top Writers Activity</h3>
               <div className="writers-grid">
                 <div>
@@ -2247,8 +1995,9 @@ export default function App() {
               </div>
             </div>
           ) : null}
-          {secondaryTab === "basis" ? (
-            <div className="impact-card">
+
+          {activeTab === "basis" ? (
+            <div className="ia-tab-pane impact-card">
               <h3>Futures Basis</h3>
               <div className="basis-grid">
                 <div><strong>Synthetic Future</strong><span>{formatNumber(futuresBasis.syntheticFuture)}</span></div>
@@ -2258,123 +2007,98 @@ export default function App() {
               </div>
             </div>
           ) : null}
-        </div> : null}
+
+          {activeTab === "option-chain" ? (
+            <div className="ia-tab-pane table-wrap">
+              <table className="option-chain-table">
+                <thead>
+                  <tr>
+                    <th>CE OI</th>
+                    <th>CE DeltaOI</th>
+                    <th>CE Volume</th>
+                    <th>CE Velocity</th>
+                    <th>CE Price</th>
+                    <th>CE Interpret</th>
+                    <th>Strike</th>
+                    <th>PE Volume</th>
+                    <th>PE DeltaOI</th>
+                    <th>PE OI</th>
+                    <th>PE Velocity</th>
+                    <th>PE Price</th>
+                    <th>PE Interpret</th>
+                    <th>Signal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayRows.map((row) => {
+                    const ceOi = Number(row.CE_OI) || 0;
+                    const peOi = Number(row.PE_OI) || 0;
+                    const vol = (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0);
+                    const isResistance = highlight.ceOiThreshold !== null && ceOi >= highlight.ceOiThreshold;
+                    const isSupport = highlight.peOiThreshold !== null && peOi >= highlight.peOiThreshold;
+                    const isBattle = highlight.volThreshold !== null && vol >= highlight.volThreshold;
+                    const vel = velocityByStrike.get(String(row.strike));
+                    return (
+                    <tr
+                      key={row.strike}
+                      className={[
+                        String(row.strike) === String(nearestSpotStrike) ? "spot-row" : "",
+                        isResistance ? "resistance-row" : "",
+                        isSupport ? "support-row" : "",
+                        isBattle ? "battle-row" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                    >
+                      <td>{formatNumber(row.CE_OI)}</td>
+                      <td>{formatNumber(row.CE_DeltaOI)}</td>
+                      <td>{formatNumber(row.CE_Volume)}</td>
+                      <td>OI {formatSigned(vel?.ceDoiPerMin)} / Vol {formatSigned(vel?.ceVolPerMin)}</td>
+                      <td>
+                        {formatNumber(row.CE_LastPrice ?? null)}{" "}
+                        <span className={`dir ${normalizeDirection(row.CE_PriceDir) === "up" ? "up" : normalizeDirection(row.CE_PriceDir) === "down" ? "down" : ""}`}>
+                          {directionArrow(row.CE_PriceDir)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge ${row.CE_Interpretation ? row.CE_Interpretation.replace(/\s+/g, "-").toLowerCase() : ""}`}>
+                          {row.CE_Interpretation ?? "-"}
+                        </span>
+                      </td>
+                      <td>{formatNumber(row.strike)}</td>
+                      <td>{formatNumber(row.PE_Volume)}</td>
+                      <td>{formatNumber(row.PE_DeltaOI)}</td>
+                      <td>{formatNumber(row.PE_OI)}</td>
+                      <td>OI {formatSigned(vel?.peDoiPerMin)} / Vol {formatSigned(vel?.peVolPerMin)}</td>
+                      <td>
+                        {formatNumber(row.PE_LastPrice ?? null)}{" "}
+                        <span className={`dir ${normalizeDirection(row.PE_PriceDir) === "up" ? "up" : normalizeDirection(row.PE_PriceDir) === "down" ? "down" : ""}`}>
+                          {directionArrow(row.PE_PriceDir)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge ${row.PE_Interpretation ? row.PE_Interpretation.replace(/\s+/g, "-").toLowerCase() : ""}`}>
+                          {row.PE_Interpretation ?? "-"}
+                        </span>
+                      </td>
+                      <td>{row.signal}</td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
 
         <div className="alert-bar">
           {combinedAlerts.map((item) => (
-            <span key={item} className="alert-item">
-              {item}
+            <span key={`${item.type}-${item.message}`} className={`alert-item ${item.type === "counter" ? "alert-item-counter" : ""}`}>
+              {item.message}
+              {item.type === "counter" ? " (Counter-trend)" : ""}
             </span>
           ))}
         </div>
-
-        <div className="chart-intro">
-          <h3>Interpretation</h3>
-          <p>
-            Bars show OI, lines show volume. Spot line highlights ATM. Use Support/Resistance and
-            Bias for quick context.
-          </p>
-        </div>
-
-        <div className="chart-grid">
-          <div className="chart-card">
-            <h3>Open Interest by Strike</h3>
-            <ReactECharts option={oiOption} style={{ height: 320 }} />
-          </div>
-          <div className="chart-card">
-            <h3>Volume by Strike</h3>
-            <ReactECharts option={volumeOption} style={{ height: 320 }} />
-          </div>
-        </div>
-
-        <div className="table-toolbar">
-          <button type="button" onClick={() => setShowTable((prev) => !prev)}>
-            {showTable ? "Hide Option Chain" : "Show Option Chain"}
-          </button>
-        </div>
-
-        {showTable ? <div className="table-wrap">
-          <table className="option-chain-table">
-            <thead>
-              <tr>
-                <th>CE OI</th>
-                <th>CE DeltaOI</th>
-                <th>CE Volume</th>
-                <th>CE Velocity</th>
-                <th>CE Price</th>
-                <th>CE Interpret</th>
-                <th>Strike</th>
-                <th>PE Volume</th>
-                <th>PE DeltaOI</th>
-                <th>PE OI</th>
-                <th>PE Velocity</th>
-                <th>PE Price</th>
-                <th>PE Interpret</th>
-                <th>Signal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayRows.map((row) => {
-                const ceOi = Number(row.CE_OI) || 0;
-                const peOi = Number(row.PE_OI) || 0;
-                const vol = (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0);
-                const isResistance =
-                  highlight.ceOiThreshold !== null && ceOi >= highlight.ceOiThreshold;
-                const isSupport =
-                  highlight.peOiThreshold !== null && peOi >= highlight.peOiThreshold;
-                const isBattle =
-                  highlight.volThreshold !== null && vol >= highlight.volThreshold;
-                const vel = velocityByStrike.get(String(row.strike));
-                return (
-                <tr
-                  key={row.strike}
-                  className={[
-                    String(row.strike) === String(nearestSpotStrike) ? "spot-row" : "",
-                    isResistance ? "resistance-row" : "",
-                    isSupport ? "support-row" : "",
-                    isBattle ? "battle-row" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                >
-                  <td>{formatNumber(row.CE_OI)}</td>
-                  <td>{formatNumber(row.CE_DeltaOI)}</td>
-                  <td>{formatNumber(row.CE_Volume)}</td>
-                  <td>OI {formatSigned(vel?.ceDoiPerMin)} / Vol {formatSigned(vel?.ceVolPerMin)}</td>
-                  <td>
-                    {formatNumber(row.CE_LastPrice ?? null)}{" "}
-                    <span className={`dir ${row.CE_PriceDir === "↑" ? "up" : row.CE_PriceDir === "↓" ? "down" : ""}`}>
-                      {row.CE_PriceDir ?? "→"}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`badge ${row.CE_Interpretation ? row.CE_Interpretation.replace(/\s+/g, "-").toLowerCase() : ""}`}>
-                      {row.CE_Interpretation ?? "-"}
-                    </span>
-                  </td>
-                  <td>{formatNumber(row.strike)}</td>
-                  <td>{formatNumber(row.PE_Volume)}</td>
-                  <td>{formatNumber(row.PE_DeltaOI)}</td>
-                  <td>{formatNumber(row.PE_OI)}</td>
-                  <td>OI {formatSigned(vel?.peDoiPerMin)} / Vol {formatSigned(vel?.peVolPerMin)}</td>
-                  <td>
-                    {formatNumber(row.PE_LastPrice ?? null)}{" "}
-                    <span className={`dir ${row.PE_PriceDir === "↑" ? "up" : row.PE_PriceDir === "↓" ? "down" : ""}`}>
-                      {row.PE_PriceDir ?? "→"}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`badge ${row.PE_Interpretation ? row.PE_Interpretation.replace(/\s+/g, "-").toLowerCase() : ""}`}>
-                      {row.PE_Interpretation ?? "-"}
-                    </span>
-                  </td>
-                  <td>{row.signal}</td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div> : null}
 
         <div className="disclaimer">
           This dashboard is for educational and analytical purposes only. We are not SEBI registered.

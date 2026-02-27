@@ -34,14 +34,14 @@ def atm_participation_score(features: dict[str, Any]) -> float:
     return round(min(1.0, atm_total / max(1.0, total * 0.15)), 4)
 
 
-def run_volume_analysis(features: dict[str, Any]) -> dict[str, Any]:
+def run_volume_analysis(features: dict[str, Any], expansion_threshold: float = 1.2) -> dict[str, Any]:
     rows = features["rows"]
     atm_row = features["atm_row"]
     if not rows or not atm_row:
         return {"volume_expansion": False, "rvr": {"ce": 0.0, "pe": 0.0}, "atm_participation": 0.0}
 
     return {
-        "volume_expansion": detect_volume_expansion(features),
+        "volume_expansion": detect_volume_expansion(features, threshold=expansion_threshold),
         "rvr": {
             "ce": compute_relative_volume_rank(atm_row, rows, "CE"),
             "pe": compute_relative_volume_rank(atm_row, rows, "PE"),

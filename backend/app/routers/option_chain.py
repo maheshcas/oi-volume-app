@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Optional
+from datetime import timezone
 
 from fastapi import APIRouter, HTTPException
 
 from app.core.cache import cache
+from app.engines.bias_probability_engine import compute_bias_probability
+from app.engines.simulation_engine import simulate_breakout_performance
 
 router = APIRouter()
 
@@ -16,6 +20,18 @@ def _cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+def _freshness_payload(last_update: datetime | None) -> dict[str, Any]:
+    if not last_update:
+        return {"freshness_state": "delayed", "delta_seconds": None}
+    delta_seconds = max(0, int((datetime.now(timezone.utc) - last_update).total_seconds()))
+    if delta_seconds < 30:
+        state = "live"
+    elif delta_seconds < 60:
+        state = "stale"
+    else:
+        state = "delayed"
+    return {"freshness_state": state, "delta_seconds": delta_seconds}
 
 
 async def _require_cache_ready() -> dict[str, Any]:
@@ -128,12 +144,15 @@ async def option_chain_interpretations(
 @router.get("/health/nse")
 async def nse_health_check():
     data = await cache.get_cached_data()
+    freshness = _freshness_payload(data.get("last_update"))
     return {
         "ok": bool(data["summary_data"]),
         "timestamp": _iso(data.get("last_successful_fetch")),
         "stale_data": data.get("stale_data", True),
         "is_fetching": data.get("is_fetching", False),
         "last_error": data.get("metrics", {}).get("last_error"),
+        "freshness_state": freshness["freshness_state"],
+        "delta_seconds": freshness["delta_seconds"],
     }
 
 
@@ -165,4 +184,26 @@ async def intelligence_summary_v2(
             status_code=503,
             detail={"status": "initializing", "message": "Intelligence cache is warming up"},
         )
-    return payload
+    response = deepcopy(payload)
+    freshness = _freshness_payload(data.get("last_update"))
+    market_state = response.get("market_state") or {}
+    market_state["freshness_state"] = freshness["freshness_state"]
+    market_state["delta_seconds"] = freshness["delta_seconds"]
+    response["market_state"] = market_state
+    return response
+
+
+@router.post("/bias/probability")
+async def bias_probability(payload: dict[str, Any]):
+    return compute_bias_probability(payload)
+
+
+@router.post("/simulation/breakout-performance")
+async def simulation_breakout_performance(payload: dict[str, Any]):
+    historical_data = payload.get("historicalData")
+    if not isinstance(historical_data, list):
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "historicalData must be a list of option-chain snapshots"},
+        )
+    return simulate_breakout_performance(historical_data)

@@ -29,6 +29,8 @@ class OptionLensCache:
             "last_fetch_latency_ms": None,
             "last_error": None,
         }
+        self.previous_scores: dict[str, float] = {}
+        self.score_history: dict[str, list[float]] = {}
 
     async def get_cached_data(self) -> dict[str, Any]:
         async with self._lock:
@@ -40,6 +42,8 @@ class OptionLensCache:
                 "is_fetching": self.is_fetching,
                 "stale_data": self.stale_data,
                 "metrics": deepcopy(self.metrics),
+                "previous_scores": deepcopy(self.previous_scores),
+                "score_history": deepcopy(self.score_history),
             }
 
     async def update_cache(self, new_option_chain: dict[str, Any], new_summary: dict[str, Any]) -> None:
@@ -54,6 +58,28 @@ class OptionLensCache:
     async def get_last_update_time(self) -> datetime | None:
         async with self._lock:
             return self.last_update
+
+    async def get_previous_score(self, key: str) -> float | None:
+        async with self._lock:
+            value = self.previous_scores.get(key)
+            return float(value) if value is not None else None
+
+    async def set_previous_score(self, key: str, score: float) -> None:
+        async with self._lock:
+            self.previous_scores[key] = float(score)
+
+    async def get_score_history(self, key: str, limit: int = 10) -> list[float]:
+        async with self._lock:
+            values = self.score_history.get(key, [])
+            return [float(v) for v in values[-max(1, int(limit)) :]]
+
+    async def append_score_history(self, key: str, score: float, maxlen: int = 200) -> None:
+        async with self._lock:
+            values = self.score_history.get(key, [])
+            values.append(float(score))
+            if len(values) > maxlen:
+                values = values[-maxlen:]
+            self.score_history[key] = values
 
     async def begin_fetch(self) -> bool:
         """

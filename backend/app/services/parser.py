@@ -61,6 +61,81 @@ def _confidence(price_change_pct, oi_change, volume_ratio, vol_dir):
         score += 5
     return max(0, min(100, score))
 
+def _percentile(values, p):
+    if not values:
+        return 0.0
+    ordered = sorted(float(v) for v in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    idx = (len(ordered) - 1) * max(0.0, min(1.0, float(p)))
+    lo = int(idx)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = idx - lo
+    return ordered[lo] * (1 - frac) + ordered[hi] * frac
+
+def _strike_ladder_interpretation(ce_oi_change, pe_oi_change, threshold_high, threshold_low):
+    delta = (ce_oi_change or 0) - (pe_oi_change or 0)
+    abs_delta = abs(delta)
+    if delta > threshold_high:
+        label = "Call Writing"
+    elif delta < -threshold_high:
+        label = "Put Writing"
+    elif abs_delta < threshold_low:
+        label = "Balanced"
+    else:
+        label = "Shift Building"
+
+    if abs_delta >= (threshold_high * 1.5):
+        strength = "High"
+    elif abs_delta >= threshold_high:
+        strength = "Medium"
+    else:
+        strength = "Low"
+
+    return {
+        "interpretation_label": label,
+        "strength_level": strength,
+    }
+
+def build_strike_ladder_interpretations(rows):
+    """
+    Returns only strike-ladder interpretation objects:
+    {
+      strike,
+      interpretation_label,
+      strength_level
+    }
+    """
+    if not rows:
+        return []
+    deltas = [abs((r.get("CE_DeltaOI", 0) or 0) - (r.get("PE_DeltaOI", 0) or 0)) for r in rows]
+    threshold_high = _percentile(deltas, 0.75)
+    threshold_low = _percentile(deltas, 0.25)
+    if threshold_high <= 0:
+        threshold_high = 1.0
+    if threshold_low < 0:
+        threshold_low = 0.0
+
+    output = []
+    for r in rows:
+        strike = r.get("strike")
+        ce_oi_change = r.get("CE_DeltaOI", 0) or 0
+        pe_oi_change = r.get("PE_DeltaOI", 0) or 0
+        interp = _strike_ladder_interpretation(
+            ce_oi_change=ce_oi_change,
+            pe_oi_change=pe_oi_change,
+            threshold_high=threshold_high,
+            threshold_low=threshold_low,
+        )
+        output.append(
+            {
+                "strike": strike,
+                "interpretation_label": interp["interpretation_label"],
+                "strength_level": interp["strength_level"],
+            }
+        )
+    return output
+
 
 def build_oi_volume_summary(nse_json):
     records = nse_json.get("records", {})
@@ -81,6 +156,19 @@ def build_oi_volume_summary(nse_json):
     pe_sorted = sorted(pe_vols, reverse=True)
     ce_top_20 = ce_sorted[max(0, int(len(ce_sorted) * 0.2) - 1)] if ce_sorted else None
     pe_top_20 = pe_sorted[max(0, int(len(pe_sorted) * 0.2) - 1)] if pe_sorted else None
+
+    ladder_deltas = []
+    for item in data:
+        ce = item.get("CE", {})
+        pe = item.get("PE", {})
+        ladder_deltas.append((ce.get("changeinOpenInterest", 0) or 0) - (pe.get("changeinOpenInterest", 0) or 0))
+    abs_ladder_deltas = [abs(v) for v in ladder_deltas if v is not None]
+    threshold_high = _percentile(abs_ladder_deltas, 0.75)
+    threshold_low = _percentile(abs_ladder_deltas, 0.25)
+    if threshold_high <= 0:
+        threshold_high = 1.0
+    if threshold_low < 0:
+        threshold_low = 0.0
 
     rows = []
 
@@ -151,6 +239,13 @@ def build_oi_volume_summary(nse_json):
                 return "💤 Low Participation"
             return "—"
 
+        ladder_interp = _strike_ladder_interpretation(
+            ce_oi_change=ce_doi,
+            pe_oi_change=pe_doi,
+            threshold_high=threshold_high,
+            threshold_low=threshold_low,
+        )
+
         rows.append({
             "strike": strike,
             "spot": spot,
@@ -186,7 +281,14 @@ def build_oi_volume_summary(nse_json):
             "PE_StrengthScore": pe_strength,
             "PE_ContextTag": pe_context,
             "PE_UITag": _tag(pe_vol_dir, pe_oi_dir),
-            "signal": signal
+            "signal": signal,
+            "strike_interpretation": {
+                "strike": strike,
+                "interpretation_label": ladder_interp["interpretation_label"],
+                "strength_level": ladder_interp["strength_level"],
+            },
+            "strike_interpretation_label": ladder_interp["interpretation_label"],
+            "strike_interpretation_strength": ladder_interp["strength_level"],
         })
 
     return rows
