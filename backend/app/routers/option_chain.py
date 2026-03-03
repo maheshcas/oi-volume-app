@@ -186,6 +186,8 @@ async def intelligence_summary_v2(
         )
     response = deepcopy(payload)
     response.pop("_internal", None)
+    response.pop("_state", None)
+    response.pop("_adaptive_state", None)
     freshness = _freshness_payload(data.get("last_update"))
     market_state = response.get("market_state") or {}
     market_state["freshness_state"] = freshness["freshness_state"]
@@ -217,6 +219,31 @@ async def intelligence_trade_plan_v2(
         "freshness_state": freshness["freshness_state"],
         "delta_seconds": freshness["delta_seconds"],
     }
+
+
+@router.get("/v2/performance/daily")
+async def performance_daily_v2(
+    symbol: str = "NIFTY",
+    expiry: Optional[str] = None,
+    instrument_type: str = "Indices",
+):
+    data = await _require_cache_ready()
+    key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
+    payload = data["summary_data"].get("v2", {}).get(key)
+    if not payload:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "initializing", "message": "Performance cache is warming up"},
+        )
+    return payload.get(
+        "performance",
+        {
+            "bias_accuracy_percent": 0.0,
+            "trap_accuracy_percent": 0.0,
+            "exit_accuracy_percent": 0.0,
+            "total_signals_logged": 0,
+        },
+    )
 
 
 @router.post("/bias/probability")

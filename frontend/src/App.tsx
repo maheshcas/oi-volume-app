@@ -118,6 +118,14 @@ type IntelligenceResponse = {
     target1?: number;
     target2?: number;
     summary_line?: string;
+    composite_score?: number;
+    adaptive_mode?: "Active" | "Base" | string;
+    adaptive_weights?: {
+      oi?: number;
+      volume?: number;
+      breakout?: number;
+      sr?: number;
+    };
     alignment_ratio?: number;
     volatility_state?: "Expanding" | "Contracting" | "Stable";
     freshness_state?: "live" | "stale" | "delayed";
@@ -145,6 +153,21 @@ type IntelligenceResponse = {
       validity_score?: number;
       trap_raw?: number;
     };
+    momentum_exhaustion?: {
+      momentum_exhaustion?: boolean;
+      exhaustion_type?: string | null;
+    };
+    auto_exit?: {
+      exit_signal?: boolean;
+      exit_reason?: string | null;
+    };
+    expiry_adaptive?: {
+      expiry_mode?: boolean;
+      expiry_multiplier?: number;
+      trap_risk?: number;
+      pinning_risk?: boolean;
+      adjustedMove?: number;
+    };
   };
   trade_plan?: {
     strategy_type?: string;
@@ -159,10 +182,19 @@ type IntelligenceResponse = {
 type UiAlert = {
   message: string;
   type: "primary" | "counter";
+  severity: "info" | "watch" | "high";
+};
+
+type DailyPerformance = {
+  bias_accuracy_percent: number;
+  trap_accuracy_percent: number;
+  exit_accuracy_percent: number;
+  total_signals_logged: number;
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const REFRESH_MS = 15000;
+const SPOT_REFRESH_MS = 2000;
 const HEATMAP_WINDOW_MINUTES = 120;
 const LIVE_DATA_UNAVAILABLE_MSG =
   "Live data temporarily unavailable. Showing last valid snapshot.";
@@ -176,6 +208,29 @@ const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const INDEX_NAMES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"];
+
+function classifyAlertSeverity(message: string): "info" | "watch" | "high" {
+  const text = String(message || "").toLowerCase();
+  if (
+    text.includes("shock") ||
+    text.includes("spike") ||
+    text.includes("trap") ||
+    text.includes("reversal") ||
+    text.includes("exhaustion") ||
+    text.includes("breakdown")
+  ) {
+    return "high";
+  }
+  if (
+    text.includes("breakout") ||
+    text.includes("resistance") ||
+    text.includes("support") ||
+    text.includes("watch")
+  ) {
+    return "watch";
+  }
+  return "info";
+}
 
 type IndexRow = {
   indexName: string;
@@ -196,6 +251,29 @@ function formatSigned(value: number | null | undefined, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${Math.abs(value).toFixed(digits)}`;
+}
+
+function buildDecisionSummary(
+  bias: "Bullish" | "Bearish" | "Neutral",
+  support: number | null | undefined,
+  resistance: number | null | undefined,
+  fallback: string
+) {
+  const supportTxt =
+    typeof support === "number" && !Number.isNaN(support) ? support.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : null;
+  const resistanceTxt =
+    typeof resistance === "number" && !Number.isNaN(resistance) ? resistance.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : null;
+
+  if (bias === "Bullish" && supportTxt) {
+    return `Structure favors upside while support holds at ${supportTxt}.`;
+  }
+  if (bias === "Bearish" && resistanceTxt) {
+    return `Structure favors downside while resistance holds at ${resistanceTxt}.`;
+  }
+  if (supportTxt && resistanceTxt) {
+    return `Structure is balanced between support ${supportTxt} and resistance ${resistanceTxt}.`;
+  }
+  return fallback;
 }
 
 type DirectionKind = "up" | "down" | "flat";
@@ -364,6 +442,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
   const [intelligence, setIntelligence] = useState<IntelligenceResponse | null>(null);
+  const [dailyPerformance, setDailyPerformance] = useState<DailyPerformance | null>(null);
   const [activeTab, setActiveTab] = useState<
     "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
   >("overview");
@@ -436,6 +515,11 @@ export default function App() {
           const dataV2 = (await resV2.json()) as IntelligenceResponse;
           setIntelligence(dataV2);
         }
+        const resPerf = await fetch(`${API_BASE}/v2/performance/daily?${params}`);
+        if (resPerf.ok) {
+          const perf = (await resPerf.json()) as DailyPerformance;
+          setDailyPerformance(perf);
+        }
       } catch {
         // Keep existing UI state if v2 call fails.
       }
@@ -452,10 +536,12 @@ export default function App() {
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data = await res.json();
       const list = Array.isArray(data.data) ? data.data : [];
-      setIndexData(list);
+      if (list.length > 0) {
+        setIndexData(list);
+      }
     } catch {
       setStatus((current) => `${current} | Index data unavailable`);
-      setIndexData([]);
+      // Keep last valid snapshot on transient live-feed failures.
     }
   }
 
@@ -498,6 +584,15 @@ export default function App() {
     }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [expiry, symbol, instrumentType, useSample, autoRefresh]);
+
+  useEffect(() => {
+    if (!expiry) return;
+    loadIndexData();
+    const timer = setInterval(() => {
+      loadIndexData();
+    }, SPOT_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [expiry, symbol]);
 
   const filteredRows = useMemo(() => rows, [rows]);
   const rangeFilteredRows = useMemo(() => {
@@ -928,10 +1023,12 @@ export default function App() {
     const apiAlerts: UiAlert[] = (intelligence?.signals?.alerts ?? []).map((a) => ({
       message: a.message,
       type: a.type,
+      severity: classifyAlertSeverity(a.message),
     }));
     const localAlerts: UiAlert[] = [...intradayEngine.engineAlerts, ...alertItems].map((msg) => ({
       message: msg,
       type: "primary",
+      severity: classifyAlertSeverity(msg),
     }));
     const merged = [...apiAlerts, ...localAlerts];
     const deduped: UiAlert[] = [];
@@ -1287,12 +1384,15 @@ export default function App() {
   const displayConfidence = intelligence?.market_state?.confidence ?? breakoutModel.confidence;
   const displayTrapRiskPct = intelligence?.market_state?.trap_risk ?? intradayEngine.trapScore;
   const displayReversalRisk = intelligence?.market_state?.reversal_risk ?? scalpingEngine.reversalRisk;
+  const adaptiveMode = intelligence?.market_state?.adaptive_mode ?? "Base";
+  const adaptiveWeights = intelligence?.market_state?.adaptive_weights;
   const displayAlignmentCount = Math.max(
     0,
     Math.min(4, Math.round(((intelligence?.market_state?.alignment_ratio ?? (displayConfidence / 100)) || 0) * 4))
   );
   const displayVolatilityState = intelligence?.market_state?.volatility_state ?? "Stable";
   const displayFreshnessState = intelligence?.market_state?.freshness_state;
+  const isExpiryMode = intelligence?.signals?.expiry_adaptive?.expiry_mode ?? false;
   const bannerLiveStatus: "live" | "stale" | "delayed" | "blocked" | "checking" =
     nseStatus === "blocked"
       ? "blocked"
@@ -1305,11 +1405,29 @@ export default function App() {
   const rawTrapType = intelligence?.signals?.trap?.trap_type;
   const displayTrapType = rawTrapType ?? "No active trap";
   const showTrapAffectedLevel = intelligence?.signals?.trap?.show_affected_level ?? (rawTrapType !== null && rawTrapType !== undefined);
-  const displayDecisionText = intelligence?.market_state?.summary_line ?? breakoutModel.signal;
   const displaySupport = intelligence?.market_state?.support ?? supportStrike;
   const displayResistance = intelligence?.market_state?.resistance ?? resistanceStrike;
+  const displayDecisionText = buildDecisionSummary(
+    displayBias,
+    displaySupport,
+    displayResistance,
+    intelligence?.market_state?.summary_line ?? breakoutModel.signal
+  );
   const displayTarget1 = intelligence?.market_state?.target1 ?? effectiveTargetProjection.target1;
   const displayTarget2 = intelligence?.market_state?.target2 ?? effectiveTargetProjection.target2;
+  const momentumExhaustion = intelligence?.signals?.momentum_exhaustion;
+  const showMomentumExhaustion = momentumExhaustion?.momentum_exhaustion ?? false;
+  const momentumExhaustionMessage =
+    momentumExhaustion?.exhaustion_type === "Bullish Exhaustion"
+      ? "⚠ Bullish Exhaustion — Upside momentum weakening"
+      : momentumExhaustion?.exhaustion_type === "Bearish Exhaustion"
+        ? "⚠ Bearish Exhaustion — Downside losing strength"
+        : "";
+  const autoExitSignal = intelligence?.signals?.auto_exit?.exit_signal ?? false;
+  const autoExitMessage =
+    displayReversalRisk > 60
+      ? "🔔 High Reversal Risk — Protect Profits"
+      : "🔔 Consider Partial Exit — Momentum Weakening";
   const tradePlan = intelligence?.trade_plan;
   const displayTradePlan = {
     strategy_type: tradePlan?.strategy_type ?? "Balanced / Selective",
@@ -1677,6 +1795,7 @@ export default function App() {
           volatilityState={displayVolatilityState}
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
+          expiryMode={isExpiryMode}
           phase={intradayEngine.sessionPhase}
           projection={effectiveTargetProjection.status}
           trend={displayBias}
@@ -1691,6 +1810,9 @@ export default function App() {
             reversalRisk={displayReversalRisk}
             summaryLine={displayDecisionText}
             alignmentCount={displayAlignmentCount}
+            adaptiveMode={adaptiveMode}
+            adaptiveOiWeight={adaptiveWeights?.oi}
+            adaptiveBreakoutWeight={adaptiveWeights?.breakout}
           />
           <KeyLevelsCard
             support={formatNumber(displaySupport)}
@@ -1711,6 +1833,44 @@ export default function App() {
           </div>
         </div>
 
+        {dailyPerformance ? (
+          <div className="ia-section-gap">
+            <div className="ia-card">
+              <h3 className="ia-card-title">Daily Performance</h3>
+              <div className="ia-kpi-grid">
+                <div>
+                  <div className="ia-kpi-label">Bias Accuracy</div>
+                  <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
+                </div>
+                <div>
+                  <div className="ia-kpi-label">Trap Accuracy</div>
+                  <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
+                </div>
+                <div>
+                  <div className="ia-kpi-label">Exit Accuracy</div>
+                  <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
+                </div>
+                <div>
+                  <div className="ia-kpi-label">Signals Logged</div>
+                  <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showMomentumExhaustion ? (
+          <div className="ia-section-gap">
+            <div className="ia-card ia-exhaustion-alert">{momentumExhaustionMessage}</div>
+          </div>
+        ) : null}
+
+        {autoExitSignal ? (
+          <div className="ia-section-gap">
+            <div className="ia-card ia-exit-alert">{autoExitMessage}</div>
+          </div>
+        ) : null}
+
         <div className="ia-section-gap">
           <div className="ia-card">
             <h3 className="ia-card-title">Trade Plan</h3>
@@ -1723,10 +1883,12 @@ export default function App() {
                 <div className="ia-kpi-label">Primary Target</div>
                 <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_primary)}</div>
               </div>
-              <div>
-                <div className="ia-kpi-label">Extended Target</div>
-                <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_extended)}</div>
-              </div>
+              {displayConfidence >= 40 ? (
+                <div>
+                  <div className="ia-kpi-label">Extended Target</div>
+                  <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_extended)}</div>
+                </div>
+              ) : null}
             </div>
             <div className="ia-kpi-label" style={{ marginTop: 10 }}>
               Entry Zone
@@ -2034,7 +2196,12 @@ export default function App() {
 
         <div className="alert-bar">
           {combinedAlerts.map((item) => (
-            <span key={`${item.type}-${item.message}`} className={`alert-item ${item.type === "counter" ? "alert-item-counter" : ""}`}>
+            <span
+              key={`${item.type}-${item.message}`}
+              className={`alert-item alert-item-${item.severity} ${
+                item.type === "counter" ? "alert-item-counter" : ""
+              }`}
+            >
               {item.message}
               {item.type === "counter" ? " (Counter-trend)" : ""}
             </span>

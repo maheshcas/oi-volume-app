@@ -929,6 +929,39 @@ button:hover {
   font-size: 12px;
 }
 
+.alert-item-info {
+  color: #b7dcff;
+}
+
+.alert-item-info::before {
+  content: "i";
+  background: rgba(102, 190, 255, 0.2);
+  border-color: rgba(102, 190, 255, 0.55);
+  color: #84cbff;
+}
+
+.alert-item-watch {
+  color: #ffd7a3;
+}
+
+.alert-item-watch::before {
+  content: "!";
+  background: rgba(255, 184, 93, 0.25);
+  border-color: rgba(255, 184, 93, 0.6);
+  color: #ffb85d;
+}
+
+.alert-item-high {
+  color: #ffb0c4;
+}
+
+.alert-item-high::before {
+  content: "!";
+  background: rgba(255, 92, 132, 0.22);
+  border-color: rgba(255, 92, 132, 0.62);
+  color: #ff6f97;
+}
+
 .alert-item-counter {
   color: #8a97ad;
   opacity: 0.8;
@@ -1699,6 +1732,10 @@ tbody tr:hover {
   border-radius: 14px;
   padding: 12px 14px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  position: sticky;
+  top: 8px;
+  z-index: 40;
+  backdrop-filter: blur(4px);
 }
 
 .ia-card-title {
@@ -1764,6 +1801,30 @@ tbody tr:hover {
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.22);
   font-weight: 700;
+}
+
+.ia-phase-opening {
+  background: rgba(77, 148, 255, 0.16);
+  border-color: rgba(77, 148, 255, 0.5);
+  color: #9cc2ff;
+}
+
+.ia-phase-midday {
+  background: rgba(243, 180, 90, 0.18);
+  border-color: rgba(243, 180, 90, 0.5);
+  color: #ffd69f;
+}
+
+.ia-phase-power {
+  background: rgba(255, 92, 132, 0.18);
+  border-color: rgba(255, 92, 132, 0.5);
+  color: #ffadc0;
+}
+
+.ia-phase-transition {
+  background: rgba(155, 165, 175, 0.16);
+  border-color: rgba(155, 165, 175, 0.45);
+  color: #d2d8de;
 }
 
 .ia-sep {
@@ -1879,6 +1940,26 @@ tbody tr:hover {
   color: #dbe2e5;
 }
 
+.ia-chip-expiry {
+  background: rgba(153, 102, 255, 0.2);
+  border-color: rgba(153, 102, 255, 0.55);
+  color: #d8c2ff;
+}
+
+.ia-exhaustion-alert {
+  border-color: rgba(255, 165, 82, 0.45);
+  background: linear-gradient(180deg, rgba(255, 165, 82, 0.16), rgba(10, 18, 30, 0.88));
+  color: #ffd7ab;
+  font-weight: 700;
+}
+
+.ia-exit-alert {
+  border-color: rgba(102, 190, 255, 0.45);
+  background: linear-gradient(180deg, rgba(102, 190, 255, 0.16), rgba(10, 18, 30, 0.88));
+  color: #c7e9ff;
+  font-weight: 700;
+}
+
 .ia-bias-wrap { margin-bottom: 10px; }
 
 .ia-vol-chip {
@@ -1918,9 +1999,59 @@ tbody tr:hover {
   font-weight: 700;
 }
 
+.ia-bias-pill-hero {
+  padding: 10px 18px;
+  font-size: 18px;
+  letter-spacing: 0.2px;
+}
+
+.ia-decision-hero {
+  border-color: rgba(110, 160, 255, 0.25);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
+}
+
+.ia-decision-summary {
+  margin: 8px 0 10px;
+  font-size: 14px;
+  color: #e2ebf3;
+}
+
+.ia-confidence-wrap {
+  margin-bottom: 10px;
+}
+
+.ia-confidence-value {
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+.ia-confidence-track {
+  margin-top: 6px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.ia-confidence-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #5db7ff, #7be29d, #f3bf62);
+}
+
 .ia-bias-bull { color: #7be29d; border-color: rgba(123, 226, 157, 0.4); background: rgba(47, 191, 106, 0.14); }
 .ia-bias-bear { color: #ff88a7; border-color: rgba(255, 136, 167, 0.4); background: rgba(209, 58, 98, 0.14); }
 .ia-bias-neutral { color: #d0d7e0; border-color: rgba(176, 190, 210, 0.4); background: rgba(82, 98, 118, 0.25); }
+.ia-bias-weak {
+  opacity: 0.72;
+  filter: saturate(0.65);
+}
+.ia-bias-neutral-weak {
+  color: #d0d7e0 !important;
+  border-color: rgba(176, 190, 210, 0.45) !important;
+  background: rgba(82, 98, 118, 0.28) !important;
+}
 
 .ia-prob-track {
   height: 10px;
@@ -1949,6 +2080,24 @@ tbody tr:hover {
   color: #9fb0b7;
 }
 
+.ia-mini-track {
+  margin-top: 4px;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ia-mini-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.ia-mini-fill-reversal {
+  background: linear-gradient(90deg, #6ab8ff, #ff9a6b);
+}
+
 .ia-kpi-grid {
   margin-top: 8px;
   display: grid;
@@ -1965,6 +2114,11 @@ tbody tr:hover {
   color: #f7f2e8;
   font-weight: 600;
   font-size: 14px;
+}
+
+.ia-kpi-value-sm {
+  font-size: 13px;
+  margin-top: 4px;
 }
 
 .ia-levels-grid {

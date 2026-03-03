@@ -31,6 +31,7 @@ class OptionLensCache:
         }
         self.previous_scores: dict[str, float] = {}
         self.score_history: dict[str, list[float]] = {}
+        self.previous_states: dict[str, Any] = {}
 
     async def get_cached_data(self) -> dict[str, Any]:
         async with self._lock:
@@ -44,6 +45,7 @@ class OptionLensCache:
                 "metrics": deepcopy(self.metrics),
                 "previous_scores": deepcopy(self.previous_scores),
                 "score_history": deepcopy(self.score_history),
+                "previous_states": deepcopy(self.previous_states),
             }
 
     async def update_cache(self, new_option_chain: dict[str, Any], new_summary: dict[str, Any]) -> None:
@@ -80,6 +82,14 @@ class OptionLensCache:
             if len(values) > maxlen:
                 values = values[-maxlen:]
             self.score_history[key] = values
+
+    async def get_previous_state(self, key: str) -> Any:
+        async with self._lock:
+            return deepcopy(self.previous_states.get(key))
+
+    async def set_previous_state(self, key: str, state: Any) -> None:
+        async with self._lock:
+            self.previous_states[key] = deepcopy(state)
 
     async def begin_fetch(self) -> bool:
         """

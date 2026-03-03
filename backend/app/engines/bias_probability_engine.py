@@ -24,10 +24,10 @@ def compute_bias_probability(
     high_volume_ratio: float = 1.2,
 ) -> dict[str, Any]:
     """
-    Weighted bias probability model:
-    - priceMomentumScore: 0..30
+    Retail bias model (single authority):
     - oiDirectionalScore: 0..30
-    - volumeParticipationScore: 0..20
+    - volumeParticipationScore: 0..25
+    - priceMomentumScore: 0..25
     - putCallImbalanceScore: 0..20
     """
     records: Dict[str, Any] = option_chain_json.get("records", {}) or {}
@@ -40,9 +40,9 @@ def compute_bias_probability(
             "biasLabel": "Neutral",
             "confidence": 15.0,
             "detail": {
-                "priceMomentumScore": 15.0,
+                "priceMomentumScore": 12.5,
                 "oiDirectionalScore": 15.0,
-                "volumeParticipationScore": 10.0,
+                "volumeParticipationScore": 12.5,
                 "putCallImbalanceScore": 10.0,
                 "combinedScore": 50.0,
                 "reason": "No option-chain rows",
@@ -77,11 +77,11 @@ def compute_bias_probability(
     if prev_spot and float(prev_spot) != 0:
         price_change_pct = ((spot - float(prev_spot)) / float(prev_spot)) * 100.0
         z_price = _clamp(price_change_pct / max(price_threshold_pct * 4.0, 1e-9), -1.0, 1.0)
-        price_momentum_score = 15.0 + (z_price * 15.0)
+        price_momentum_score = 12.5 + (z_price * 12.5)
     else:
         price_change_pct = 0.0
-        price_momentum_score = 15.0
-    price_momentum_score = _clamp(price_momentum_score, 0.0, 30.0)
+        price_momentum_score = 12.5
+    price_momentum_score = _clamp(price_momentum_score, 0.0, 25.0)
 
     oi_delta = pe_doi - ce_doi
     oi_norm = oi_delta / (abs(pe_doi) + abs(ce_doi) + 1e-9)
@@ -97,7 +97,7 @@ def compute_bias_probability(
     intensity = _clamp((volume_ratio - 1.0) / max(high_volume_ratio - 1.0, 1e-9), 0.0, 1.0)
     direction_hint = _sign(price_change_pct) + _sign(oi_norm)
     direction_hint = 1 if direction_hint > 0 else -1 if direction_hint < 0 else 0
-    volume_participation_score = _clamp(10.0 + (direction_hint * intensity * 10.0), 0.0, 20.0)
+    volume_participation_score = _clamp(12.5 + (direction_hint * intensity * 12.5), 0.0, 25.0)
 
     pcr = pe_oi / max(ce_oi, 1e-9)
     pcr_bias = _clamp((1.0 - pcr) / 0.5, -1.0, 1.0)
@@ -111,9 +111,9 @@ def compute_bias_probability(
     bullish_probability = round(combined_score, 2)
     bearish_probability = round(100.0 - combined_score, 2)
 
-    if bullish_probability >= 55:
+    if bullish_probability >= 52.5:
         bias_label: BiasLabel = "Bullish"
-    elif bullish_probability <= 45:
+    elif bullish_probability <= 47.5:
         bias_label = "Bearish"
     else:
         bias_label = "Neutral"
@@ -126,14 +126,17 @@ def compute_bias_probability(
     else:
         agreement_ratio = sum(1 for s in active if s == model_dir) / len(active)
 
-    confidence = (abs(bullish_probability - 50.0) * 2.0 * 0.7) + (agreement_ratio * 100.0 * 0.3)
-    confidence = round(_clamp(confidence, 0.0, 100.0), 2)
+    spread = abs(bullish_probability - bearish_probability)
+    confidence = round(_clamp(spread, 20.0, 90.0), 2)
 
     return {
         "bullishProbability": bullish_probability,
         "bearishProbability": bearish_probability,
         "biasLabel": bias_label,
         "confidence": confidence,
+        "bias": bias_label,
+        "probability_bull": bullish_probability,
+        "probability_bear": bearish_probability,
         "detail": {
             "priceMomentumScore": round(price_momentum_score, 2),
             "oiDirectionalScore": round(oi_directional_score, 2),
@@ -145,5 +148,6 @@ def compute_bias_probability(
             "volumeRatio": round(volume_ratio, 4),
             "pcr": round(pcr, 4),
             "agreementRatio": round(agreement_ratio, 4),
+            "spread": round(spread, 2),
         },
     }

@@ -170,69 +170,56 @@ def detect_fake_breakout(
 
 
 def run_trap_engine(features: dict[str, Any], breakout: dict[str, Any], oi: dict[str, Any], volume: dict[str, Any]) -> dict[str, Any]:
-    # Prefer v2 model using normalized components.
-    breakout_strength = 1.0 if (breakout.get("breakout_up") or breakout.get("breakout_down")) else 0.0
-    atm_participation_score = _clamp01(float(volume.get("atm_participation") or 0.0))
-    oi_shift_score = _clamp01(float(oi.get("oi_strength") or 0.0))
-    rvr_ce = float(volume.get("rvr", {}).get("ce", 0.0) or 0.0)
-    rvr_pe = float(volume.get("rvr", {}).get("pe", 0.0) or 0.0)
-    volume_expansion_score = _clamp01((rvr_ce + rvr_pe) / 2.0 + (0.15 if volume.get("volume_expansion") else 0.0))
+    # Retail simplified trap logic:
+    # trigger only when breakout + weak ATM OI + weak volume + not first 5 minutes.
+    ts = str(features.get("meta", {}).get("timestamp") or "")
+    hhmm = None
+    for token in ts.replace("-", " ").replace(":", " ").split():
+        if token.isdigit() and len(token) in (1, 2):
+            continue
+    try:
+        import re
 
-    # Intraday candle-specific inputs may not exist in option-chain payload yet.
-    # Keep override hooks in features for future OHLC integration.
-    rejection_wick_score = _clamp01(float(features.get("rejection_wick_score", 0.5) or 0.5))
-    time_above_level_ratio = _clamp01(float(features.get("time_above_level_ratio", 0.5) or 0.5))
-    volatility_factor = _clamp01(float(features.get("volatility_factor", 0.5) or 0.5))
+        m = re.search(r"(\d{1,2}):(\d{2})", ts)
+        if m:
+            hhmm = (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        hhmm = None
 
-    v2 = trap_engine_v2(
-        breakout_strength=breakout_strength,
-        atm_participation_score=atm_participation_score,
-        oi_shift_score=oi_shift_score,
-        volume_expansion_score=volume_expansion_score,
-        rejection_wick_score=rejection_wick_score,
-        time_above_level_ratio=time_above_level_ratio,
-        volatility_factor=volatility_factor,
+    in_open_window = False
+    if hhmm is not None:
+        hh, mm = hhmm
+        mins = hh * 60 + mm
+        in_open_window = 555 <= mins < 560  # 09:15 to 09:19 IST
+
+    breakout_trigger = bool(breakout.get("breakout_up") or breakout.get("breakout_down"))
+    weak_atm_oi = float(oi.get("oi_strength", 0.0) or 0.0) < 0.4
+    weak_volume = (not bool(volume.get("volume_expansion"))) or (
+        ((float(volume.get("rvr", {}).get("ce", 0.0) or 0.0) + float(volume.get("rvr", {}).get("pe", 0.0) or 0.0)) / 2.0)
+        < 0.55
     )
 
-    trap_type = v2["trap_type"]
+    is_trap = bool(breakout_trigger and weak_atm_oi and weak_volume and (not in_open_window))
+    trap_risk = 75 if is_trap else (40 if breakout_trigger and (weak_atm_oi or weak_volume) else 20)
 
-    current_atr = float(breakout.get("atr_threshold") or features.get("atr_proxy") or 0.0)
-    rolling_atr_mean = float(features.get("rolling_atr_mean") or features.get("atr_proxy") or 0.0)
-    trap_adj = adjust_trap_probability_for_volatility(
-        base_trap_probability=float(v2["trap_probability"]),
-        current_atr=current_atr,
-        rolling_atr_mean=rolling_atr_mean,
-    )
-    trap_risk = int(trap_adj["trap_probability"])
-    if trap_risk > 65:
-        adjusted_trap_level = "High"
-    elif trap_risk > 45:
-        adjusted_trap_level = "Moderate"
+    if in_open_window:
+        trap_type = None
+        trap_message = "Trap filter inactive during opening 5 minutes."
+    elif is_trap:
+        trap_type = "Breakout Failure"
+        trap_message = "Breakout lacks OI/volume support; reversal risk elevated."
+    elif breakout_trigger:
+        trap_type = None
+        trap_message = "Breakout conditions not fully weak; trap risk moderate."
     else:
-        adjusted_trap_level = "Low"
-    show_affected_level = trap_type is not None
-
-    if trap_type is None:
-        return {
-            "trap_type": None,
-            "trap_risk": trap_risk,
-            "show_affected_level": False,
-            "is_trap": False,
-            "trap_probability_pct": trap_risk,
-            "trap_level": adjusted_trap_level,
-            "validity_score": v2["validity_score"],
-            "trap_raw": v2["trap_raw"],
-            "volatility_factor": trap_adj["volatility_factor"],
-        }
+        trap_type = None
+        trap_message = "No active trap setup."
 
     return {
-        "is_trap": trap_risk >= 60,
-        "trap_probability_pct": trap_risk,
-        "trap_risk": trap_risk,
-        "trap_level": adjusted_trap_level,
+        "is_trap": is_trap,
+        "trap_probability_pct": int(trap_risk),
+        "trap_risk": int(trap_risk),
         "trap_type": trap_type,
-        "show_affected_level": show_affected_level,
-        "validity_score": v2["validity_score"],
-        "trap_raw": v2["trap_raw"],
-        "volatility_factor": trap_adj["volatility_factor"],
+        "trap_message": trap_message,
+        "show_affected_level": bool(trap_type is not None),
     }

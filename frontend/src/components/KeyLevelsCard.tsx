@@ -3,7 +3,6 @@ type KeyLevelsCardProps = {
   resistance: string;
   target1: string;
   target2: string;
-  accelerationZone: string;
 };
 
 export default function KeyLevelsCard(props: KeyLevelsCardProps) {
@@ -26,10 +25,6 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
         <div>
           <div className="ia-kpi-label">Target 2</div>
           <div className="ia-kpi-value">{props.target2}</div>
-        </div>
-        <div className="ia-col-span-2">
-          <div className="ia-kpi-label">Acceleration Zone</div>
-          <div className="ia-level-accl">{props.accelerationZone}</div>
         </div>
       </div>
     </div>

@@ -68,11 +68,11 @@ async def on_startup() -> None:
     global _updater_stop_event, _updater_task
     if _updater_task and not _updater_task.done():
         logger.info("Background updater already running")
-        return
+    else:
+        _updater_stop_event = asyncio.Event()
+        _updater_task = asyncio.create_task(background_update_loop(_updater_stop_event))
+        logger.info("Background updater task started")
 
-    _updater_stop_event = asyncio.Event()
-    _updater_task = asyncio.create_task(background_update_loop(_updater_stop_event))
-    logger.info("Background updater task started")
 
 
 @app.on_event("shutdown")

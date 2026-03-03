@@ -1,6 +1,8 @@
 import math
 from typing import Any
 
+from app.engines.arbitration_engine import run_arbitration
+from app.engines.conflict_resolution_engine import resolve_conflicts
 DEFAULT_WEIGHTS = {
     "oi": 0.30,
     "volume": 0.20,
@@ -46,6 +48,84 @@ REGIME_WEIGHTS: dict[str, dict[str, float]] = {
         "regime": 0.12,
     },
 }
+
+
+def run_decision_engine_v3(
+    *,
+    oi_score: float,
+    volume_score: float,
+    breakout_score: float,
+    sr_score: float,
+    trap_penalty: float,
+    alignment_ratio: float,
+    bias_stability_score: float,
+    weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Decision Engine v3."""
+    oi_score = max(-1.0, min(1.0, float(oi_score)))
+    volume_score = max(-1.0, min(1.0, float(volume_score)))
+    breakout_score = max(-1.0, min(1.0, float(breakout_score)))
+    sr_score = max(-1.0, min(1.0, float(sr_score)))
+    trap_penalty = max(0.0, min(1.0, float(trap_penalty)))
+    alignment_ratio = max(0.0, min(1.0, float(alignment_ratio)))
+    bias_stability_score = max(0.0, min(100.0, float(bias_stability_score)))
+
+    weights = weights or {"oi": 0.30, "volume": 0.25, "breakout": 0.20, "sr": 0.15}
+    w_oi = float(weights.get("oi", 0.30) or 0.30)
+    w_volume = float(weights.get("volume", 0.25) or 0.25)
+    w_breakout = float(weights.get("breakout", 0.20) or 0.20)
+    w_sr = float(weights.get("sr", 0.15) or 0.15)
+    w_total = w_oi + w_volume + w_breakout + w_sr
+    if w_total <= 0:
+        w_oi, w_volume, w_breakout, w_sr = 0.30, 0.25, 0.20, 0.15
+        w_total = 0.90
+    # Normalize incoming weights so weighted sum remains stable.
+    w_oi, w_volume, w_breakout, w_sr = (
+        w_oi / w_total,
+        w_volume / w_total,
+        w_breakout / w_total,
+        w_sr / w_total,
+    )
+
+    composite_score = (
+        (oi_score * w_oi)
+        + (volume_score * w_volume)
+        + (breakout_score * w_breakout)
+        + (sr_score * w_sr)
+        - (trap_penalty * 0.10)
+    )
+    composite_score = max(-1.0, min(1.0, composite_score))
+
+    bull_probability = 1.0 / (1.0 + math.exp(-4.0 * composite_score))
+    bear_probability = 1.0 - bull_probability
+
+    confidence = (
+        abs(composite_score) * 60.0
+        + alignment_ratio * 20.0
+        + (bias_stability_score / 100.0) * 20.0
+    )
+    confidence = min(confidence, 95.0)
+
+    if bull_probability > 0.55:
+        bias = "Bullish"
+    elif bear_probability > 0.55:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+
+    return {
+        "bias": bias,
+        "bull_probability": round(bull_probability, 4),
+        "bear_probability": round(bear_probability, 4),
+        "confidence": round(confidence, 2),
+        "composite_score": round(composite_score, 4),
+        "weight_distribution": {
+            "oi": round(w_oi, 4),
+            "volume": round(w_volume, 4),
+            "breakout": round(w_breakout, 4),
+            "sr": round(w_sr, 4),
+        },
+    }
 
 
 def _validate_range(name: str, value: float, min_value: float, max_value: float) -> None:
@@ -168,7 +248,7 @@ def master_arbitration_layer(
             return -1
         return 0
 
-    # 1) Each engine score in [-1, +1]
+    # 1) Collect engine direction scores in [-1, +1]
     oi_alignment = str(oi.get("alignment", "mixed"))
     oi_strength = _clamp(float(oi.get("oi_strength", 0.0) or 0.0), 0.0, 1.0)
     oi_score = 0.0
@@ -183,57 +263,34 @@ def master_arbitration_layer(
     volume_expansion = bool(volume.get("volume_expansion"))
     volume_score = _clamp(volume_direction * (1.0 if volume_expansion else 0.7), -1.0, 1.0)
 
-    atm_participation = _clamp(float(volume.get("atm_participation", 0.0) or 0.0), 0.0, 1.0)
-    atm_dir = 1.0 if oi_alignment == "bullish" else -1.0 if oi_alignment == "bearish" else 0.0
-    atm_score = _clamp(atm_participation * atm_dir, -1.0, 1.0)
-
     breakout_score = 1.0 if breakout.get("breakout_up") else -1.0 if breakout.get("breakout_down") else 0.0
+    price_score = _clamp(float(pcr_bias_score), -1.0, 1.0)
 
     mapped_regime = str(regime.get("regime") or "")
-    if mapped_regime == "Trend Day":
-        regime_score = 0.5 if oi_alignment != "bearish" else -0.5
-    elif mapped_regime == "Breakdown":
-        regime_score = -0.8
-    elif mapped_regime == "Short Covering":
-        regime_score = 0.6
-    elif mapped_regime == "Trap Risk":
-        regime_score = 0.0
-    else:
-        regime_score = 0.0
+    trap_probability = _clamp(float(trap.get("trap_probability_pct", 0) or 0) / 100.0, 0.0, 1.0)
+    regime_for_arb = str(regime_type or regime.get("regime_type") or mapped_regime or "Transition")
+    prev = _clamp(float(previous_score) if previous_score is not None else 0.0, -1.0, 1.0)
+    arbitration = run_arbitration(
+        oi_score=_clamp(oi_score, -1.0, 1.0),
+        volume_score=_clamp(volume_score, -1.0, 1.0),
+        price_score=price_score,
+        breakout_score=_clamp(breakout_score, -1.0, 1.0),
+        trap_risk=trap_probability,
+        regime=regime_for_arb,
+        previous_score=prev,
+    )
+    raw_score = _clamp(float(arbitration["raw_score"]), -1.0, 1.0)
+    score = _clamp(float(arbitration["smoothed_score"]), -1.0, 1.0)
+    bias = str(arbitration["bias"])
+    weights = dict(arbitration.get("weights", {}))
+    regime_used = str(arbitration.get("regime_used", regime_for_arb))
 
     engine_scores = {
         "oi": _clamp(oi_score, -1.0, 1.0),
         "volume": _clamp(volume_score, -1.0, 1.0),
-        "atm": _clamp(atm_score, -1.0, 1.0),
+        "price": _clamp(price_score, -1.0, 1.0),
         "breakout": _clamp(breakout_score, -1.0, 1.0),
-        "regime": _clamp(regime_score, -1.0, 1.0),
     }
-
-    # 2) Weighted aggregation (regime-based with safe fallback and normalization)
-    regime_used = str(regime_type or regime.get("regime_type") or regime.get("regime") or "default")
-    if weights_override:
-        selected_weights = {k: float(weights_override.get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS.keys()}
-        regime_used = f"{regime_used}:custom"
-    else:
-        selected_weights = REGIME_WEIGHTS.get(regime_used, DEFAULT_WEIGHTS)
-    raw_weight_sum = sum(float(v) for v in selected_weights.values())
-    if raw_weight_sum <= 0:
-        selected_weights = DEFAULT_WEIGHTS
-        raw_weight_sum = sum(DEFAULT_WEIGHTS.values())
-        regime_used = "default"
-    weights = {k: float(selected_weights.get(k, 0.0)) / raw_weight_sum for k in DEFAULT_WEIGHTS.keys()}
-
-    # 3) Aggregate score
-    raw_score = sum(engine_scores[k] * weights[k] for k in weights.keys())
-    raw_score = _clamp(raw_score, -1.0, 1.0)
-
-    # Bias smoothing (EMA): first run uses raw score.
-    alpha = _clamp(alpha, 0.0, 1.0)
-    if previous_score is None:
-        score = raw_score
-    else:
-        score = (alpha * raw_score) + ((1.0 - alpha) * _clamp(previous_score, -1.0, 1.0))
-        score = _clamp(score, -1.0, 1.0)
 
     # 4) Convert to probabilities
     bull_prob = _clamp((score + 1.0) / 2.0, 0.0, 1.0)
@@ -280,7 +337,7 @@ def master_arbitration_layer(
         bias = "Bullish"
     elif bear_pct > 55:
         bias = "Bearish"
-    else:
+    elif bias not in ("Bullish", "Bearish"):
         bias = "Neutral"
 
     if confidence_percent >= 75:
@@ -297,8 +354,6 @@ def master_arbitration_layer(
         regime_out = "Trap Risk"
     elif mapped_regime == "Range Day":
         regime_out = "Range"
-
-    trap_probability = _clamp(float(trap.get("trap_probability_pct", 0) or 0) / 100.0, 0.0, 1.0)
     if trap_probability > 0.6 or trap.get("is_trap"):
         regime_out = "Trap Risk"
 
@@ -323,6 +378,24 @@ def master_arbitration_layer(
     else:
         summary_statement = "Two-sided positioning near spot; market structure remains range-bound."
 
+    support_strength = _clamp(float(oi.get("concentration", {}).get("pe", 0.0) or 0.0), 0.0, 1.0)
+    resistance_strength = _clamp(float(oi.get("concentration", {}).get("ce", 0.0) or 0.0), 0.0, 1.0)
+    base_projection = "Range"
+    if breakout.get("breakout_up"):
+        base_projection = "Breakout Up"
+    elif breakout.get("breakout_down"):
+        base_projection = "Breakout Down"
+
+    conflict = resolve_conflicts(
+        regime=regime_out,
+        confidence=_clamp(confidence_percent / 100.0, 0.0, 1.0),
+        alignment_ratio=_clamp(agreement_ratio, 0.0, 1.0),
+        trap_risk=trap_probability,
+        support_strength=support_strength,
+        resistance_strength=resistance_strength,
+        projection=base_projection,
+    )
+
     return {
         "bias": bias,
         "regime": regime_out,
@@ -345,5 +418,13 @@ def master_arbitration_layer(
         "volatility_ratio": round(float(raw_vol_ratio), 4),
         "volatility_state": volatility_state,
         "volatility_modifier": round(float(volatility_modifier), 4),
+        "projection": conflict["projection"],
+        "projection_strength": conflict["projection_strength"],
+        "projection_reason_flags": conflict["reason_flags"],
+        "arbitration": {
+            "raw_score": round(raw_score, 4),
+            "smoothed_score": round(score, 4),
+            "bias": arbitration.get("bias"),
+        },
         "explanation": summary_statement,
     }

@@ -41,54 +41,46 @@ def generate_trade_plan(
     res = _to_float(resistance)
     t1 = _to_float(target1)
     t2 = _to_float(target2)
-    bull_prob = _to_float(probability_bull) or 50.0
+    _ = _to_float(probability_bull)  # kept for interface compatibility
 
-    strategy_type = "Range / Wait"
-    entry_zone = "Wait for clearer setup around support/resistance."
-    stop_hint = "Keep stops outside the nearby range."
+    strategy_type = "Range"
+    entry_zone = "Wait for clearer setup around key levels."
+    stop_hint = "Keep stop beyond nearby structure."
     target_primary = t1
     target_extended = t2
     caution_note = "Low clarity session. Prefer range trades."
 
     if conf < 45:
         strategy_type = "Low Clarity Range"
-        entry_zone = (
-            f"Fade edges near {sup:.0f}-{res:.0f} when rejection appears."
-            if sup is not None and res is not None
-            else "Fade range edges after rejection confirmation."
-        )
-        stop_hint = (
-            f"Stop beyond range edge ({sup:.0f}/{res:.0f})."
-            if sup is not None and res is not None
-            else "Stop beyond range edge."
-        )
-        target_primary = res if bull_prob >= 50 else sup
-        target_extended = sup if bull_prob >= 50 else res
+        entry_zone = "Prefer range trades near support/resistance."
+        stop_hint = "Keep stop outside range boundary."
+        target_primary = t1 if t1 is not None else res
+        target_extended = t2 if t2 is not None else sup
+        caution_note = "Low clarity session. Prefer range trades."
     elif bias == "Bullish" and conf > 55:
         strategy_type = "Directional Bullish"
         entry_zone = (
-            f"Breakout above {res:.0f} or pullback near {sup:.0f}."
+            f"Near resistance breakout ({res:.0f}) or pullback to support ({sup:.0f})."
             if sup is not None and res is not None
-            else "Breakout continuation or pullback setup."
+            else "Near resistance breakout or pullback to support."
         )
-        stop_hint = f"Below support {sup:.0f}." if sup is not None else "Below nearest support."
-        caution_note = "Follow only if participation stays strong."
+        stop_hint = f"Below support ({sup:.0f})." if sup is not None else "Below support."
+        caution_note = "Keep execution selective and size controlled."
     elif bias == "Bearish" and conf > 55:
         strategy_type = "Directional Bearish"
         entry_zone = (
-            f"Breakdown below {sup:.0f} or pullback near {res:.0f}."
+            f"Near support breakdown ({sup:.0f}) or pullback to resistance ({res:.0f})."
             if sup is not None and res is not None
-            else "Breakdown continuation or pullback setup."
+            else "Near support breakdown or pullback to resistance."
         )
-        stop_hint = f"Above resistance {res:.0f}." if res is not None else "Above nearest resistance."
-        caution_note = "Follow only if downside participation stays strong."
+        stop_hint = f"Above resistance ({res:.0f})." if res is not None else "Above resistance."
+        caution_note = "Keep execution selective and size controlled."
     else:
-        strategy_type = "Balanced / Selective"
-        entry_zone = "Take only high-quality setups near key levels."
-        stop_hint = "Use tighter risk controls until structure improves."
+        strategy_type = "Balanced"
+        entry_zone = "Wait for cleaner move around support/resistance."
+        stop_hint = "Use tighter stop until clarity improves."
         caution_note = "Mixed structure; avoid aggressive entries."
 
-    # Keep risk phrasing simple and concise.
     if trap >= 65:
         caution_note = f"{caution_note} Trap risk is elevated."
     elif volatility_state == "Expanding":
@@ -104,4 +96,3 @@ def generate_trade_plan(
             "caution_note": caution_note,
         }
     }
-
