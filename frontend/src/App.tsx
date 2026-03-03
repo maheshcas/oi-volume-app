@@ -5,6 +5,7 @@ import MarketBanner from "./components/MarketBanner";
 import DecisionPanel from "./components/DecisionPanel";
 import KeyLevelsCard from "./components/KeyLevelsCard";
 import StructuralDiagnostics from "./components/StructuralDiagnostics";
+import { MARKETING_MODE } from "./config/uiMode";
 
 type SummaryRow = {
   strike: number;
@@ -1444,6 +1445,34 @@ export default function App() {
         ? "Reduce size and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
 
+  const visibleAlerts = useMemo(() => {
+    if (!MARKETING_MODE) return combinedAlerts;
+    const suppressBreakout =
+      displayVolatilityState === "Stable" ||
+      String(effectiveTargetProjection.status || "").toLowerCase() === "no breakout";
+    const filtered = combinedAlerts.filter((item) => {
+      if (item.severity === "info") return false;
+      const lower = item.message.toLowerCase();
+      if (suppressBreakout && (lower.includes("breakout") || lower.includes("breakdown"))) {
+        return false;
+      }
+      return true;
+    });
+    return filtered.slice(0, 2);
+  }, [combinedAlerts, displayVolatilityState, effectiveTargetProjection.status]);
+
+  const visibleTabs: Array<
+    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
+  > = MARKETING_MODE
+    ? ["overview", "charts", "option-chain"]
+    : ["overview", "charts", "heatmap", "writers", "basis", "option-chain"];
+
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) {
+      setActiveTab("overview");
+    }
+  }, [activeTab, visibleTabs]);
+
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
       return { ce: [] as Array<{ strike: number; doi: number; volume: number; score: number }>, pe: [] as Array<{ strike: number; doi: number; volume: number; score: number }> };
@@ -1798,6 +1827,7 @@ export default function App() {
           expiryMode={isExpiryMode}
           phase={intradayEngine.sessionPhase}
           projection={effectiveTargetProjection.status}
+          showProjection={!MARKETING_MODE}
           trend={displayBias}
         />
 
@@ -1807,9 +1837,11 @@ export default function App() {
             bullProbability={displayBullProbability}
             bearProbability={displayBearProbability}
             confidence={displayConfidence}
+            trapRisk={displayTrapRiskPct}
             reversalRisk={displayReversalRisk}
             summaryLine={displayDecisionText}
             alignmentCount={displayAlignmentCount}
+            marketingMode={MARKETING_MODE}
             adaptiveMode={adaptiveMode}
             adaptiveOiWeight={adaptiveWeights?.oi}
             adaptiveBreakoutWeight={adaptiveWeights?.breakout}
@@ -1837,24 +1869,46 @@ export default function App() {
           <div className="ia-section-gap">
             <div className="ia-card">
               <h3 className="ia-card-title">Daily Performance</h3>
-              <div className="ia-kpi-grid">
-                <div>
-                  <div className="ia-kpi-label">Bias Accuracy</div>
-                  <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
+              {MARKETING_MODE ? (
+                dailyPerformance.total_signals_logged < 5 ? (
+                  <div className="ia-kpi-label">Collecting session data...</div>
+                ) : (
+                  <div className="ia-kpi-grid">
+                    <div>
+                      <div className="ia-kpi-label">Winning Signals</div>
+                      <div className="ia-kpi-value">
+                        {Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/
+                        {dailyPerformance.total_signals_logged}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="ia-kpi-label">Avg Target Hit Rate</div>
+                      <div className="ia-kpi-value">
+                        {Math.round((dailyPerformance.bias_accuracy_percent + dailyPerformance.exit_accuracy_percent) / 2)}%
+                      </div>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="ia-kpi-grid">
+                  <div>
+                    <div className="ia-kpi-label">Bias Accuracy</div>
+                    <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
+                  </div>
+                  <div>
+                    <div className="ia-kpi-label">Trap Accuracy</div>
+                    <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
+                  </div>
+                  <div>
+                    <div className="ia-kpi-label">Exit Accuracy</div>
+                    <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
+                  </div>
+                  <div>
+                    <div className="ia-kpi-label">Signals Logged</div>
+                    <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="ia-kpi-label">Trap Accuracy</div>
-                  <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
-                </div>
-                <div>
-                  <div className="ia-kpi-label">Exit Accuracy</div>
-                  <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
-                </div>
-                <div>
-                  <div className="ia-kpi-label">Signals Logged</div>
-                  <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         ) : null}
@@ -1874,6 +1928,7 @@ export default function App() {
         <div className="ia-section-gap">
           <div className="ia-card">
             <h3 className="ia-card-title">Trade Plan</h3>
+            <div className="ia-subtle-divider">How to Trade This Structure</div>
             <div className="ia-kpi-grid">
               <div>
                 <div className="ia-kpi-label">Strategy</div>
@@ -1893,7 +1948,7 @@ export default function App() {
             <div className="ia-kpi-label" style={{ marginTop: 10 }}>
               Entry Zone
             </div>
-            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+            <div className="ia-kpi-value ia-entry-zone">
               {displayTradePlan.entry_zone}
             </div>
             <div className="ia-kpi-label" style={{ marginTop: 8 }}>
@@ -1911,33 +1966,35 @@ export default function App() {
           </div>
         </div>
 
-        <div className="ia-section-gap">
-          <StructuralDiagnostics
-            open={showStructural}
-            onToggle={() => setShowStructural((prev) => !prev)}
-            atmCeOi={`${formatNumber(spotRow?.CE_OI ?? null)} ${directionArrow(spotRow?.CE_OIDir)}`}
-            atmPeOi={`${formatNumber(spotRow?.PE_OI ?? null)} ${directionArrow(spotRow?.PE_OIDir)}`}
-            atmCeVol={`${formatNumber(spotRow?.CE_Volume ?? null)} ${directionArrow(spotRow?.CE_VolDir)}`}
-            atmPeVol={`${formatNumber(spotRow?.PE_Volume ?? null)} ${directionArrow(spotRow?.PE_VolDir)}`}
-            institutionalLevels={
-              smartMoneyZones.institutional.length
-                ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ")
-                : "-"
-            }
-            expectedMove={formatNumber(apiTargetProjection?.expectedMove ?? null)}
-            shift={intradayEngine.shiftSummary}
-            checklist={[
-              { label: "ATM OI Rising", confirmed: !!apiTargetProjection?.confirmation?.bullish?.atm_oi_rising },
-              { label: "CE Unwinding", confirmed: !!apiTargetProjection?.confirmation?.bullish?.ce_unwinding },
-              { label: "PE Aggressive Build", confirmed: !!apiTargetProjection?.confirmation?.bullish?.pe_aggressive_build },
-              { label: "PCR < 0.85", confirmed: !!apiTargetProjection?.confirmation?.bearish?.pcr_below_085 },
-            ]}
-          />
-        </div>
+        {!MARKETING_MODE ? (
+          <div className="ia-section-gap">
+            <StructuralDiagnostics
+              open={showStructural}
+              onToggle={() => setShowStructural((prev) => !prev)}
+              atmCeOi={`${formatNumber(spotRow?.CE_OI ?? null)} ${directionArrow(spotRow?.CE_OIDir)}`}
+              atmPeOi={`${formatNumber(spotRow?.PE_OI ?? null)} ${directionArrow(spotRow?.PE_OIDir)}`}
+              atmCeVol={`${formatNumber(spotRow?.CE_Volume ?? null)} ${directionArrow(spotRow?.CE_VolDir)}`}
+              atmPeVol={`${formatNumber(spotRow?.PE_Volume ?? null)} ${directionArrow(spotRow?.PE_VolDir)}`}
+              institutionalLevels={
+                smartMoneyZones.institutional.length
+                  ? smartMoneyZones.institutional.map((s) => formatNumber(s)).join(", ")
+                  : "-"
+              }
+              expectedMove={formatNumber(apiTargetProjection?.expectedMove ?? null)}
+              shift={intradayEngine.shiftSummary}
+              checklist={[
+                { label: "ATM OI Rising", confirmed: !!apiTargetProjection?.confirmation?.bullish?.atm_oi_rising },
+                { label: "CE Unwinding", confirmed: !!apiTargetProjection?.confirmation?.bullish?.ce_unwinding },
+                { label: "PE Aggressive Build", confirmed: !!apiTargetProjection?.confirmation?.bullish?.pe_aggressive_build },
+                { label: "PCR < 0.85", confirmed: !!apiTargetProjection?.confirmation?.bearish?.pcr_below_085 },
+              ]}
+            />
+          </div>
+        ) : null}
 
         <div className="ia-tabs-wrap">
           <div className="ia-tabs">
-            {(["overview", "charts", "heatmap", "writers", "basis", "option-chain"] as const).map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2195,7 +2252,7 @@ export default function App() {
         </div>
 
         <div className="alert-bar">
-          {combinedAlerts.map((item) => (
+          {visibleAlerts.map((item) => (
             <span
               key={`${item.type}-${item.message}`}
               className={`alert-item alert-item-${item.severity} ${
@@ -2207,6 +2264,18 @@ export default function App() {
             </span>
           ))}
         </div>
+
+        {MARKETING_MODE ? (
+          <section className="why-optionlens">
+            <h3>Why OptionLens?</h3>
+            <ul>
+              <li>Tracks OI change, not just total OI</li>
+              <li>Detects trap probability</li>
+              <li>Adaptive regime detection</li>
+              <li>Conflict-aware signal arbitration</li>
+            </ul>
+          </section>
+        ) : null}
 
         <div className="disclaimer">
           This dashboard is for educational and analytical purposes only. We are not SEBI registered.

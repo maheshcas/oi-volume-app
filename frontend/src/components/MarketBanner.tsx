@@ -9,6 +9,7 @@ type MarketBannerProps = {
   expiryMode?: boolean;
   phase?: string;
   projection?: string;
+  showProjection?: boolean;
   trend?: "Bullish" | "Bearish" | "Neutral";
 };
 
@@ -86,8 +87,12 @@ export default function MarketBanner(props: MarketBannerProps) {
             <span className="ia-sep">|</span>
           </>
         ) : null}
-        <span>Projection: <span className={projectionTone}>{props.projection ?? "Range"}</span></span>
-        <span className="ia-sep">|</span>
+        {props.showProjection === false ? null : (
+          <>
+            <span>Projection: <span className={projectionTone}>{props.projection ?? "Range"}</span></span>
+            <span className="ia-sep">|</span>
+          </>
+        )}
         <span>Trend: <span className={trendTone}>{props.trend ?? "Neutral"}</span></span>
         <span className="ia-sep">|</span>
         <span className={`ia-inline-pill ${phaseTone}`}>Phase: {phaseLabel}</span>
