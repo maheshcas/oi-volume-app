@@ -1,5 +1,8 @@
+import MarketStructureScoreBadge from "./MarketStructureScoreBadge";
+
 type DecisionPanelProps = {
   bias: "Bullish" | "Bearish" | "Neutral";
+  regime?: string;
   bullProbability: number;
   bearProbability: number;
   confidence: number;
@@ -11,6 +14,8 @@ type DecisionPanelProps = {
   adaptiveMode?: string;
   adaptiveOiWeight?: number;
   adaptiveBreakoutWeight?: number;
+  marketStructureScore?: number;
+  structureState?: string;
 };
 
 export default function DecisionPanel(props: DecisionPanelProps) {
@@ -20,7 +25,36 @@ export default function DecisionPanel(props: DecisionPanelProps) {
   const veryLowConfidence = props.confidence < 35;
   const lowConfidence = marketingMode ? confidenceStrength === "Weak" : props.confidence < 40;
   const clampedAlignment = Math.max(0, Math.min(4, props.alignmentCount));
-  const alignmentLabel = clampedAlignment >= 4 ? "Strong" : clampedAlignment === 3 ? "Moderate" : "Weak";
+  const structuralAgreementRatio = clampedAlignment / 4;
+  const isRangeRegime = String(props.regime || "").toLowerCase().includes("range");
+  const spread = Math.abs(Number(props.bullProbability || 0) - Number(props.bearProbability || 0));
+  const structuralAgreementLabel = clampedAlignment >= 4 ? "Strong" : clampedAlignment === 3 ? "Moderate" : "Weak";
+  const enginesConflict = structuralAgreementLabel === "Weak";
+  const probabilityConflict = spread < 20; // equivalent to <60/40 split
+  const conflictDetected = probabilityConflict || enginesConflict;
+  const decisionMode = conflictDetected
+    ? "Conflict Detected"
+    : props.confidence >= 70 && structuralAgreementLabel === "Strong"
+      ? "High Conviction Trend"
+      : props.confidence >= 50
+        ? "Moderate Bias"
+        : props.confidence < 50 && isRangeRegime
+          ? "Low Clarity Range"
+          : "Moderate Bias";
+  const modeClass =
+    decisionMode === "Conflict Detected"
+      ? "ia-decision-conflict"
+      : decisionMode === "High Conviction Trend"
+        ? "ia-decision-high"
+        : decisionMode === "Moderate Bias"
+          ? "ia-decision-moderate"
+          : "ia-decision-low-clarity";
+  const lowClarityBias =
+    props.bias !== "Neutral" &&
+    structuralAgreementRatio < 0.5 &&
+    props.confidence < 50 &&
+    isRangeRegime;
+  const alignmentLabel = structuralAgreementLabel;
   const tone =
     props.bias === "Bullish"
       ? "ia-bias-bull"
@@ -28,16 +62,27 @@ export default function DecisionPanel(props: DecisionPanelProps) {
         ? "ia-bias-bear"
         : "ia-bias-neutral";
   const biasLabel =
-    props.bias === "Neutral"
-      ? "Neutral"
+    conflictDetected
+      ? "Conflict Detected — Standby"
+      : props.bias === "Neutral"
+        ? `Neutral — ${decisionMode}`
+      : lowClarityBias
+        ? `${props.bias} — Low Clarity Range`
       : lowConfidence
-        ? `${props.bias} (Low Conviction)`
-        : props.bias;
+        ? `${props.bias} — ${decisionMode}`
+        : `${props.bias} — ${decisionMode}`;
 
   return (
-    <div className="ia-card ia-decision-hero">
-      <h3 className="ia-card-title">Decision Layer</h3>
+    <div className={`ia-card ia-decision-hero ${modeClass}`}>
+      <div className="ia-card-title-row">
+        <h3 className="ia-card-title">Decision Layer</h3>
+        <MarketStructureScoreBadge
+          score={props.marketStructureScore}
+          state={props.structureState}
+        />
+      </div>
       <div className="ia-bias-wrap">
+        {conflictDetected ? <span className="ia-conflict-icon">⚠</span> : null}
         <span
           className={`ia-bias-pill ia-bias-pill-hero ${tone} ${lowConfidence ? "ia-bias-weak" : ""} ${
             veryLowConfidence ? "ia-bias-neutral-weak" : ""
@@ -57,7 +102,7 @@ export default function DecisionPanel(props: DecisionPanelProps) {
           : props.summaryLine}
       </div>
       <div className="ia-confidence-wrap">
-        <div className="ia-kpi-label">
+        <div className="ia-kpi-label" title="Structural alignment strength across engines.">
           {marketingMode ? `Confidence: ${props.confidence}% (${confidenceStrength})` : "Confidence"}
         </div>
         <div className="ia-kpi-value ia-confidence-value">{props.confidence}%</div>
@@ -71,7 +116,7 @@ export default function DecisionPanel(props: DecisionPanelProps) {
             <div className="ia-prob-bull" style={{ width: `${props.bullProbability}%` }} />
             <div className="ia-prob-bear" style={{ width: `${props.bearProbability}%` }} />
           </div>
-          <div className="ia-prob-legend">
+          <div className="ia-prob-legend" title="Directional bias weight distribution.">
             <span>Bull {props.bullProbability}%</span>
             <span>Bear {props.bearProbability}%</span>
           </div>

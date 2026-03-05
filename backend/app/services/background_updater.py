@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.core.cache import cache
 from app.engines.breakout_engine import run_breakout_engine
 from app.engines.auto_exit_suggestion_engine import generate_auto_exit_suggestion
+from app.engines.adaptive_calibration import load_adaptive_weights, update_end_of_day_calibration
 from app.engines.adaptive_weighting_engine import compute_adaptive_weights
 from app.engines.bias_stability_engine import compute_bias_stability
 from app.engines.decision_engine import run_decision_engine_v3
@@ -19,6 +22,7 @@ from app.engines.exhaustion_trap_combo_engine import detect_exhaustion_trap_comb
 from app.engines.early_reversal_probability_engine import compute_early_reversal_probability
 from app.engines.oi_analyzer import run_oi_analysis
 from app.engines.momentum_exhaustion_engine import detect_momentum_exhaustion
+from app.engines.intraday_playbook_engine import generate_intraday_playbook
 from app.engines.preprocessing import build_feature_frame, normalize_chain
 from app.engines.regime_engine import run_regime_engine
 from app.engines.regime_shift_engine import detect_regime_shift
@@ -44,9 +48,14 @@ ATR_ROLLING_WINDOW = max(5, int(os.getenv("OPTIONLENS_ATR_ROLLING_WINDOW", "40")
 ATR_MIN_SAMPLES = max(3, int(os.getenv("OPTIONLENS_ATR_MIN_SAMPLES", "5")))
 ATR_MIN_SAMPLES = min(ATR_MIN_SAMPLES, ATR_ROLLING_WINDOW)
 ADAPTIVE_RECALC_MINUTES = max(30, int(os.getenv("OPTIONLENS_ADAPTIVE_RECALC_MINUTES", "30")))
+_DEFAULT_CYCLE_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "optionlens_cycle_log.jsonl"
+CYCLE_LOG_PATH = Path(os.getenv("OPTIONLENS_CYCLE_LOG_PATH", str(_DEFAULT_CYCLE_LOG_PATH)))
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
+_calibrated_weights: dict[str, float] = load_adaptive_weights()
+_last_calibrated_session: set[str] = set()
+_last_cycle_log_minute: dict[str, str] = {}
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
@@ -68,6 +77,118 @@ def _parse_timestamp_utc(text: str | None) -> datetime:
         except ValueError:
             continue
     return datetime.now(timezone.utc)
+
+
+def _append_cycle_log(entry: dict[str, Any]) -> None:
+    try:
+        CYCLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CYCLE_LOG_PATH.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+    except Exception as exc:
+        logger.debug("Cycle log append failed: %s", exc)
+
+
+def _should_log_cycle(key: str) -> bool:
+    minute_bucket = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+    previous = _last_cycle_log_minute.get(key)
+    if previous == minute_bucket:
+        return False
+    _last_cycle_log_minute[key] = minute_bucket
+    return True
+
+
+def _infer_session_phase(timestamp_text: str | None) -> str:
+    if not timestamp_text:
+        return "Transition"
+    import re
+
+    match = re.search(r"(\d{1,2}):(\d{2})", str(timestamp_text))
+    if not match:
+        return "Transition"
+    hh = int(match.group(1))
+    mm = int(match.group(2))
+    minutes = (hh * 60) + mm
+    if 9 * 60 + 15 <= minutes < 10 * 60 + 30:
+        return "Opening"
+    if 10 * 60 + 30 <= minutes < 13 * 60 + 30:
+        return "Midday"
+    if 14 * 60 + 30 <= minutes <= 15 * 60 + 30:
+        return "PowerHour"
+    return "Transition"
+
+
+def _derive_breakout_strength(
+    *,
+    spot: float | None,
+    support: float | None,
+    resistance: float | None,
+    breakout: dict[str, Any],
+) -> float:
+    if spot is None:
+        return 0.0
+    threshold = float(breakout.get("threshold_points", 0.0) or 0.0)
+    threshold = max(1.0, threshold)
+    if breakout.get("breakout_up") and resistance is not None:
+        return max(0.0, min(1.0, (float(spot) - float(resistance)) / threshold))
+    if breakout.get("breakout_down") and support is not None:
+        return max(0.0, min(1.0, (float(support) - float(spot)) / threshold))
+    return 0.0
+
+
+def _compute_alignment_score(
+    *,
+    spot: float | None,
+    previous_spot: float | None,
+    oi_shift_score: float,
+    volume_expansion_score: float,
+) -> dict[str, float]:
+    price_momentum = 0.0
+    if spot is not None and previous_spot is not None and previous_spot > 0:
+        pct_change = abs((float(spot) - float(previous_spot)) / float(previous_spot)) * 100.0
+        # 0.5% move maps to full momentum score.
+        price_momentum = max(0.0, min(1.0, pct_change / 0.5))
+    alignment_score = (0.4 * price_momentum) + (0.35 * oi_shift_score) + (0.25 * volume_expansion_score)
+    alignment_score = max(0.0, min(1.0, alignment_score))
+    return {"alignment_score": round(alignment_score, 4), "price_momentum": round(price_momentum, 4)}
+
+
+def _compute_market_structure_score(
+    *,
+    alignment_score: float,
+    breakout_strength: float,
+    oi_velocity_score: float,
+    clarity: float,
+    trap_probability: float,
+) -> dict[str, Any]:
+    clarity_norm = max(0.0, min(1.0, float(clarity) / 100.0))
+    trap_norm = max(0.0, min(1.0, float(trap_probability) / 100.0))
+    raw = (
+        (0.30 * max(0.0, min(1.0, float(alignment_score))))
+        + (0.25 * max(0.0, min(1.0, float(breakout_strength))))
+        + (0.20 * max(0.0, min(1.0, float(oi_velocity_score))))
+        + (0.15 * clarity_norm)
+        - (0.20 * trap_norm)
+    )
+    mss = max(0.0, min(100.0, raw * 100.0))
+    if mss > 80:
+        structure = "Strong Expansion"
+    elif mss > 65:
+        structure = "Trend Developing"
+    elif mss > 50:
+        structure = "Balanced"
+    elif mss > 35:
+        structure = "Weak Structure"
+    else:
+        structure = "High Trap Risk"
+    return {"market_structure_score": round(mss, 2), "structure_state": structure}
+
+
+def _trap_level_from_probability(probability: float) -> str:
+    if probability > 65:
+        return "High"
+    if probability > 45:
+        return "Moderate"
+    return "Low"
 
 
 def _atr_key(symbol: str, expiry: str | None) -> str:
@@ -104,6 +225,7 @@ def _run_ordered_pipeline(
     expiry: str | None,
     previous_score: float | None,
     last_10_scores: list[float] | None,
+    previous_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Enforced execution order to avoid circular dependencies:
@@ -111,11 +233,11 @@ def _run_ordered_pipeline(
     This helper runs the stages up to regime-adjusted feature outputs.
     """
     # Stage 1: Feature engines
-    oi = run_oi_analysis(features)
-    sr = run_sr_engine(features)
+    oi = run_oi_analysis(features, previous_state=previous_state)
+    sr = run_sr_engine(features, previous_state=previous_state)
     base_volume = run_volume_analysis(features)
     base_breakout = run_breakout_engine(features, sr)
-    base_trap = run_trap_engine(features, base_breakout, oi, base_volume)
+    base_trap = run_trap_engine(features, base_breakout, oi, base_volume, previous_state=previous_state)
 
     # Stage 2: Regime from base features
     atr_threshold_for_regime = float(base_breakout.get("atr_threshold") or 0.0)
@@ -143,7 +265,7 @@ def _run_ordered_pipeline(
 
     volume = run_volume_analysis(features, expansion_threshold=volume_threshold)
     breakout = run_breakout_engine(features, sr, atr_multiplier=breakout_atr_multiplier)
-    trap = run_trap_engine(features, breakout, oi, volume)
+    trap = run_trap_engine(features, breakout, oi, volume, previous_state=previous_state)
     regime = run_regime_engine(oi, volume, breakout, trap)
 
     return {
@@ -165,12 +287,12 @@ def _build_v2_intelligence(
     timestamp: str | None,
     previous_score: float | None = None,
     last_10_scores: list[float] | None = None,
-    previous_bias_score: float | None = None,
     previous_regime: str | None = None,
     previous_alignment: float | None = None,
     previous_atr_ratio: float | None = None,
     previous_volume_ratio: float | None = None,
     previous_oi_delta: float | None = None,
+    previous_state: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
     total_signals_logged: int = 0,
     engine_stats: dict[str, float] | None = None,
@@ -191,6 +313,7 @@ def _build_v2_intelligence(
         expiry=expiry,
         previous_score=previous_score,
         last_10_scores=last_10_scores,
+        previous_state=previous_state,
     )
     oi = pipeline["oi"]
     sr = pipeline["sr"]
@@ -209,17 +332,50 @@ def _build_v2_intelligence(
 
     oi_alignment = str(oi.get("alignment", "mixed"))
     oi_strength = max(0.0, min(1.0, float(oi.get("oi_strength", 0.0) or 0.0)))
-    oi_score = oi_strength if oi_alignment == "bullish" else (-oi_strength if oi_alignment == "bearish" else 0.0)
+    oi_score = float(oi.get("oi_bias", 0.0) or 0.0)
+    oi_score = max(-1.0, min(1.0, oi_score))
 
     rvr_ce = max(0.0, min(1.0, float(volume.get("rvr", {}).get("ce", 0.0) or 0.0)))
     rvr_pe = max(0.0, min(1.0, float(volume.get("rvr", {}).get("pe", 0.0) or 0.0)))
     volume_score = max(-1.0, min(1.0, rvr_pe - rvr_ce))
     breakout_score = 1.0 if breakout.get("breakout_up") else -1.0 if breakout.get("breakout_down") else 0.0
+    volume_expansion_score = (
+        1.0
+        if bool(volume.get("volume_expansion"))
+        else max(0.0, min(1.0, (rvr_ce + rvr_pe) / 2.0))
+    )
+    previous_spot_raw = previous_state.get("spot") if isinstance(previous_state, dict) else None
+    previous_spot = float(previous_spot_raw) if isinstance(previous_spot_raw, (int, float)) else None
+    align = _compute_alignment_score(
+        spot=spot,
+        previous_spot=previous_spot,
+        oi_shift_score=float(oi.get("oi_shift_score", oi_strength) or oi_strength),
+        volume_expansion_score=float(volume_expansion_score),
+    )
+    alignment_score = float(align["alignment_score"])
+    price_momentum_score = float(align["price_momentum"])
+    breakout_strength_raw = _derive_breakout_strength(
+        spot=spot,
+        support=sr.get("support", {}).get("strike"),
+        resistance=sr.get("resistance", {}).get("strike"),
+        breakout=breakout,
+    )
+    breakout_strength_adjusted = max(0.0, min(1.0, breakout_strength_raw * alignment_score))
+    breakout["breakout_strength_raw"] = round(float(breakout_strength_raw), 4)
+    breakout["breakout_strength"] = round(float(breakout_strength_adjusted), 4)
+    breakout_score = max(-1.0, min(1.0, breakout_score * alignment_score))
 
     support_score = float(sr.get("support", {}).get("score") or 0.0)
     resistance_score = float(sr.get("resistance", {}).get("score") or 0.0)
     sr_score = max(-1.0, min(1.0, (support_score - resistance_score) / 100.0))
-    trap_penalty = max(0.0, min(1.0, float(trap.get("trap_probability_pct", 0) or 0) / 100.0))
+    trap_raw = max(0.0, min(1.0, float(trap.get("trap_raw", 0.0) or 0.0)))
+    trap_raw = max(0.0, min(1.0, trap_raw + ((1.0 - alignment_score) * 0.15)))
+    trap["trap_raw"] = round(trap_raw, 4)
+    trap_probability_pct = int(round(trap_raw * 100.0))
+    trap["trap_probability_pct"] = trap_probability_pct
+    trap["trap_probability"] = trap_probability_pct
+    trap["trap_level"] = _trap_level_from_probability(trap_probability_pct)
+    trap_penalty = max(0.0, min(1.0, float(trap_probability_pct) / 100.0))
 
     directional_scores = [oi_score, volume_score, breakout_score, sr_score]
     mean_dir = sum(directional_scores) / max(1, len(directional_scores))
@@ -233,7 +389,7 @@ def _build_v2_intelligence(
 
     bias_stability = compute_bias_stability(last_10_scores)
     now_dt = evaluation_time or datetime.now(timezone.utc)
-    base_weights = {"oi": 0.30, "volume": 0.25, "breakout": 0.20, "sr": 0.15}
+    base_weights = dict(_calibrated_weights)
     state = adaptive_state or {}
     current_weights = state.get("weights") if isinstance(state.get("weights"), dict) else base_weights
     session_start_raw = state.get("session_start_utc")
@@ -281,6 +437,11 @@ def _build_v2_intelligence(
             current_weights=current_weights,
         ).get("adaptive_weights", current_weights)
 
+    support_immediate = sr.get("support", {}).get("immediate")
+    support_major = sr.get("support", {}).get("major")
+    resistance_immediate = sr.get("resistance", {}).get("immediate")
+    resistance_major = sr.get("resistance", {}).get("major")
+
     decision_v3 = run_decision_engine_v3(
         oi_score=oi_score,
         volume_score=volume_score,
@@ -289,6 +450,20 @@ def _build_v2_intelligence(
         trap_penalty=trap_penalty,
         alignment_ratio=current_alignment,
         bias_stability_score=float(bias_stability.get("bias_stability_score", 55) or 55),
+        regime_type=str(regime.get("regime_type") or regime.get("regime") or "Transition"),
+        volatility_ratio=current_atr_ratio,
+        session_phase=_infer_session_phase(features.get("meta", {}).get("timestamp")),
+        previous_primary_bias=str((previous_state or {}).get("primary_bias") or "Neutral"),
+        rolling_force_history=list((previous_state or {}).get("rolling_force_history") or []),
+        rolling_clarity_history=list((previous_state or {}).get("rolling_clarity_history") or []),
+        breakout_confirmed=bool(breakout.get("breakout_up") or breakout.get("breakout_down")),
+        volume_expansion_confirmed=bool(volume.get("volume_expansion")),
+        cycle_timestamp=str(features.get("meta", {}).get("timestamp") or ""),
+        spot=spot,
+        support_immediate=support_immediate,
+        support_major=support_major,
+        resistance_immediate=resistance_immediate,
+        resistance_major=resistance_major,
         weights=current_weights,
     )
     current_regime = str(regime.get("regime_type") or regime.get("regime") or "Transition")
@@ -311,6 +486,21 @@ def _build_v2_intelligence(
         "volatility_state": volatility_state,
         "regime": regime_mapped,
         "weight_distribution": decision_v3.get("weight_distribution", base_weights),
+        "structural_clarity_score": decision_v3.get("structural_clarity_score"),
+        "directional_force": decision_v3.get("directional_force"),
+        "clarity": decision_v3.get("clarity"),
+        "execution_risk": decision_v3.get("execution_risk"),
+        "state": decision_v3.get("state"),
+        "primary_bias": decision_v3.get("primary_bias"),
+        "framework_status": decision_v3.get("framework_status"),
+        "drift": decision_v3.get("drift"),
+        "micro_bias": decision_v3.get("micro_bias"),
+        "last_primary_update_time": decision_v3.get("last_primary_update_time"),
+        "rolling_force_history": decision_v3.get("rolling_force_history", []),
+        "rolling_clarity_history": decision_v3.get("rolling_clarity_history", []),
+        "retail_mapping": decision_v3.get("retail_mapping", {}),
+        "engine_contributions": decision_v3.get("engine_contributions", {}),
+        "engine_scores": decision_v3.get("engine_scores", {}),
     }
     target = run_target_engine(features, sr, breakout, oi, trap, volume, decision=decision, regime=regime)
     support_level = sr.get("support", {}).get("strike")
@@ -337,18 +527,29 @@ def _build_v2_intelligence(
     target["adjustedMove"] = expiry_adaptive["adjustedMove"]
     target["expiry_multiplier"] = expiry_adaptive["expiry_multiplier"]
     target["expiry_mode"] = expiry_adaptive["expiry_mode"]
+    target["expansion_score"] = round(
+        max(0.0, min(1.0, float(target.get("expansion_score", 0.0) or 0.0) * alignment_score)),
+        4,
+    )
 
-    bias_score = float(decision.get("bull_probability", 0.5) or 0.5) * 100.0
-    prev_bias_score = float(previous_bias_score) if previous_bias_score is not None else None
-    if prev_bias_score is not None and abs(bias_score - prev_bias_score) < 5.0:
-        if prev_bias_score > 55:
-            stable_bias = "Bullish"
-        elif prev_bias_score < 45:
-            stable_bias = "Bearish"
-        else:
-            stable_bias = "Neutral"
+    current_bias = str(decision.get("bias", "Neutral"))
+    previous_bias = str(
+        (previous_state or {}).get("previous_bias")
+        or (previous_state or {}).get("primary_bias")
+        or current_bias
+    )
+    previous_bias_counter = int((previous_state or {}).get("bias_change_counter", 0) or 0)
+    if current_bias != previous_bias:
+        bias_change_counter = previous_bias_counter + 1
     else:
-        stable_bias = str(decision.get("bias", "Neutral"))
+        bias_change_counter = 0
+
+    if current_bias != previous_bias and bias_change_counter < 3:
+        stable_bias = previous_bias
+    else:
+        stable_bias = current_bias
+        if current_bias != previous_bias:
+            bias_change_counter = 0
     trap_conf_adj = adjust_trap_by_confidence(
         base_trap=float(trap.get("trap_probability_pct", 0) or 0),
         smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
@@ -360,6 +561,24 @@ def _build_v2_intelligence(
     trap["is_trap"] = bool(trap["trap_probability_pct"] >= 60)
 
     weighted_score = float(decision.get("weighted_score", 0.0) or 0.0)
+    force_strength = float(
+        (decision.get("directional_force") or {}).get("strength")
+        if isinstance(decision.get("directional_force"), dict)
+        else 0.0
+    )
+    if force_strength <= 0:
+        force_strength = abs(weighted_score) * 100.0
+    previous_force_strength = float((previous_state or {}).get("force_strength", force_strength) or force_strength)
+    if stable_bias == previous_bias and force_strength > previous_force_strength:
+        persistence_drift = "Strengthening"
+    elif stable_bias == previous_bias and force_strength < previous_force_strength:
+        persistence_drift = "Weakening"
+    else:
+        persistence_drift = "Stable"
+    decision["drift"] = persistence_drift
+    decision["primary_bias"] = stable_bias
+    decision["micro_bias"] = current_bias
+
     current_alignment = float(decision.get("alignment_ratio", 0.0) or 0.0)
     current_atr_ratio = float(decision.get("volatility_ratio", 1.0) or 1.0)
     current_regime = str(decision.get("regime", "Range"))
@@ -403,32 +622,70 @@ def _build_v2_intelligence(
     support_strike = sr.get("support", {}).get("strike")
     breakout_up = bool(breakout.get("breakout_up"))
     breakout_down = bool(breakout.get("breakout_down"))
+    breakout_suppressed = alignment_score < 0.55
     strong_bias = abs(weighted_score) > 0.5
     dominant_direction = "up" if weighted_score > 0 else "down" if weighted_score < 0 else "neutral"
 
-    alerts: list[dict[str, str]] = []
+    alerts: list[dict[str, Any]] = []
     suppression_reason_map: dict[str, str] = {}
-    if breakout_up and resistance_strike is not None:
-        alert = {"message": f"Breakout above {resistance_strike}", "direction": "up"}
+    if breakout_suppressed:
+        suppression_reason_map["rule:breakout_signals"] = "alignment_below_0.55"
+    for sr_alert in sr.get("alerts", []) or []:
+        if not isinstance(sr_alert, dict):
+            continue
+        message = str(sr_alert.get("message", "")).strip()
+        if not message:
+            continue
+        lower = message.lower()
+        direction = "neutral"
+        if "resistance" in lower or "breakdown" in lower:
+            direction = "down"
+        elif "support" in lower or "breakout" in lower:
+            direction = "up"
+        alerts.append(
+            {
+                "message": message,
+                "direction": direction,
+                "tier": str(sr_alert.get("tier", "immediate")),
+                "source": "sr",
+            }
+        )
+
+    if breakout_up and resistance_strike is not None and not breakout_suppressed:
+        alert = {"message": f"Breakout above {resistance_strike}", "direction": "up", "tier": "immediate", "source": "breakout"}
         alerts.append(alert)
 
-    if breakout_down and support_strike is not None:
-        alert = {"message": f"Breakdown below {support_strike}", "direction": "down"}
+    if breakout_down and support_strike is not None and not breakout_suppressed:
+        alert = {"message": f"Breakdown below {support_strike}", "direction": "down", "tier": "immediate", "source": "breakout"}
         alerts.append(alert)
 
     regime_now = str(decision.get("regime", "") or "")
     projection_now = str(decision.get("projection", "") or "")
     is_range_no_breakout = regime_now == "Range" and projection_now.strip().lower() in {"no breakout", "range"}
     if is_range_no_breakout:
-        downgraded: list[dict[str, str]] = []
+        downgraded: list[dict[str, Any]] = []
         for alert in alerts:
             msg = str(alert.get("message", ""))
             if msg.lower().startswith("breakout above"):
                 suppression_reason_map[f"alert:{msg}"] = "range_no_breakout_downgrade"
-                downgraded.append({"message": msg.replace("Breakout above", "Low conviction breakout watch above"), "direction": "neutral"})
+                downgraded.append(
+                    {
+                        "message": msg.replace("Breakout above", "Low conviction breakout watch above"),
+                        "direction": "neutral",
+                        "tier": alert.get("tier", "immediate"),
+                        "source": alert.get("source", "breakout"),
+                    }
+                )
             elif msg.lower().startswith("breakdown below"):
                 suppression_reason_map[f"alert:{msg}"] = "range_no_breakout_downgrade"
-                downgraded.append({"message": msg.replace("Breakdown below", "Low conviction breakdown watch below"), "direction": "neutral"})
+                downgraded.append(
+                    {
+                        "message": msg.replace("Breakdown below", "Low conviction breakdown watch below"),
+                        "direction": "neutral",
+                        "tier": alert.get("tier", "immediate"),
+                        "source": alert.get("source", "breakout"),
+                    }
+                )
             else:
                 downgraded.append(alert)
         alerts = downgraded
@@ -443,9 +700,11 @@ def _build_v2_intelligence(
             continue
         typed_alerts.append(
             {
-                "message": alert["message"],
-                "direction": alert["direction"],
+                "message": str(alert["message"]),
+                "direction": str(alert["direction"]),
                 "type": alert_type,
+                "tier": str(alert.get("tier", "immediate")),
+                "source": str(alert.get("source", "signal")),
             }
         )
 
@@ -467,7 +726,7 @@ def _build_v2_intelligence(
     )
     reversal_risk = int(reversal_prob.get("reversal_probability", 0) or 0)
     candidate_signals: list[dict[str, Any]] = []
-    if breakout_up or breakout_down:
+    if (breakout_up or breakout_down) and not breakout_suppressed:
         candidate_signals.append(
             {
                 "type": "breakout",
@@ -541,13 +800,19 @@ def _build_v2_intelligence(
             "contribution": round(raw_score * weight, 4),
         }
     logger.debug(
-        "Decision[%s %s] composite=%.4f smoothed=%.4f bias=%s conf=%.1f engine_map=%s",
+        "Decision[%s %s] composite=%.4f smoothed=%.4f bias=%s conf=%.1f bull_force=%s bear_force=%s clarity=%s risk=%s state=%s weights=%s engine_map=%s",
         symbol,
         expiry or "AUTO",
         float(decision.get("composite_score", 0.0) or 0.0),
         float(decision.get("weighted_score", 0.0) or 0.0),
         stable_bias,
         float(decision.get("confidence", 0.0) or 0.0),
+        (decision.get("directional_force") or {}).get("bull"),
+        (decision.get("directional_force") or {}).get("bear"),
+        decision.get("clarity"),
+        decision.get("execution_risk"),
+        decision.get("state"),
+        decision.get("weight_distribution"),
         engine_debug_map,
     )
     logger.debug(
@@ -580,6 +845,68 @@ def _build_v2_intelligence(
         volatility_state=decision.get("volatility_state"),
     )
 
+    trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    breakout_strength = breakout_strength_adjusted
+    mss = _compute_market_structure_score(
+        alignment_score=alignment_score,
+        breakout_strength=breakout_strength,
+        oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
+        clarity=float(decision.get("clarity", decision.get("structural_clarity_score", 0.0)) or 0.0),
+        trap_probability=trap_probability,
+    )
+    support_zone = sr.get("support_range")
+    if support_zone is None:
+        support_zone = [sr.get("support", {}).get("immediate"), sr.get("support", {}).get("major")]
+    resistance_zone = sr.get("resistance_range")
+    if resistance_zone is None:
+        resistance_zone = [sr.get("resistance", {}).get("immediate"), sr.get("resistance", {}).get("major")]
+    playbook = generate_intraday_playbook(
+        primary_bias=str(decision.get("primary_bias", stable_bias)),
+        regime=str(current_regime),
+        trap_probability=trap_probability,
+        market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+        support_zone=support_zone,
+        resistance_zone=resistance_zone,
+        expansion_target=target.get("primary_target"),
+    )
+    cycle_log_entry = {
+        "timestamp": features.get("meta", {}).get("timestamp"),
+        "symbol": symbol,
+        "expiry": expiry,
+        "spot_price": spot,
+        "primary_bias": decision.get("primary_bias", stable_bias),
+        "micro_bias": decision.get("micro_bias", stable_bias),
+        "drift": decision.get("drift", "Stable"),
+        "directional_force": decision.get("directional_force", {}),
+        "clarity": decision.get("clarity"),
+        "execution_risk": decision.get("execution_risk"),
+        "trap_probability": trap_probability,
+        "trap_level": trap.get("trap_level") or _trap_level_from_probability(trap_probability),
+        "trap_type": trap.get("trap_type"),
+        "support_level": support_level,
+        "resistance_level": resistance_level,
+        "breakout_strength": round(float(breakout_strength), 4),
+        "rejection_wick_score": trap.get("rejection_wick_score"),
+        "time_above_level_ratio": trap.get("time_above_level_ratio"),
+        "oi_shift_score": float(oi.get("oi_strength", 0.0) or 0.0),
+        "volume_expansion_score": round(float(volume_expansion_score), 4),
+        "price_momentum_score": round(float(price_momentum_score), 4),
+        "alignment_score": round(float(alignment_score), 4),
+        "market_structure_score": mss.get("market_structure_score"),
+        "structure_state": mss.get("structure_state"),
+        "engine_contribution_map": engine_debug_map,
+        "bias_change_counter": int(bias_change_counter),
+        "persistence_drift": str(persistence_drift),
+        "volatility_factor": float(
+            trap.get("volatility_factor")
+            if trap.get("volatility_factor") is not None
+            else max(0.0, min(1.0, abs(float(current_atr_ratio) - 1.0)))
+        ),
+    }
+    log_key = _cache_key(symbol=symbol, instrument_type=INSTRUMENT_TYPE, expiry=expiry)
+    if _should_log_cycle(log_key):
+        _append_cycle_log(cycle_log_entry)
+
     return {
         "meta": features["meta"],
         "_internal": {
@@ -592,6 +919,23 @@ def _build_v2_intelligence(
             "probability_bear": round(float((decision.get("bear_probability", 0.5) or 0.5) * 100.0), 2),
             "confidence": float(decision.get("confidence", 50.0) or 50.0),
             "composite_score": float(decision.get("composite_score", 0.0) or 0.0),
+            "directional_force": decision.get("directional_force", {}),
+            "directional_force_value": float(decision.get("directional_force_value", 0.0) or 0.0),
+            "clarity": float(decision.get("clarity", decision.get("structural_clarity_score", 0.0)) or 0.0),
+            "execution_risk": float(decision.get("execution_risk", 0.0) or 0.0),
+            "risk": float(decision.get("risk", decision.get("execution_risk", 0.0)) or 0.0),
+            "state": str(decision.get("state", "")),
+            "primary_bias": str(decision.get("primary_bias", stable_bias)),
+            "micro_bias": str(decision.get("micro_bias", stable_bias)),
+            "framework_status": str(decision.get("framework_status", "Stable")),
+            "drift": str(decision.get("drift", "Stable")),
+            "bias_change_counter": int(bias_change_counter),
+            "last_primary_update_time": decision.get("last_primary_update_time"),
+            "rolling_force_history": decision.get("rolling_force_history", []),
+            "rolling_clarity_history": decision.get("rolling_clarity_history", []),
+            "retail_mapping": decision.get("retail_mapping", {}),
+            "engine_contributions": decision.get("engine_contributions", {}),
+            "engine_scores": decision.get("engine_scores", {}),
             "adaptive_mode": "Active" if allow_adaptation else "Base",
             "adaptive_weights": decision.get("weight_distribution", base_weights),
             "bias_stability_label": bias_stability.get("bias_stability_label"),
@@ -603,10 +947,28 @@ def _build_v2_intelligence(
             "target1": target.get("target_1"),
             "target2": target.get("target_2"),
             "summary_line": summary_line,
+            "alignment_score": round(float(alignment_score), 4),
+            "market_structure_score": mss.get("market_structure_score"),
+            "structure_state": mss.get("structure_state"),
         },
         "levels": {
-            "resistance": sr.get("resistance"),
-            "support": sr.get("support"),
+            "resistance": {
+                "strike": sr.get("resistance", {}).get("strike"),
+                "immediate": sr.get("resistance", {}).get("immediate"),
+                "major": sr.get("resistance", {}).get("major"),
+                "score": sr.get("resistance", {}).get("score"),
+                "levels": sr.get("resistance", {}).get("levels", []),
+            },
+            "support": {
+                "strike": sr.get("support", {}).get("strike"),
+                "immediate": sr.get("support", {}).get("immediate"),
+                "major": sr.get("support", {}).get("major"),
+                "score": sr.get("support", {}).get("score"),
+                "levels": sr.get("support", {}).get("levels", []),
+            },
+            # Backward compatibility aliases expected by older UI code.
+            "resistance_strike": sr.get("resistance", {}).get("strike"),
+            "support_strike": sr.get("support", {}).get("strike"),
             "target_1": target.get("target_1"),
             "target_2": target.get("target_2"),
             "acceleration_zone": target.get("acceleration_zone"),
@@ -614,8 +976,17 @@ def _build_v2_intelligence(
         "signals": {
             "oi": oi,
             "volume": volume,
+            "sr": sr,
             "breakout": breakout,
             "trap": trap,
+            "alignment_filter": {
+                "alignment_score": round(float(alignment_score), 4),
+                "price_momentum": round(float(price_momentum_score), 4),
+                "oi_shift_score": round(float(oi.get("oi_shift_score", oi_strength) or oi_strength), 4),
+                "volume_expansion_score": round(float(volume_expansion_score), 4),
+                "breakout_suppressed": breakout_suppressed,
+            },
+            "market_structure": mss,
             "regime_shift": regime_shift,
             "momentum_exhaustion": momentum_exhaustion,
             "exhaustion_trap_combo": combo_detector,
@@ -647,12 +1018,39 @@ def _build_v2_intelligence(
             ],
         },
         "trade_plan": trade_plan.get("trade_plan", {}),
+        "intraday_playbook": playbook,
         "_state": {
             "regime": current_regime,
             "alignment_ratio": current_alignment,
             "atr_ratio": current_atr_ratio,
+            "spot": spot,
             "volume_ratio": round(current_volume_ratio, 4),
             "oi_delta": round(current_oi_delta, 4),
+            "primary_bias": decision.get("primary_bias", stable_bias),
+            "micro_bias": decision.get("micro_bias", stable_bias),
+            "last_primary_update_time": decision.get("last_primary_update_time"),
+            "rolling_force_history": decision.get("rolling_force_history", []),
+            "rolling_clarity_history": decision.get("rolling_clarity_history", []),
+            "spot_observations": trap.get("spot_observations", []),
+            "oi_prev_value": (oi.get("oi_state", {}) or {}).get("oi_prev_value"),
+            "oi_prev_ts": (oi.get("oi_state", {}) or {}).get("oi_prev_ts"),
+            "oi_velocity_history": (oi.get("oi_state", {}) or {}).get("oi_velocity_history", []),
+            "trap_raw_prev": round(float(trap.get("trap_smoothed", trap.get("trap_raw", 0.0)) or 0.0), 4),
+            "previous_bias": stable_bias,
+            "bias_change_counter": int(bias_change_counter),
+            "force_strength": round(float(force_strength), 4),
+            "levels": {
+                "support": {
+                    "immediate": sr.get("support", {}).get("immediate"),
+                    "major": sr.get("support", {}).get("major"),
+                    "immediate_score": sr.get("support", {}).get("immediate_score"),
+                },
+                "resistance": {
+                    "immediate": sr.get("resistance", {}).get("immediate"),
+                    "major": sr.get("resistance", {}).get("major"),
+                    "immediate_score": sr.get("resistance", {}).get("immediate_score"),
+                },
+            },
         },
         "_adaptive_state": {
             "session_start_utc": session_start_dt.isoformat(),
@@ -698,7 +1096,6 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
 
         key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
         previous_score = await cache.get_previous_score(key)
-        previous_bias_score = await cache.get_previous_score(f"BIAS::{key}")
         last_10_scores = await cache.get_score_history(key, limit=10)
         previous_state = await cache.get_previous_state(f"STATE::{key}") or {}
         previous_adaptive_state = await cache.get_previous_state(f"ADAPT::{key}") or {}
@@ -735,12 +1132,12 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             timestamp=records.get("timestamp"),
             previous_score=previous_score,
             last_10_scores=last_10_scores,
-            previous_bias_score=previous_bias_score,
             previous_regime=previous_state.get("regime"),
             previous_alignment=previous_state.get("alignment_ratio"),
             previous_atr_ratio=previous_state.get("atr_ratio"),
             previous_volume_ratio=previous_state.get("volume_ratio"),
             previous_oi_delta=previous_state.get("oi_delta"),
+            previous_state=previous_state,
             adaptive_state=previous_adaptive_state,
             total_signals_logged=int(perf_snapshot.get("total_signals_logged", 0) or 0),
             engine_stats=engine_stats,
@@ -750,11 +1147,24 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         signals = v2_payload.get("signals", {}) or {}
         auto_exit = (signals.get("auto_exit", {}) or {}).get("exit_signal", False)
         reversal_probability = (signals.get("early_reversal", {}) or {}).get("reversal_probability", 0)
+        emitted_signals = [
+            str(item.get("message", "")).strip()
+            for item in (signals.get("alerts", []) or [])
+            if isinstance(item, dict) and str(item.get("message", "")).strip()
+        ]
+        emitted_signals.extend(
+            [
+                str(item.get("message", "")).strip()
+                for item in (signals.get("prioritized_signals", []) or [])
+                if isinstance(item, dict) and str(item.get("message", "")).strip()
+            ]
+        )
         metrics = tracker.process_snapshot(
             key=key,
             timestamp=_parse_timestamp_utc(records.get("timestamp")),
             spot=records.get("underlyingValue"),
             bias=str(mstate.get("bias", "Neutral")),
+            regime=str(mstate.get("volatility_state", "Stable")),
             confidence=float(mstate.get("confidence", 50) or 50),
             target1=mstate.get("target1"),
             target2=mstate.get("target2"),
@@ -762,8 +1172,22 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             reversal_probability=float(reversal_probability or 0),
             exit_signal=bool(auto_exit),
             expected_move=float((v2_payload.get("signals", {}).get("expiry_adaptive", {}) or {}).get("adjustedMove", target_projection.get("expectedMove", 1) if target_projection else 1) or 1),
+            emitted_signals=emitted_signals,
         )
         v2_payload["performance"] = metrics
+        eval_dt = _parse_timestamp_utc(records.get("timestamp"))
+        session_key = f"{symbol.upper()}::{eval_dt.date().isoformat()}"
+        if eval_dt.hour >= 15 and eval_dt.minute >= 30 and session_key not in _last_calibrated_session:
+            updated = update_end_of_day_calibration(
+                bias_accuracy=float(metrics.get("bias_accuracy_percent", 0.0) or 0.0),
+                breakout_accuracy=float(metrics.get("bias_accuracy_percent", 0.0) or 0.0),
+                trap_accuracy=float(metrics.get("trap_accuracy_percent", 0.0) or 0.0),
+                clarity_vs_outcome_accuracy=float(metrics.get("exit_accuracy_percent", 0.0) or 0.0),
+                oi_accuracy=float(metrics.get("bias_accuracy_percent", 0.0) or 0.0),
+                session_date=eval_dt.date(),
+            )
+            _calibrated_weights.update(updated)
+            _last_calibrated_session.add(session_key)
 
         summary_section[key] = {
             "summary": summary_payload,
@@ -811,9 +1235,6 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         if isinstance(weighted_score, (int, float)):
             await cache.set_previous_score(key, float(weighted_score))
             await cache.append_score_history(key, float(weighted_score))
-        current_bias_score = summary_section[key]["v2"].get("market_state", {}).get("probability_bull")
-        if isinstance(current_bias_score, (int, float)):
-            await cache.set_previous_score(f"BIAS::{key}", float(current_bias_score))
         current_state = summary_section[key]["v2"].get("_state", {})
         if isinstance(current_state, dict):
             await cache.set_previous_state(f"STATE::{key}", current_state)

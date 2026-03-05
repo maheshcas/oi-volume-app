@@ -5,6 +5,8 @@ import MarketBanner from "./components/MarketBanner";
 import DecisionPanel from "./components/DecisionPanel";
 import KeyLevelsCard from "./components/KeyLevelsCard";
 import StructuralDiagnostics from "./components/StructuralDiagnostics";
+import MarketPlaybookCard from "./components/MarketPlaybookCard";
+import ExpansionTargetsCard from "./components/ExpansionTargetsCard";
 import { MARKETING_MODE } from "./config/uiMode";
 
 type SummaryRow = {
@@ -119,6 +121,8 @@ type IntelligenceResponse = {
     target1?: number;
     target2?: number;
     summary_line?: string;
+    state?: string;
+    primary_bias?: "Bullish" | "Bearish" | "Neutral";
     composite_score?: number;
     adaptive_mode?: "Active" | "Base" | string;
     adaptive_weights?: {
@@ -131,6 +135,8 @@ type IntelligenceResponse = {
     volatility_state?: "Expanding" | "Contracting" | "Stable";
     freshness_state?: "live" | "stale" | "delayed";
     delta_seconds?: number | null;
+    market_structure_score?: number;
+    structure_state?: string;
   };
   levels?: {
     support?: { strike?: number; score?: number };
@@ -169,6 +175,13 @@ type IntelligenceResponse = {
       pinning_risk?: boolean;
       adjustedMove?: number;
     };
+    alignment_filter?: {
+      alignment_score?: number;
+      price_momentum?: number;
+      oi_shift_score?: number;
+      volume_expansion_score?: number;
+      breakout_suppressed?: boolean;
+    };
   };
   trade_plan?: {
     strategy_type?: string;
@@ -177,6 +190,14 @@ type IntelligenceResponse = {
     target_primary?: number | null;
     target_extended?: number | null;
     caution_note?: string;
+  };
+  intraday_playbook?: {
+    bias?: string;
+    regime?: string;
+    strategy?: string;
+    support_zone?: Array<number | null> | string | null;
+    resistance_zone?: Array<number | null> | string | null;
+    expansion_target?: number | null;
   };
 };
 
@@ -1380,6 +1401,8 @@ export default function App() {
   }, [breakoutModel]);
 
   const displayBias = intelligence?.market_state?.bias ?? probabilityBias.label;
+  const displayPrimaryBias = intelligence?.market_state?.primary_bias ?? displayBias;
+  const displayDecisionState = intelligence?.market_state?.state ?? "Balanced / Wait";
   const displayBullProbability = intelligence?.market_state?.probability_bull ?? breakoutModel.upProbability;
   const displayBearProbability = intelligence?.market_state?.probability_bear ?? breakoutModel.downProbability;
   const displayConfidence = intelligence?.market_state?.confidence ?? breakoutModel.confidence;
@@ -1438,6 +1461,24 @@ export default function App() {
     target_extended: tradePlan?.target_extended ?? displayTarget2,
     caution_note: tradePlan?.caution_note ?? "Keep size controlled when signals are mixed.",
   };
+  const playbook = intelligence?.intraday_playbook;
+  const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
+  const structureState = intelligence?.market_state?.structure_state ?? "-";
+  const playbookPlan = playbook?.strategy ?? displayTradePlan.strategy_type;
+  const supportZoneText = Array.isArray(playbook?.support_zone)
+    ? `${formatNumber(playbook?.support_zone[0] ?? null)} - ${formatNumber(playbook?.support_zone[1] ?? null)}`
+    : formatNumber(displaySupport);
+  const resistanceZoneText = Array.isArray(playbook?.resistance_zone)
+    ? `${formatNumber(playbook?.resistance_zone[0] ?? null)} - ${formatNumber(playbook?.resistance_zone[1] ?? null)}`
+    : formatNumber(displayResistance);
+  const projectedMovePts =
+    Number(apiTargetProjection?.projectedMove ?? 0) > 0
+      ? Number(apiTargetProjection?.projectedMove)
+      : Math.max(50, Math.abs(Number(displayTarget1 ?? 0) - Number(displayResistance ?? 0)));
+  const breakAbovePrimary = Number(displayResistance ?? 0) + projectedMovePts * 0.6;
+  const breakAboveExtended = Number(displayResistance ?? 0) + projectedMovePts * 1.0;
+  const breakBelowPrimary = Number(displaySupport ?? 0) - projectedMovePts * 0.6;
+  const breakBelowExtended = Number(displaySupport ?? 0) - projectedMovePts * 1.0;
   const trapSuggestedAction =
     displayTrapLevel === "High"
       ? "Avoid fresh breakout entries. Wait for re-test confirmation with stronger ATM participation."
@@ -1831,9 +1872,19 @@ export default function App() {
           trend={displayBias}
         />
 
+        <div className="ia-section-gap">
+          <MarketPlaybookCard
+            bias={String(playbook?.bias ?? displayPrimaryBias)}
+            plan={String(playbookPlan)}
+            support={supportZoneText}
+            resistance={resistanceZoneText}
+          />
+        </div>
+
         <div className="ia-grid-3">
           <DecisionPanel
             bias={displayBias}
+            regime={String(playbook?.regime ?? displayDecisionState)}
             bullProbability={displayBullProbability}
             bearProbability={displayBearProbability}
             confidence={displayConfidence}
@@ -1845,13 +1896,25 @@ export default function App() {
             adaptiveMode={adaptiveMode}
             adaptiveOiWeight={adaptiveWeights?.oi}
             adaptiveBreakoutWeight={adaptiveWeights?.breakout}
+            marketStructureScore={structureScore}
+            structureState={structureState}
           />
-          <KeyLevelsCard
-            support={formatNumber(displaySupport)}
-            resistance={formatNumber(displayResistance)}
-            target1={formatNumber(displayTarget1)}
-            target2={formatNumber(displayTarget2)}
-          />
+          <div className="ia-card-stack">
+            <KeyLevelsCard
+              support={formatNumber(displaySupport)}
+              resistance={formatNumber(displayResistance)}
+              target1={formatNumber(displayTarget1)}
+              target2={formatNumber(displayTarget2)}
+            />
+            <ExpansionTargetsCard
+              resistance={formatNumber(displayResistance)}
+              support={formatNumber(displaySupport)}
+              breakAbovePrimary={formatNumber(breakAbovePrimary)}
+              breakAboveExtended={formatNumber(breakAboveExtended)}
+              breakBelowPrimary={formatNumber(breakBelowPrimary)}
+              breakBelowExtended={formatNumber(breakBelowExtended)}
+            />
+          </div>
           <div className="ia-card">
             <h3 className="ia-card-title">Trap</h3>
             <TrapCard

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -86,6 +87,11 @@ def trap_engine_v2(
     rejection_wick_score: float,
     time_above_level_ratio: float,
     volatility_factor: float,
+    current_price: float | None = None,
+    breakout_level: float | None = None,
+    atr: float | None = None,
+    volume_after_break: float | None = None,
+    breakout_volume: float | None = None,
 ) -> dict[str, Any]:
     """
     Institutional-grade Trap Engine v2.
@@ -102,23 +108,42 @@ def trap_engine_v2(
 
     # STEP 1 — Breakout validity
     validity_score = (
-        (0.35 * breakout_strength)
+        (0.40 * breakout_strength)
         + (0.25 * atm_participation_score)
         + (0.20 * oi_shift_score)
-        + (0.20 * volume_expansion_score)
+        + (0.15 * volume_expansion_score)
     )
+
+    # Liquidity absorption detection.
+    absorption_score = 0.0
+    if (
+        isinstance(current_price, (int, float))
+        and isinstance(breakout_level, (int, float))
+        and isinstance(atr, (int, float))
+        and isinstance(volume_after_break, (int, float))
+        and isinstance(breakout_volume, (int, float))
+    ):
+        expected_move = max(1e-9, float(atr) * max(0.0, float(breakout_strength)))
+        price_progress = abs(float(current_price) - float(breakout_level))
+        absorption_ratio = 1.0 - min(1.0, price_progress / expected_move)
+        volume_follow_through = float(volume_after_break) / max(1e-9, float(breakout_volume))
+        absorption_score = (0.6 * absorption_ratio) + (0.4 * (1.0 - min(1.0, max(0.0, volume_follow_through))))
+        absorption_score = _clamp01(absorption_score)
 
     # STEP 2 — Trap raw score
+    structural_failure = 1.0 - validity_score
+    continuation_failure = (0.6 * (1.0 - time_above_level_ratio)) + (0.4 * (1.0 - volume_expansion_score))
     trap_raw = (
-        (0.30 * (1 - validity_score))
-        + (0.25 * rejection_wick_score)
-        + (0.20 * (1 - time_above_level_ratio))
-        + (0.15 * (1 - oi_shift_score))
-        + (0.10 * volatility_factor)
+        (0.45 * structural_failure)
+        + (0.30 * rejection_wick_score)
+        + (0.20 * continuation_failure)
+        + (0.05 * volatility_factor)
+        + (0.10 * absorption_score)
     )
 
+    # Proportional boost for classic fake breakout instead of fixed jump.
     if breakout_strength > 0.7 and rejection_wick_score > 0.7 and time_above_level_ratio < 0.3:
-        trap_raw += 0.15
+        trap_raw += 0.15 * breakout_strength
 
     trap_raw = _clamp01(trap_raw)
     trap_probability = int(round(trap_raw * 100))
@@ -145,6 +170,7 @@ def trap_engine_v2(
         "trap_level": trap_level,
         "trap_type": trap_type,
         "validity_score": round(validity_score, 4),
+        "absorption_score": round(absorption_score, 4),
         "trap_raw": round(trap_raw, 4),
     }
 
@@ -169,7 +195,99 @@ def detect_fake_breakout(
     return score >= 60, min(100.0, score)
 
 
-def run_trap_engine(features: dict[str, Any], breakout: dict[str, Any], oi: dict[str, Any], volume: dict[str, Any]) -> dict[str, Any]:
+def _parse_epoch_seconds(timestamp_text: str | None) -> int:
+    if not timestamp_text:
+        return int(datetime.now(timezone.utc).timestamp())
+    for fmt in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(timestamp_text, fmt).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _build_spot_observations(
+    previous_state: dict[str, Any] | None,
+    spot: float | None,
+    timestamp_text: str | None,
+    max_points: int = 40,
+) -> list[dict[str, float]]:
+    observations_raw = (previous_state or {}).get("spot_observations", [])
+    observations: list[dict[str, float]] = []
+    for item in observations_raw if isinstance(observations_raw, list) else []:
+        try:
+            ts = int(item.get("ts"))  # type: ignore[arg-type]
+            px = float(item.get("spot"))  # type: ignore[arg-type]
+            observations.append({"ts": ts, "spot": px})
+        except Exception:
+            continue
+
+    if spot is not None:
+        observations.append({"ts": _parse_epoch_seconds(timestamp_text), "spot": float(spot)})
+    observations = sorted(observations, key=lambda x: x["ts"])[-max_points:]
+    return observations
+
+
+def _time_ratio(
+    observations: list[dict[str, float]],
+    level: float,
+    *,
+    mode: str = "above",
+) -> float:
+    if len(observations) < 2:
+        if not observations:
+            return 0.0
+        spot = float(observations[-1]["spot"])
+        return 1.0 if ((mode == "above" and spot > level) or (mode == "below" and spot < level)) else 0.0
+
+    total = 0.0
+    active = 0.0
+    for i in range(1, len(observations)):
+        prev = observations[i - 1]
+        cur = observations[i]
+        dt = max(0.0, float(cur["ts"] - prev["ts"]))
+        total += dt
+        spot_prev = float(prev["spot"])
+        cond = spot_prev > level if mode == "above" else spot_prev < level
+        if cond:
+            active += dt
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, active / total))
+
+
+def _rejection_wick_score(
+    observations: list[dict[str, float]],
+    level: float,
+    *,
+    direction: str,
+) -> float:
+    if len(observations) < 2:
+        return 0.0
+    prices = [float(x["spot"]) for x in observations]
+    high = max(prices)
+    low = min(prices)
+    close = prices[-1]
+    candle_range = max(1e-9, high - low)
+
+    if direction == "up":
+        upper_wick = max(0.0, (high - level) - max(0.0, close - level))
+        wick_ratio = upper_wick / candle_range
+    elif direction == "down":
+        lower_wick = max(0.0, (level - low) - max(0.0, level - close))
+        wick_ratio = lower_wick / candle_range
+    else:
+        wick_ratio = 0.0
+    return max(0.0, min(1.0, wick_ratio * 2.0))
+
+
+def run_trap_engine(
+    features: dict[str, Any],
+    breakout: dict[str, Any],
+    oi: dict[str, Any],
+    volume: dict[str, Any],
+    previous_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # Retail simplified trap logic:
     # trigger only when breakout + weak ATM OI + weak volume + not first 5 minutes.
     ts = str(features.get("meta", {}).get("timestamp") or "")
@@ -192,15 +310,84 @@ def run_trap_engine(features: dict[str, Any], breakout: dict[str, Any], oi: dict
         mins = hh * 60 + mm
         in_open_window = 555 <= mins < 560  # 09:15 to 09:19 IST
 
-    breakout_trigger = bool(breakout.get("breakout_up") or breakout.get("breakout_down"))
+    rows = features.get("rows", []) or []
+    atm_row = features.get("atm_row") or {}
+    spot = features.get("meta", {}).get("spot")
+    support = features.get("meta", {}).get("support")
+    resistance = features.get("meta", {}).get("resistance")
+    if support is None:
+        support = min((float(r.get("strike", 0) or 0) for r in rows), default=None)
+    if resistance is None:
+        resistance = max((float(r.get("strike", 0) or 0) for r in rows), default=None)
+
+    breakout_up = bool(breakout.get("breakout_up"))
+    breakout_down = bool(breakout.get("breakout_down"))
+    breakout_trigger = bool(breakout_up or breakout_down)
     weak_atm_oi = float(oi.get("oi_strength", 0.0) or 0.0) < 0.4
     weak_volume = (not bool(volume.get("volume_expansion"))) or (
         ((float(volume.get("rvr", {}).get("ce", 0.0) or 0.0) + float(volume.get("rvr", {}).get("pe", 0.0) or 0.0)) / 2.0)
         < 0.55
     )
 
+    # Normalized OI / volume scores (variance-preserving).
+    oi_change = abs(float(atm_row.get("CE_DeltaOI", 0.0) or 0.0)) + abs(float(atm_row.get("PE_DeltaOI", 0.0) or 0.0))
+    oi_avg_change = (
+        sum(abs(float(r.get("CE_DeltaOI", 0.0) or 0.0)) + abs(float(r.get("PE_DeltaOI", 0.0) or 0.0)) for r in rows)
+        / max(1, len(rows))
+    )
+    oi_shift_score = min(1.0, oi_change / max(1.0, oi_avg_change))
+
+    atm_volume = float(atm_row.get("CE_Volume", 0.0) or 0.0) + float(atm_row.get("PE_Volume", 0.0) or 0.0)
+    avg_volume = (
+        sum(float(r.get("CE_Volume", 0.0) or 0.0) + float(r.get("PE_Volume", 0.0) or 0.0) for r in rows)
+        / max(1, len(rows))
+    )
+    volume_expansion_score = min(1.0, atm_volume / max(1.0, avg_volume))
+
+    threshold_points = max(1.0, float(breakout.get("threshold_points", 0.0) or 0.0))
+    if breakout_up and resistance is not None and spot is not None:
+        breakout_strength = min(1.0, max(0.0, (float(spot) - float(resistance)) / threshold_points))
+    elif breakout_down and support is not None and spot is not None:
+        breakout_strength = min(1.0, max(0.0, (float(support) - float(spot)) / threshold_points))
+    else:
+        breakout_strength = 0.0
+
+    observations = _build_spot_observations(previous_state, float(spot) if isinstance(spot, (int, float)) else None, ts)
+    if breakout_up and resistance is not None:
+        time_ratio = _time_ratio(observations, float(resistance), mode="above")
+        wick_score = _rejection_wick_score(observations, float(resistance), direction="up")
+    elif breakout_down and support is not None:
+        time_ratio = _time_ratio(observations, float(support), mode="below")
+        wick_score = _rejection_wick_score(observations, float(support), direction="down")
+    else:
+        time_ratio = 0.0
+        wick_score = 0.0
+    volatility_factor = min(1.0, max(0.0, abs(float(breakout.get("atr_threshold", threshold_points)) - 1.0) / 10.0))
+
     is_trap = bool(breakout_trigger and weak_atm_oi and weak_volume and (not in_open_window))
-    trap_risk = 75 if is_trap else (40 if breakout_trigger and (weak_atm_oi or weak_volume) else 20)
+    breakout_level = float(resistance) if breakout_up and resistance is not None else float(support) if breakout_down and support is not None else None
+    trap_v2 = trap_engine_v2(
+        breakout_strength=float(breakout_strength),
+        atm_participation_score=float(volume.get("atm_participation", 0.0) or 0.0),
+        oi_shift_score=float(oi_shift_score),
+        volume_expansion_score=float(volume_expansion_score),
+        rejection_wick_score=float(wick_score),
+        time_above_level_ratio=float(time_ratio),
+        volatility_factor=float(volatility_factor),
+        current_price=float(spot) if isinstance(spot, (int, float)) else None,
+        breakout_level=breakout_level,
+        atr=float(breakout.get("atr_threshold", threshold_points) or threshold_points),
+        volume_after_break=float(atm_volume),
+        breakout_volume=float(avg_volume),
+    )
+    trap_raw = float(trap_v2.get("trap_raw", 0.0) or 0.0)
+    prev_trap_raw = trap_raw
+    if isinstance(previous_state, dict):
+        prev_trap_raw = float(previous_state.get("trap_raw_prev", trap_raw) or trap_raw)
+    trap_smoothed = _clamp01((0.7 * prev_trap_raw) + (0.3 * trap_raw))
+
+    trap_risk_base = 75 if is_trap else (40 if breakout_trigger and (weak_atm_oi or weak_volume) else 20)
+    trap_risk = int(round((0.45 * trap_risk_base) + (0.55 * (trap_smoothed * 100.0))))
 
     if in_open_window:
         trap_type = None
@@ -219,7 +406,18 @@ def run_trap_engine(features: dict[str, Any], breakout: dict[str, Any], oi: dict
         "is_trap": is_trap,
         "trap_probability_pct": int(trap_risk),
         "trap_risk": int(trap_risk),
-        "trap_type": trap_type,
+        "trap_raw": round(trap_raw, 4),
+        "trap_smoothed": round(trap_smoothed, 4),
+        "trap_type": trap_type or trap_v2.get("trap_type"),
         "trap_message": trap_message,
         "show_affected_level": bool(trap_type is not None),
+        "trap_level": trap_v2.get("trap_level"),
+        "breakout_strength": round(float(breakout_strength), 4),
+        "rejection_wick_score": round(float(wick_score), 4),
+        "time_above_level_ratio": round(float(time_ratio), 4),
+        "oi_shift_score": round(float(oi_shift_score), 4),
+        "volume_expansion_score": round(float(volume_expansion_score), 4),
+        "volatility_factor": round(float(volatility_factor), 4),
+        "absorption_score": round(float(trap_v2.get("absorption_score", 0.0) or 0.0), 4),
+        "spot_observations": observations,
     }

@@ -1,6 +1,26 @@
 from typing import Any
 
 
+def _infer_session_phase(timestamp: str | None) -> str:
+    if not timestamp:
+        return "Transition"
+    import re
+
+    m = re.search(r"(\d{1,2}):(\d{2})", str(timestamp))
+    if not m:
+        return "Transition"
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    minutes = (hh * 60) + mm
+    if 9 * 60 + 15 <= minutes < 10 * 60 + 30:
+        return "Opening"
+    if 10 * 60 + 30 <= minutes < 13 * 60 + 30:
+        return "Midday"
+    if 14 * 60 + 30 <= minutes <= 15 * 60 + 30:
+        return "PowerHour"
+    return "Transition"
+
+
 def normalize_chain(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for row in rows:
@@ -31,13 +51,20 @@ def build_feature_frame(
 ) -> dict[str, Any]:
     if not rows:
         return {
-            "meta": {"symbol": symbol, "expiry": expiry, "timestamp": timestamp, "spot": spot},
+            "meta": {
+                "symbol": symbol,
+                "expiry": expiry,
+                "timestamp": timestamp,
+                "spot": spot,
+                "session_phase": _infer_session_phase(timestamp),
+            },
             "rows": [],
             "atm_row": None,
             "strike_gap": 0.0,
             "pcr": 1.0,
             "totals": {},
             "atr_proxy": 0.0,
+            "atr": 0.0,
         }
 
     sorted_rows = sorted(rows, key=lambda r: r["strike"])
@@ -57,7 +84,13 @@ def build_feature_frame(
     atr_proxy = max(strike_gap, (max(strikes) - min(strikes)) / max(1, len(strikes)))
 
     return {
-        "meta": {"symbol": symbol, "expiry": expiry, "timestamp": timestamp, "spot": spot},
+        "meta": {
+            "symbol": symbol,
+            "expiry": expiry,
+            "timestamp": timestamp,
+            "spot": spot,
+            "session_phase": _infer_session_phase(timestamp),
+        },
         "rows": sorted_rows,
         "atm_row": atm_row,
         "strike_gap": float(strike_gap),
@@ -69,4 +102,5 @@ def build_feature_frame(
             "pe_total_vol": pe_total_vol,
         },
         "atr_proxy": float(atr_proxy),
+        "atr": float(atr_proxy),
     }
