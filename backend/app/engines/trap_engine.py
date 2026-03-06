@@ -265,19 +265,16 @@ def _rejection_wick_score(
     if len(observations) < 2:
         return 0.0
     prices = [float(x["spot"]) for x in observations]
+    open_price = prices[0]
     high = max(prices)
     low = min(prices)
     close = prices[-1]
     candle_range = max(1e-9, high - low)
+    _ = level, direction  # level-aware filtering can be layered later if needed.
 
-    if direction == "up":
-        upper_wick = max(0.0, (high - level) - max(0.0, close - level))
-        wick_ratio = upper_wick / candle_range
-    elif direction == "down":
-        lower_wick = max(0.0, (level - low) - max(0.0, level - close))
-        wick_ratio = lower_wick / candle_range
-    else:
-        wick_ratio = 0.0
+    upper_wick = max(0.0, high - max(open_price, close))
+    lower_wick = max(0.0, min(open_price, close) - low)
+    wick_ratio = max(upper_wick, lower_wick) / candle_range
     return max(0.0, min(1.0, wick_ratio * 2.0))
 
 

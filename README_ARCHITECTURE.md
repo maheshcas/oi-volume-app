@@ -17,7 +17,8 @@ Design goals:
 3. Every ~15 seconds, `app/services/background_updater.py`:
    - fetches index + contract + option chain data
    - parses rows and summaries
-   - runs engine pipeline
+   - runs engine pipeline:
+     - `preprocessing -> feature_engines -> regime_engine -> trap_engine -> conflict_resolver -> decision_engine -> stability_layer -> signal_priority -> trade_plan`
    - updates cache atomically
 4. API handlers read cache only (no NSE calls in request path).
 5. On NSE failure, last valid snapshot is retained; freshness turns stale/delayed.
@@ -42,12 +43,12 @@ Concurrency:
 - `app/services/decision_engine.py`: legacy decision helper used by updater
 
 ### Engines
-- `preprocessing.py`: normalized chain, ATM row, strike gap, PCR, ATR proxy
-- `oi_analyzer.py`: OI alignment/strength/concentration
-- `volume_analyzer.py`: volume expansion, RVR, ATM participation
+- `preprocessing.py`: normalized chain, ATM row, strike gap, PCR, ATR proxy, session phase, previous-cycle compatibility fields (`spot_price`, `previous_price`, `oi`, `previous_oi`, `volume`)
+- `oi_analyzer.py`: OI alignment/strength/concentration + rolling OI shift normalization + OI velocity score
+- `volume_analyzer.py`: volume expansion, RVR, ATM participation + rolling volume normalization (`volume_ratio`, `volume_expansion_score`)
 - `sr_engine.py`: multi-tier S/R (`immediate` + `major`) + shift detection alerts
 - `breakout_engine.py`: volatility-buffer breakout checks
-- `trap_engine.py`: trap probability + confidence/volatility adjustment (with de-overlap scoring + proportional fake-breakout boost)
+- `trap_engine.py`: trap probability + confidence/volatility adjustment, wick/time-above-level scoring, liquidity absorption scoring, trap smoothing support (`trap_smoothed`)
 - `regime_engine.py`: trend/range/transition classification
 - `decision_engine.py`: v4 hybrid decision model (3-axis: directional force, clarity, execution risk) with v3-compatible wrapper
 - `bias_probability_engine.py`: retail bull/bear probability model
@@ -67,7 +68,13 @@ Additional specialized engines currently present:
 - `auto_exit_suggestion_engine.py`
 - `signal_priority_engine.py`
 - `arbitration_engine.py`
-- `conflict_resolution_engine.py`
+- `conflict_resolution_engine.py` (`run_conflict_resolver`) for pre-decision suppression/filtering
+
+Stability layer (in updater orchestration):
+- signal persistence counters for bias/projection
+- 3-cycle bias confirmation, 2-cycle projection confirmation
+- low-conviction freeze (`confidence < 20` or `clarity < 40`)
+- smoothed MSS (`0.7 * prev + 0.3 * current`)
 
 ## 5) Decision Layer (Hybrid v4)
 `decision_engine_v4` separates slow and fast market context:
@@ -88,6 +95,11 @@ Primary bias flip gates:
 
 Memory persisted in cache state:
 - `primary_bias`
+- `previous_projection`
+- `projection_change_counter`
+- `bias_change_counter`
+- `bias_stability_cycles`
+- `market_structure_score_prev`
 - `rolling_force_history` (last 5)
 - `rolling_clarity_history` (last 5)
 - `last_primary_update_time`
@@ -143,6 +155,19 @@ Exposed by:
 - `/api/health/nse`
 - `/api/v2/intelligence/summary.market_state.{freshness_state,delta_seconds}`
 
+## 8.1) Signal Stability Outputs
+Stable outputs returned in summary payload after persistence rules:
+- `market_state.primary_bias`
+- `market_state.projection`
+- `market_state.market_structure_score` (smoothed)
+- `market_state.drift`
+- `market_state.bias_stability_cycles`
+
+Conflict resolver outputs:
+- `market_state.conflict_market_state`
+- `market_state.conflict_flags`
+- `signals.conflict_resolver`
+
 ## 9) Testing and Calibration
 - Unit tests: `backend/tests/`
 - Offline threshold calibration: `backend/calibration/threshold_calibrator.py`
@@ -155,5 +180,8 @@ Exposed by:
 ## 10) Operational Notes
 - Keep heavy analytics in background worker only.
 - Keep request handlers cache-read only.
+- Keep cycle logs enabled for auditability:
+  - `backend/logs/optionlens_cycle_log.jsonl`
+  - includes breakout/trap/alignment/clarity/force/stability diagnostics
 - For multi-instance deploy, replace process-local cache with Redis.
 - Re-run tests after any rule-engine update.

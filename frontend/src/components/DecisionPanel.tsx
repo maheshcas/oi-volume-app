@@ -1,4 +1,6 @@
 import MarketStructureScoreBadge from "./MarketStructureScoreBadge";
+import MarketPressureBar from "./MarketPressureBar";
+import TradeReadinessIndicator from "./TradeReadinessIndicator";
 
 type DecisionPanelProps = {
   bias: "Bullish" | "Bearish" | "Neutral";
@@ -16,6 +18,15 @@ type DecisionPanelProps = {
   adaptiveBreakoutWeight?: number;
   marketStructureScore?: number;
   structureState?: string;
+  structureBadge?: string;
+  pressureBadge?: string;
+  trapBadge?: string;
+  projection?: string;
+  conflictState?: string;
+  pressureScore?: number;
+  pressureStateLabel?: string;
+  readinessState?: "WAIT" | "CAUTION" | "READY";
+  readinessScore?: number;
 };
 
 export default function DecisionPanel(props: DecisionPanelProps) {
@@ -96,11 +107,26 @@ export default function DecisionPanel(props: DecisionPanelProps) {
           </div>
         ) : null}
       </div>
+      <TradeReadinessIndicator
+        state={props.readinessState ?? "WAIT"}
+        score={props.readinessScore ?? 0}
+      />
       <div className="ia-kpi-label ia-decision-summary">
         {marketingMode && props.summaryLine.length > 120
           ? `${props.summaryLine.slice(0, 117)}...`
           : props.summaryLine}
       </div>
+      <div className="ia-status-badges">
+        <span className="ia-status-chip">Structure: {props.structureBadge ?? props.structureState ?? "-"}</span>
+        <span className="ia-status-chip">Pressure: {props.pressureBadge ?? "-"}</span>
+        <span className="ia-status-chip">Trap Risk: {props.trapBadge ?? "-"}</span>
+        <span className="ia-status-chip">Projection: {props.projection ?? "No Confirmed Breakout"}</span>
+        <span className="ia-status-chip">Conflict: {props.conflictState ?? "Balanced"}</span>
+      </div>
+      <MarketPressureBar
+        score={props.pressureScore ?? 0}
+        state={props.pressureStateLabel ?? "Balanced"}
+      />
       <div className="ia-confidence-wrap">
         <div className="ia-kpi-label" title="Structural alignment strength across engines.">
           {marketingMode ? `Confidence: ${props.confidence}% (${confidenceStrength})` : "Confidence"}

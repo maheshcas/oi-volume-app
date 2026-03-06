@@ -13,6 +13,8 @@ type StructuralDiagnosticsProps = {
   institutionalLevels: string;
   expectedMove: string;
   shift: string;
+  alignmentScore?: number;
+  oiVelocityScore?: number;
   checklist: BreakoutCheck[];
 };
 
@@ -50,6 +52,14 @@ export default function StructuralDiagnostics(props: StructuralDiagnosticsProps)
           <div className="ia-col-span-2">
             <div className="ia-kpi-label">Shift</div>
             <div>{props.shift}</div>
+          </div>
+          <div>
+            <div className="ia-kpi-label">Alignment Score</div>
+            <div>{props.alignmentScore !== undefined ? props.alignmentScore.toFixed(2) : "-"}</div>
+          </div>
+          <div>
+            <div className="ia-kpi-label">OI Velocity Score</div>
+            <div>{props.oiVelocityScore !== undefined ? props.oiVelocityScore.toFixed(2) : "-"}</div>
           </div>
           <div className="ia-col-span-2">
             <div className="ia-kpi-label ia-mb-1">Breakout Checklist</div>

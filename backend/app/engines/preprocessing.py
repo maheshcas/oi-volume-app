@@ -48,6 +48,7 @@ def build_feature_frame(
     symbol: str,
     expiry: str | None,
     timestamp: str | None,
+    previous_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not rows:
         return {
@@ -59,9 +60,15 @@ def build_feature_frame(
                 "session_phase": _infer_session_phase(timestamp),
             },
             "rows": [],
+            "option_chain_rows": [],
             "atm_row": None,
             "strike_gap": 0.0,
             "pcr": 1.0,
+            "spot_price": spot,
+            "previous_price": None,
+            "oi": 0.0,
+            "previous_oi": None,
+            "volume": 0.0,
             "totals": {},
             "atr_proxy": 0.0,
             "atr": 0.0,
@@ -83,6 +90,11 @@ def build_feature_frame(
     # ATR proxy for option-chain-only context (replace with real ATR when available).
     atr_proxy = max(strike_gap, (max(strikes) - min(strikes)) / max(1, len(strikes)))
 
+    prev_spot_raw = (previous_state or {}).get("spot")
+    prev_spot = float(prev_spot_raw) if isinstance(prev_spot_raw, (int, float)) else None
+    prev_oi_raw = (previous_state or {}).get("oi_prev_value")
+    prev_oi = float(prev_oi_raw) if isinstance(prev_oi_raw, (int, float)) else None
+
     return {
         "meta": {
             "symbol": symbol,
@@ -92,9 +104,15 @@ def build_feature_frame(
             "session_phase": _infer_session_phase(timestamp),
         },
         "rows": sorted_rows,
+        "option_chain_rows": sorted_rows,
         "atm_row": atm_row,
         "strike_gap": float(strike_gap),
         "pcr": float(pcr),
+        "spot_price": spot,
+        "previous_price": prev_spot,
+        "oi": float(ce_total_oi + pe_total_oi),
+        "previous_oi": prev_oi,
+        "volume": float(ce_total_vol + pe_total_vol),
         "totals": {
             "ce_total_oi": ce_total_oi,
             "pe_total_oi": pe_total_oi,

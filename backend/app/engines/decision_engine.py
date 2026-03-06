@@ -190,12 +190,22 @@ def run_decision_engine_v4(
         + (max(-breakout_effective, 0.0) * w_breakout)
         + (max(-writer_score, 0.0) * w_sr)
     )
-    force_total = bull_force_raw + bear_force_raw
+    # Add a small symmetric prior to avoid unstable 0/100 force outputs.
+    force_prior = 0.15
+    force_total = (bull_force_raw + force_prior) + (bear_force_raw + force_prior)
     if force_total <= 1e-9:
         bull_force = 50
         bear_force = 50
     else:
-        bull_force = int(round(_clamp((bull_force_raw / force_total) * 100.0, 0.0, 100.0)))
+        bull_force = int(
+            round(
+                _clamp(
+                    ((bull_force_raw + force_prior) / force_total) * 100.0,
+                    0.0,
+                    100.0,
+                )
+            )
+        )
         bear_force = max(0, min(100, 100 - bull_force))
     force_strength = abs(bull_force - bear_force)
     directional_force_value = force_strength
@@ -207,7 +217,11 @@ def run_decision_engine_v4(
     mean_c = sum(engine_scores) / len(engine_scores)
     variance = sum((c - mean_c) ** 2 for c in engine_scores) / len(engine_scores)
     std_dev = math.sqrt(variance)
-    clarity = _clamp(100.0 - (std_dev * float(clarity_scaling_factor)) - (clarity_penalty * 100.0), 0.0, 100.0)
+    clarity = _clamp(
+        100.0 - (std_dev * 100.0 * float(clarity_scaling_factor)) - (clarity_penalty * 100.0),
+        0.0,
+        100.0,
+    )
 
     # -------------------------
     # Axis 3: Execution Risk

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import TrapCard from "./components/TrapCard";
 import MarketBanner from "./components/MarketBanner";
@@ -114,6 +114,7 @@ type IntelligenceResponse = {
     probability_bull: number;
     probability_bear: number;
     confidence: number;
+    clarity?: number;
     trap_risk?: number;
     reversal_risk?: number;
     support?: number;
@@ -137,6 +138,15 @@ type IntelligenceResponse = {
     delta_seconds?: number | null;
     market_structure_score?: number;
     structure_state?: string;
+    drift?: string;
+    projection?: string;
+    conflict_market_state?: string;
+    conflict_flags?: string[];
+    directional_force?: {
+      bull?: number;
+      bear?: number;
+      strength?: number;
+    };
   };
   levels?: {
     support?: { strike?: number; score?: number };
@@ -146,6 +156,12 @@ type IntelligenceResponse = {
     acceleration_zone?: string | null;
   };
   signals?: {
+    oi?: {
+      oi_velocity_score?: number;
+    };
+    breakout?: {
+      breakout_strength?: number;
+    };
     alerts?: Array<{
       message: string;
       direction: "up" | "down" | "neutral";
@@ -469,6 +485,26 @@ export default function App() {
     "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
   >("overview");
   const [showStructural, setShowStructural] = useState(false);
+  const [stableBadges, setStableBadges] = useState({
+    structure: "-",
+    pressure: "Stable",
+    trap: "Low",
+  });
+  const [pressureSmoothed, setPressureSmoothed] = useState(50);
+  const [readinessDisplay, setReadinessDisplay] = useState<{
+    score: number;
+    state: "WAIT" | "CAUTION" | "READY";
+  }>({ score: 0, state: "WAIT" });
+  const readinessPendingRef = useRef<{ score: number; state: "WAIT" | "CAUTION" | "READY"; count: number }>({
+    score: 0,
+    state: "WAIT",
+    count: 0,
+  });
+  const pendingBadgeRef = useRef({
+    structure: { value: "-", count: 0 },
+    pressure: { value: "Stable", count: 0 },
+    trap: { value: "Low", count: 0 },
+  });
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -1464,6 +1500,57 @@ export default function App() {
   const playbook = intelligence?.intraday_playbook;
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
+  const driftState = intelligence?.market_state?.drift ?? "Stable";
+  const projectionState = intelligence?.market_state?.projection ?? "No Confirmed Breakout";
+  const conflictState = intelligence?.market_state?.conflict_market_state ?? "Balanced";
+  const directionalForceBullRaw = Number(
+    intelligence?.market_state?.directional_force?.bull ?? displayBullProbability ?? 50
+  );
+  const directionalForceBull = directionalForceBullRaw > 1 ? directionalForceBullRaw / 100 : directionalForceBullRaw;
+  const alignmentScoreRaw = Number(intelligence?.signals?.alignment_filter?.alignment_score ?? 0);
+  const alignmentScore = alignmentScoreRaw > 1 ? alignmentScoreRaw / 100 : alignmentScoreRaw;
+  const oiVelocityScoreRaw = Number(intelligence?.signals?.oi?.oi_velocity_score ?? 0);
+  const oiVelocityScore = oiVelocityScoreRaw > 1 ? oiVelocityScoreRaw / 100 : oiVelocityScoreRaw;
+  const breakoutStrengthRaw = Number(intelligence?.signals?.breakout?.breakout_strength ?? 0);
+  const breakoutStrength = breakoutStrengthRaw > 1 ? breakoutStrengthRaw / 100 : breakoutStrengthRaw;
+  const trapProbabilityRaw = Number(displayTrapRiskPct ?? 0);
+  const trapProbability = trapProbabilityRaw > 1 ? trapProbabilityRaw / 100 : trapProbabilityRaw;
+  const pressureRawScore = Math.max(
+    0,
+    Math.min(
+      100,
+      ((0.35 * directionalForceBull +
+        0.25 * alignmentScore +
+        0.2 * oiVelocityScore +
+        0.1 * breakoutStrength -
+        0.2 * trapProbability) *
+        100)
+    )
+  );
+  const pressureStateLabel =
+    pressureSmoothed < 35
+      ? "Sell Pressure"
+      : pressureSmoothed < 55
+        ? "Balanced"
+        : pressureSmoothed < 75
+          ? "Buy Pressure"
+          : "Strong Buy Pressure";
+  const clarityRaw = Number(intelligence?.market_state?.clarity ?? displayConfidence ?? 0);
+  const clarityNorm = clarityRaw > 1 ? clarityRaw / 100 : clarityRaw;
+  const readinessRaw = Math.max(
+    0,
+    Math.min(
+      100,
+      ((0.3 * alignmentScore +
+        0.25 * clarityNorm +
+        0.2 * breakoutStrength +
+        0.15 * oiVelocityScore -
+        0.25 * trapProbability) *
+        100)
+    )
+  );
+  const readinessCandidate: "WAIT" | "CAUTION" | "READY" =
+    readinessRaw < 40 ? "WAIT" : readinessRaw < 65 ? "CAUTION" : "READY";
   const playbookPlan = playbook?.strategy ?? displayTradePlan.strategy_type;
   const supportZoneText = Array.isArray(playbook?.support_zone)
     ? `${formatNumber(playbook?.support_zone[0] ?? null)} - ${formatNumber(playbook?.support_zone[1] ?? null)}`
@@ -1485,6 +1572,45 @@ export default function App() {
       : displayTrapLevel === "Moderate"
         ? "Reduce size and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
+
+  useEffect(() => {
+    const updateIfStable = (
+      key: "structure" | "pressure" | "trap",
+      nextValue: string
+    ) => {
+      const pending = pendingBadgeRef.current[key];
+      if (pending.value !== nextValue) {
+        pendingBadgeRef.current[key] = { value: nextValue, count: 1 };
+        return;
+      }
+      pending.count += 1;
+      if (pending.count >= 2) {
+        setStableBadges((prev) => (prev[key] === nextValue ? prev : { ...prev, [key]: nextValue }));
+      }
+    };
+
+    updateIfStable("structure", structureState || "-");
+    updateIfStable("pressure", driftState || "Stable");
+    updateIfStable("trap", String(displayTrapLevel || "Low"));
+  }, [structureState, driftState, displayTrapLevel]);
+
+  useEffect(() => {
+    setPressureSmoothed((prev) => (0.7 * prev) + (0.3 * pressureRawScore));
+  }, [pressureRawScore]);
+
+  useEffect(() => {
+    const pending = readinessPendingRef.current;
+    const rounded = Math.round(readinessRaw);
+    if (pending.state !== readinessCandidate) {
+      readinessPendingRef.current = { state: readinessCandidate, score: rounded, count: 1 };
+      return;
+    }
+    pending.count += 1;
+    pending.score = rounded;
+    if (pending.count >= 2) {
+      setReadinessDisplay({ state: readinessCandidate, score: rounded });
+    }
+  }, [readinessCandidate, readinessRaw]);
 
   const visibleAlerts = useMemo(() => {
     if (!MARKETING_MODE) return combinedAlerts;
@@ -1875,9 +2001,11 @@ export default function App() {
         <div className="ia-section-gap">
           <MarketPlaybookCard
             bias={String(playbook?.bias ?? displayPrimaryBias)}
+            regime={String(playbook?.regime ?? displayDecisionState)}
             plan={String(playbookPlan)}
             support={supportZoneText}
             resistance={resistanceZoneText}
+            expansionTarget={formatNumber(playbook?.expansion_target ?? null)}
           />
         </div>
 
@@ -1898,6 +2026,15 @@ export default function App() {
             adaptiveBreakoutWeight={adaptiveWeights?.breakout}
             marketStructureScore={structureScore}
             structureState={structureState}
+            structureBadge={stableBadges.structure}
+            pressureBadge={stableBadges.pressure}
+            trapBadge={stableBadges.trap}
+            projection={projectionState}
+            conflictState={conflictState}
+            pressureScore={pressureSmoothed}
+            pressureStateLabel={pressureStateLabel}
+            readinessState={readinessDisplay.state}
+            readinessScore={readinessDisplay.score}
           />
           <div className="ia-card-stack">
             <KeyLevelsCard
@@ -2045,6 +2182,8 @@ export default function App() {
               }
               expectedMove={formatNumber(apiTargetProjection?.expectedMove ?? null)}
               shift={intradayEngine.shiftSummary}
+              alignmentScore={intelligence?.signals?.alignment_filter?.alignment_score}
+              oiVelocityScore={intelligence?.signals?.oi?.oi_velocity_score}
               checklist={[
                 { label: "ATM OI Rising", confirmed: !!apiTargetProjection?.confirmation?.bullish?.atm_oi_rising },
                 { label: "CE Unwinding", confirmed: !!apiTargetProjection?.confirmation?.bullish?.ce_unwinding },
@@ -2345,6 +2484,14 @@ export default function App() {
           No buy/sell recommendation. Market data may be delayed. Contact: <a href="mailto:contact@optionlense.com">contact@optionlense.com</a>
         </div>
       </section>
+      <button
+        type="button"
+        className={`ia-refresh-toggle ${autoRefresh ? "ia-refresh-toggle-on" : "ia-refresh-toggle-off"}`}
+        onClick={() => setAutoRefresh((prev) => !prev)}
+        title="Toggle auto refresh"
+      >
+        {autoRefresh ? "Auto Refresh: ON" : "Auto Refresh: OFF"}
+      </button>
     </div>
   );
 }

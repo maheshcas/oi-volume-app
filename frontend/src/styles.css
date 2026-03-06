@@ -2499,6 +2499,137 @@ tbody tr:hover {
   margin-top: 4px;
 }
 
+.ia-status-badges {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ia-status-chip {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #cfd7e6;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ia-pressure-wrap {
+  margin-top: 8px;
+}
+
+.ia-readiness-wrap {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ia-readiness-pill {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.ia-readiness-wait {
+  color: #ff7588;
+  border-color: rgba(255, 117, 136, 0.5);
+  background: rgba(255, 117, 136, 0.14);
+}
+
+.ia-readiness-caution {
+  color: #f0c85f;
+  border-color: rgba(240, 200, 95, 0.5);
+  background: rgba(240, 200, 95, 0.14);
+}
+
+.ia-readiness-ready {
+  color: #57dd91;
+  border-color: rgba(87, 221, 145, 0.5);
+  background: rgba(87, 221, 145, 0.14);
+}
+
+.ia-pressure-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ia-pressure-state {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ia-pressure-sell { color: #ff6b7f; }
+.ia-pressure-balanced { color: #f4c95e; }
+.ia-pressure-buy { color: #71e39a; }
+.ia-pressure-strong-buy { color: #36d27a; }
+
+.ia-pressure-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ia-pressure-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #ff5f76 0%, #f2cb63 50%, #46d989 100%);
+}
+
+.ia-pressure-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #0b1320;
+  background: #f3f6ff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+}
+
+.ia-pressure-ends {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #91a3b5;
+  font-size: 11px;
+}
+
+.ia-refresh-toggle {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1000;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #f5f8ff;
+  background: rgba(8, 20, 36, 0.9);
+  backdrop-filter: blur(4px);
+}
+
+.ia-refresh-toggle-on {
+  border-color: rgba(78, 222, 144, 0.65);
+  box-shadow: 0 0 12px rgba(78, 222, 144, 0.3);
+}
+
+.ia-refresh-toggle-off {
+  border-color: rgba(244, 201, 94, 0.55);
+  box-shadow: 0 0 12px rgba(244, 201, 94, 0.22);
+}
+
 .ia-levels-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(120px, 1fr));

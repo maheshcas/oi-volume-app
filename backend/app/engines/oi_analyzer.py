@@ -76,7 +76,9 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
     else:
         alignment = "mixed"
 
-    oi_shift_score = round(calculate_oi_strength(features), 4)
+    # Shift score normalized against rolling 20-cycle OI-change baseline.
+    # This avoids saturation at 1.0 in quiet sessions.
+    default_shift = calculate_oi_strength(features)
     writer_balance_score = round(
         min(1.0, abs(pe_doi - ce_doi) / max(1.0, abs(pe_doi) + abs(ce_doi))),
         4,
@@ -92,6 +94,16 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
     time_delta = max(1, current_ts - previous_ts)
     oi_change = current_oi - previous_oi
     oi_velocity = oi_change / float(time_delta)
+
+    shift_history = [float(x) for x in (prev.get("oi_shift_history", []) or []) if isinstance(x, (int, float))]
+    shift_history = (shift_history + [abs(oi_change)])[-20:]
+    avg_oi_change = sum(shift_history) / max(1, len(shift_history))
+    oi_shift_score = round(
+        min(1.0, abs(oi_change) / max(1.0, avg_oi_change)),
+        4,
+    )
+    if avg_oi_change <= 0:
+        oi_shift_score = round(default_shift, 4)
 
     velocity_history = [float(x) for x in (prev.get("oi_velocity_history", []) or []) if isinstance(x, (int, float))]
     velocity_history = (velocity_history + [oi_velocity])[-20:]
@@ -124,5 +136,6 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
             "oi_prev_value": round(current_oi, 4),
             "oi_prev_ts": current_ts,
             "oi_velocity_history": [round(v, 6) for v in velocity_history],
+            "oi_shift_history": [round(v, 4) for v in shift_history],
         },
     }
