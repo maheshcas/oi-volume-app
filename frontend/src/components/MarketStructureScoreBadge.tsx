@@ -20,7 +20,7 @@ export default function MarketStructureScoreBadge({
             ? "ia-mss-balanced"
             : "ia-mss-risk";
   return (
-    <span className={`ia-mss-badge ${toneClass}`} title="Market Structure Score">
+    <span className={`ia-mss-badge ia-emphasis-medium ${toneClass}`} title="Market Structure Score">
       Market Structure Score: {safeScore !== null ? safeScore : "-"} | Status: {label}
     </span>
   );

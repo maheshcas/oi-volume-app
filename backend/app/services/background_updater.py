@@ -457,6 +457,10 @@ def _build_v2_intelligence(
 
     support_score = float(sr.get("support", {}).get("score") or 0.0)
     resistance_score = float(sr.get("resistance", {}).get("score") or 0.0)
+    support_zone_pressure = float(sr.get("support_zone_pressure", 0.0) or 0.0)
+    resistance_zone_pressure = float(sr.get("resistance_zone_pressure", 0.0) or 0.0)
+    support_zone_state = str(sr.get("support_zone_state", "Stable") or "Stable")
+    resistance_zone_state = str(sr.get("resistance_zone_state", "Stable") or "Stable")
     sr_score = max(-1.0, min(1.0, (support_score - resistance_score) / 100.0))
     trap_raw = max(0.0, min(1.0, float(trap.get("trap_raw", 0.0) or 0.0)))
     trap_raw = max(0.0, min(1.0, trap_raw + ((1.0 - alignment_score) * 0.15)))
@@ -466,6 +470,16 @@ def _build_v2_intelligence(
     trap["trap_probability"] = trap_probability_pct
     trap["trap_level"] = _trap_level_from_probability(trap_probability_pct)
     trap_penalty = max(0.0, min(1.0, float(trap_probability_pct) / 100.0))
+
+    # Zone-pressure integration:
+    # - High support pressure increases breakdown potential.
+    # - High resistance pressure increases breakout-up potential.
+    if bool(breakout.get("breakout_down")) and support_zone_pressure > 60.0:
+        breakout_strength_adjusted = max(0.0, min(1.0, breakout_strength_adjusted + 0.1))
+        breakout["breakout_strength"] = round(float(breakout_strength_adjusted), 4)
+    if bool(breakout.get("breakout_up")) and resistance_zone_pressure > 60.0:
+        breakout_strength_adjusted = max(0.0, min(1.0, breakout_strength_adjusted + 0.1))
+        breakout["breakout_strength"] = round(float(breakout_strength_adjusted), 4)
 
     directional_scores = [oi_score, volume_score, breakout_score, sr_score]
     mean_dir = sum(directional_scores) / max(1, len(directional_scores))
@@ -622,6 +636,19 @@ def _build_v2_intelligence(
         "conflict_market_state": str(conflict_resolver.get("market_state") or "Balanced"),
         "conflict_flags": list(conflict_resolver.get("conflict_flags") or []),
     }
+
+    # Structural clarity override using normalized variance across key live signals.
+    clarity_inputs = [
+        max(0.0, min(1.0, float(alignment_score))),
+        max(0.0, min(1.0, float(breakout_strength_adjusted))),
+        max(0.0, min(1.0, float(oi.get("oi_velocity_score", 0.0) or 0.0))),
+        max(0.0, min(1.0, float(trap_probability_pct) / 100.0)),
+    ]
+    clarity_mean = sum(clarity_inputs) / max(1, len(clarity_inputs))
+    clarity_var = sum((x - clarity_mean) ** 2 for x in clarity_inputs) / max(1, len(clarity_inputs))
+    clarity_override = max(0.0, min(100.0, (1.0 - max(0.0, min(1.0, clarity_var))) * 100.0))
+    decision["clarity"] = round(float(clarity_override), 2)
+    decision["confidence"] = round(float(clarity_override), 2)
     target = run_target_engine(features, sr, breakout, oi, trap, volume, decision=decision, regime=regime)
     if "expansion_targets" in conflict_suppressed:
         target["primary_target"] = None
@@ -655,8 +682,26 @@ def _build_v2_intelligence(
         max(0.0, min(1.0, float(target.get("expansion_score", 0.0) or 0.0) * alignment_score)),
         4,
     )
+    if bool(breakout.get("breakout_up")) and resistance_zone_pressure > 60.0:
+        target["expansion_score"] = round(
+            max(0.0, min(1.0, float(target.get("expansion_score", 0.0) or 0.0) + 0.1)),
+            4,
+        )
+    if bool(breakout.get("breakout_down")) and support_zone_pressure > 60.0:
+        target["expansion_score"] = round(
+            max(0.0, min(1.0, float(target.get("expansion_score", 0.0) or 0.0) + 0.1)),
+            4,
+        )
 
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    breakout_strength = breakout_strength_adjusted
+    mss = _compute_market_structure_score(
+        alignment_score=alignment_score,
+        breakout_strength=breakout_strength,
+        oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
+        clarity=float(decision.get("clarity", decision.get("structural_clarity_score", 0.0)) or 0.0),
+        trap_probability=trap_probability,
+    )
 
     current_bias = str(decision.get("bias", "Neutral"))
     current_projection = str(decision.get("projection", "No Confirmed Breakout"))
@@ -699,6 +744,10 @@ def _build_v2_intelligence(
     trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
     trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
     trap["is_trap"] = bool(trap["trap_probability_pct"] >= 60)
+    high_zone_pressure = support_zone_pressure > 60.0 or resistance_zone_pressure > 60.0
+    if high_zone_pressure and int(trap["trap_probability_pct"]) >= 60:
+        trap["trap_type"] = "False-Break Risk"
+        trap["trap_message"] = "Zone pressure is high but trap risk is elevated: false-break risk."
 
     weighted_score = float(decision.get("weighted_score", 0.0) or 0.0)
 
@@ -973,14 +1022,6 @@ def _build_v2_intelligence(
     )
 
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
-    breakout_strength = breakout_strength_adjusted
-    mss = _compute_market_structure_score(
-        alignment_score=alignment_score,
-        breakout_strength=breakout_strength,
-        oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
-        clarity=float(decision.get("clarity", decision.get("structural_clarity_score", 0.0)) or 0.0),
-        trap_probability=trap_probability,
-    )
     support_zone = sr.get("support_range")
     if support_zone is None:
         support_zone = [sr.get("support", {}).get("immediate"), sr.get("support", {}).get("major")]
@@ -996,6 +1037,44 @@ def _build_v2_intelligence(
         resistance_zone=resistance_zone,
         expansion_target=target.get("primary_target"),
     )
+    warmup_active = bool(trap.get("warmup_active", False))
+    spot_sample_count = int(trap.get("spot_sample_count", 0) or 0)
+    observation_window_seconds = int(trap.get("observation_window_seconds", 0) or 0)
+    rejection_wick_score = float(trap.get("rejection_wick_score", 0.0) or 0.0)
+    time_above_level_ratio = float(trap.get("time_above_level_ratio", 0.0) or 0.0)
+    oi_shift_score_live = float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0)
+
+    prev_wick_zero_streak = int((previous_state or {}).get("wick_zero_streak", 0) or 0)
+    prev_oi_high_streak = int((previous_state or {}).get("oi_near_one_streak", 0) or 0)
+    prev_vol_high_streak = int((previous_state or {}).get("volume_near_one_streak", 0) or 0)
+    trap_hist_prev = [
+        float(x)
+        for x in ((previous_state or {}).get("trap_probability_history", []) or [])
+        if isinstance(x, (int, float))
+    ]
+    trap_history = (trap_hist_prev + [float(trap_probability)])[-20:]
+
+    wick_zero_streak = (prev_wick_zero_streak + 1) if ((not warmup_active) and rejection_wick_score <= 1e-6) else 0
+    oi_near_one_streak = (prev_oi_high_streak + 1) if oi_shift_score_live >= 0.98 else 0
+    volume_near_one_streak = (prev_vol_high_streak + 1) if float(volume_expansion_score) >= 0.98 else 0
+
+    validation_warnings: list[str] = []
+    if max(trap_history) < 40:
+        validation_warnings.append("trap_probability_low_variance")
+    if wick_zero_streak > 20:
+        validation_warnings.append("rejection_wick_score_stuck_zero")
+    if oi_near_one_streak > 20:
+        validation_warnings.append("oi_shift_score_near_one_streak")
+    if volume_near_one_streak > 20:
+        validation_warnings.append("volume_expansion_score_near_one_streak")
+    if validation_warnings:
+        logger.warning(
+            "ValidationWarnings[%s %s] %s",
+            symbol,
+            expiry,
+            ",".join(validation_warnings),
+        )
+
     cycle_log_entry = {
         "timestamp": features.get("meta", {}).get("timestamp"),
         "symbol": symbol,
@@ -1012,16 +1091,24 @@ def _build_v2_intelligence(
         "trap_type": trap.get("trap_type"),
         "support_level": support_level,
         "resistance_level": resistance_level,
+        "support_zone_pressure": round(float(support_zone_pressure), 2),
+        "support_zone_state": support_zone_state,
+        "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
+        "resistance_zone_state": resistance_zone_state,
         "breakout_strength": round(float(breakout_strength), 4),
-        "rejection_wick_score": float(trap.get("rejection_wick_score", 0.0) or 0.0),
-        "time_above_level_ratio": float(trap.get("time_above_level_ratio", 0.0) or 0.0),
-        "oi_shift_score": float(oi.get("oi_strength", 0.0) or 0.0),
+        "rejection_wick_score": rejection_wick_score,
+        "time_above_level_ratio": time_above_level_ratio,
+        "oi_shift_score": float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
         "oi_velocity_score": float(oi.get("oi_velocity_score", 0.0) or 0.0),
         "volume_expansion_score": round(float(volume_expansion_score), 4),
+        "warmup_active": warmup_active,
+        "spot_sample_count": spot_sample_count,
+        "observation_window_seconds": observation_window_seconds,
         "price_momentum_score": round(float(price_momentum_score), 4),
         "alignment_score": round(float(alignment_score), 4),
         "market_structure_score": mss.get("market_structure_score"),
         "structure_state": mss.get("structure_state"),
+        "validation_warnings": validation_warnings,
         "engine_contribution_map": engine_debug_map,
         "previous_bias": stability.get("previous_bias"),
         "new_bias": stability.get("new_bias"),
@@ -1084,6 +1171,10 @@ def _build_v2_intelligence(
             "reversal_risk": reversal_risk,
             "support": support_level,
             "resistance": resistance_level,
+            "support_zone_pressure": round(float(support_zone_pressure), 2),
+            "support_zone_state": support_zone_state,
+            "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
+            "resistance_zone_state": resistance_zone_state,
             "target1": target.get("target_1"),
             "target2": target.get("target_2"),
             "summary_line": summary_line,
@@ -1096,6 +1187,9 @@ def _build_v2_intelligence(
                 "strike": sr.get("resistance", {}).get("strike"),
                 "immediate": sr.get("resistance", {}).get("immediate"),
                 "major": sr.get("resistance", {}).get("major"),
+                "range": sr.get("resistance_range"),
+                "zone_pressure": sr.get("resistance_zone_pressure"),
+                "zone_state": sr.get("resistance_zone_state"),
                 "score": sr.get("resistance", {}).get("score"),
                 "levels": sr.get("resistance", {}).get("levels", []),
             },
@@ -1103,6 +1197,9 @@ def _build_v2_intelligence(
                 "strike": sr.get("support", {}).get("strike"),
                 "immediate": sr.get("support", {}).get("immediate"),
                 "major": sr.get("support", {}).get("major"),
+                "range": sr.get("support_range"),
+                "zone_pressure": sr.get("support_zone_pressure"),
+                "zone_state": sr.get("support_zone_state"),
                 "score": sr.get("support", {}).get("score"),
                 "levels": sr.get("support", {}).get("levels", []),
             },
@@ -1143,6 +1240,7 @@ def _build_v2_intelligence(
                 "counter_trend_count": len([a for a in typed_alerts if a.get("type") == "counter"]),
                 "suppression_reason_map": suppression_reason_map,
             },
+            "validation_warnings": validation_warnings,
         },
         "advanced": {
             "writers_activity": {
@@ -1187,16 +1285,24 @@ def _build_v2_intelligence(
             "bias_stability_cycles": int(bias_stability_cycles),
             "market_structure_score_prev": float(mss.get("market_structure_score", 0.0) or 0.0),
             "force_strength": round(float(force_strength), 4),
+            "wick_zero_streak": int(wick_zero_streak),
+            "oi_near_one_streak": int(oi_near_one_streak),
+            "volume_near_one_streak": int(volume_near_one_streak),
+            "trap_probability_history": [round(float(x), 4) for x in trap_history],
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),
                     "major": sr.get("support", {}).get("major"),
                     "immediate_score": sr.get("support", {}).get("immediate_score"),
+                    "zone_pressure": sr.get("support_zone_pressure"),
+                    "zone_state": sr.get("support_zone_state"),
                 },
                 "resistance": {
                     "immediate": sr.get("resistance", {}).get("immediate"),
                     "major": sr.get("resistance", {}).get("major"),
                     "immediate_score": sr.get("resistance", {}).get("immediate_score"),
+                    "zone_pressure": sr.get("resistance_zone_pressure"),
+                    "zone_state": sr.get("resistance_zone_state"),
                 },
             },
         },

@@ -216,9 +216,10 @@ def run_decision_engine_v4(
     engine_scores = [oi_score, volume_score, breakout_score, writer_score]
     mean_c = sum(engine_scores) / len(engine_scores)
     variance = sum((c - mean_c) ** 2 for c in engine_scores) / len(engine_scores)
-    std_dev = math.sqrt(variance)
+    # Scores are bounded in [-1, 1], so max variance is ~1.0.
+    normalized_variance = _clamp(variance, 0.0, 1.0)
     clarity = _clamp(
-        100.0 - (std_dev * 100.0 * float(clarity_scaling_factor)) - (clarity_penalty * 100.0),
+        ((1.0 - normalized_variance) * 100.0) - (clarity_penalty * 100.0),
         0.0,
         100.0,
     )

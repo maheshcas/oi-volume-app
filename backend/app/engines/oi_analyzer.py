@@ -103,7 +103,9 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
         4,
     )
     if avg_oi_change <= 0:
-        oi_shift_score = round(default_shift, 4)
+        # Keep variance realistic: if there is no observed OI change baseline,
+        # emit 0 for flat moves and fallback only for actual change.
+        oi_shift_score = round(default_shift if abs(oi_change) > 0 else 0.0, 4)
 
     velocity_history = [float(x) for x in (prev.get("oi_velocity_history", []) or []) if isinstance(x, (int, float))]
     velocity_history = (velocity_history + [oi_velocity])[-20:]

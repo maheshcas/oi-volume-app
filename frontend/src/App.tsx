@@ -7,6 +7,8 @@ import KeyLevelsCard from "./components/KeyLevelsCard";
 import StructuralDiagnostics from "./components/StructuralDiagnostics";
 import MarketPlaybookCard from "./components/MarketPlaybookCard";
 import ExpansionTargetsCard from "./components/ExpansionTargetsCard";
+import RetailSummaryStrip from "./components/RetailSummaryStrip";
+import EngineHealthPanel, { type EngineHealthResponse } from "./components/EngineHealthPanel";
 import { MARKETING_MODE } from "./config/uiMode";
 
 type SummaryRow = {
@@ -119,6 +121,10 @@ type IntelligenceResponse = {
     reversal_risk?: number;
     support?: number;
     resistance?: number;
+    support_zone_pressure?: number;
+    support_zone_state?: string;
+    resistance_zone_pressure?: number;
+    resistance_zone_state?: string;
     target1?: number;
     target2?: number;
     summary_line?: string;
@@ -149,8 +155,20 @@ type IntelligenceResponse = {
     };
   };
   levels?: {
-    support?: { strike?: number; score?: number };
-    resistance?: { strike?: number; score?: number };
+    support?: {
+      strike?: number;
+      score?: number;
+      range?: [number | null, number | null] | null;
+      zone_pressure?: number;
+      zone_state?: string;
+    };
+    resistance?: {
+      strike?: number;
+      score?: number;
+      range?: [number | null, number | null] | null;
+      zone_pressure?: number;
+      zone_state?: string;
+    };
     target_1?: number | null;
     target_2?: number | null;
     acceleration_zone?: string | null;
@@ -268,6 +286,14 @@ function classifyAlertSeverity(message: string): "info" | "watch" | "high" {
     return "watch";
   }
   return "info";
+}
+
+function alertPriority(item: UiAlert): number {
+  const text = String(item.message || "").toLowerCase();
+  if (text.includes("trap")) return 1;
+  if (text.includes("breakout") || text.includes("breakdown")) return 2;
+  if (text.includes("target") || text.includes("expansion")) return 3;
+  return 4;
 }
 
 type IndexRow = {
@@ -481,10 +507,14 @@ export default function App() {
   const [apiTargetProjection, setApiTargetProjection] = useState<SummaryResponse["target_projection"]>(null);
   const [intelligence, setIntelligence] = useState<IntelligenceResponse | null>(null);
   const [dailyPerformance, setDailyPerformance] = useState<DailyPerformance | null>(null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealthResponse | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
+    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain" | "engine-health"
   >("overview");
   const [showStructural, setShowStructural] = useState(false);
+  const [showDailyPerformance, setShowDailyPerformance] = useState(false);
+  const [showTradePlan, setShowTradePlan] = useState(false);
+  const [showMoreAlerts, setShowMoreAlerts] = useState(false);
   const [stableBadges, setStableBadges] = useState({
     structure: "-",
     pressure: "Stable",
@@ -603,6 +633,18 @@ export default function App() {
     }
   }
 
+  async function loadEngineHealth() {
+    if (MARKETING_MODE) return;
+    try {
+      const res = await fetch(`${API_BASE}/engine-health`);
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const data = (await res.json()) as EngineHealthResponse;
+      setEngineHealth(data);
+    } catch {
+      // keep last successful health snapshot
+    }
+  }
+
   async function checkNseHealth() {
     setNseStatus("checking");
     setNseMessage("");
@@ -622,6 +664,7 @@ export default function App() {
     await checkNseHealth();
     await loadIndexData();
     await loadSummary();
+    await loadEngineHealth();
   }
 
   useEffect(() => {
@@ -634,11 +677,13 @@ export default function App() {
     checkNseHealth();
     loadIndexData();
     loadSummary();
+    loadEngineHealth();
     if (!autoRefresh) return;
     const timer = setInterval(() => {
       checkNseHealth();
       loadIndexData();
       loadSummary();
+      loadEngineHealth();
     }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [expiry, symbol, instrumentType, useSample, autoRefresh]);
@@ -1467,6 +1512,24 @@ export default function App() {
   const showTrapAffectedLevel = intelligence?.signals?.trap?.show_affected_level ?? (rawTrapType !== null && rawTrapType !== undefined);
   const displaySupport = intelligence?.market_state?.support ?? supportStrike;
   const displayResistance = intelligence?.market_state?.resistance ?? resistanceStrike;
+  const supportRangeRaw = intelligence?.levels?.support?.range;
+  const resistanceRangeRaw = intelligence?.levels?.resistance?.range;
+  const supportRangeText =
+    Array.isArray(supportRangeRaw) && supportRangeRaw.length === 2
+      ? `${formatNumber(supportRangeRaw[0] ?? null)}-${formatNumber(supportRangeRaw[1] ?? null)}`
+      : "";
+  const resistanceRangeText =
+    Array.isArray(resistanceRangeRaw) && resistanceRangeRaw.length === 2
+      ? `${formatNumber(resistanceRangeRaw[0] ?? null)}-${formatNumber(resistanceRangeRaw[1] ?? null)}`
+      : "";
+  const supportPressureText =
+    intelligence?.levels?.support?.zone_state ??
+    intelligence?.market_state?.support_zone_state ??
+    undefined;
+  const resistancePressureText =
+    intelligence?.levels?.resistance?.zone_state ??
+    intelligence?.market_state?.resistance_zone_state ??
+    undefined;
   const displayDecisionText = buildDecisionSummary(
     displayBias,
     displaySupport,
@@ -1612,7 +1675,7 @@ export default function App() {
     }
   }, [readinessCandidate, readinessRaw]);
 
-  const visibleAlerts = useMemo(() => {
+  const filteredAlerts = useMemo(() => {
     if (!MARKETING_MODE) return combinedAlerts;
     const suppressBreakout =
       displayVolatilityState === "Stable" ||
@@ -1625,20 +1688,38 @@ export default function App() {
       }
       return true;
     });
-    return filtered.slice(0, 2);
+    return filtered;
   }, [combinedAlerts, displayVolatilityState, effectiveTargetProjection.status]);
 
+  const prioritizedAlerts = useMemo(() => {
+    return [...filteredAlerts].sort((a, b) => {
+      const pa = alertPriority(a);
+      const pb = alertPriority(b);
+      if (pa !== pb) return pa - pb;
+      const sevRank = (x: UiAlert) => (x.severity === "high" ? 0 : x.severity === "watch" ? 1 : 2);
+      return sevRank(a) - sevRank(b);
+    });
+  }, [filteredAlerts]);
+
+  const visibleAlerts = prioritizedAlerts.slice(0, 2);
+  const hiddenAlerts = showMoreAlerts ? prioritizedAlerts.slice(2) : [];
+  const hiddenAlertCount = Math.max(0, prioritizedAlerts.length - 2);
+
   const visibleTabs: Array<
-    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
+    "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain" | "engine-health"
   > = MARKETING_MODE
     ? ["overview", "charts", "option-chain"]
-    : ["overview", "charts", "heatmap", "writers", "basis", "option-chain"];
+    : ["overview", "charts", "heatmap", "writers", "basis", "option-chain", "engine-health"];
 
   useEffect(() => {
     if (!visibleTabs.includes(activeTab)) {
       setActiveTab("overview");
     }
   }, [activeTab, visibleTabs]);
+
+  useEffect(() => {
+    setShowMoreAlerts(false);
+  }, [prioritizedAlerts.length]);
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -1998,6 +2079,14 @@ export default function App() {
           trend={displayBias}
         />
 
+        <RetailSummaryStrip
+          bias={String(displayPrimaryBias ?? displayBias)}
+          readiness={readinessDisplay.state}
+          support={formatNumber(displaySupport)}
+          resistance={formatNumber(displayResistance)}
+          trapRiskLabel={`${displayTrapLevel} (${Math.round(Number(displayTrapRiskPct ?? 0))}%)`}
+        />
+
         <div className="ia-section-gap">
           <MarketPlaybookCard
             bias={String(playbook?.bias ?? displayPrimaryBias)}
@@ -2042,6 +2131,10 @@ export default function App() {
               resistance={formatNumber(displayResistance)}
               target1={formatNumber(displayTarget1)}
               target2={formatNumber(displayTarget2)}
+              supportRange={supportRangeText}
+              resistanceRange={resistanceRangeText}
+              supportPressure={supportPressureText}
+              resistancePressure={resistancePressureText}
             />
             <ExpansionTargetsCard
               resistance={formatNumber(displayResistance)}
@@ -2067,48 +2160,55 @@ export default function App() {
 
         {dailyPerformance ? (
           <div className="ia-section-gap">
-            <div className="ia-card">
-              <h3 className="ia-card-title">Daily Performance</h3>
-              {MARKETING_MODE ? (
-                dailyPerformance.total_signals_logged < 5 ? (
-                  <div className="ia-kpi-label">Collecting session data...</div>
+            <div className={`ia-card ia-collapsible ${showDailyPerformance ? "" : "ia-collapsed"}`}>
+              <div className="ia-card-title-row">
+                <h3 className="ia-card-title">Daily Performance</h3>
+                <button type="button" className="ia-detail-toggle" onClick={() => setShowDailyPerformance((prev) => !prev)}>
+                  {showDailyPerformance ? "Hide Details" : "Show Details"}
+                </button>
+              </div>
+              {showDailyPerformance ? (
+                MARKETING_MODE ? (
+                  dailyPerformance.total_signals_logged < 5 ? (
+                    <div className="ia-kpi-label">Collecting session data...</div>
+                  ) : (
+                    <div className="ia-kpi-grid">
+                      <div>
+                        <div className="ia-kpi-label">Winning Signals</div>
+                        <div className="ia-kpi-value">
+                          {Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/
+                          {dailyPerformance.total_signals_logged}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="ia-kpi-label">Avg Target Hit Rate</div>
+                        <div className="ia-kpi-value">
+                          {Math.round((dailyPerformance.bias_accuracy_percent + dailyPerformance.exit_accuracy_percent) / 2)}%
+                        </div>
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div className="ia-kpi-grid">
                     <div>
-                      <div className="ia-kpi-label">Winning Signals</div>
-                      <div className="ia-kpi-value">
-                        {Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/
-                        {dailyPerformance.total_signals_logged}
-                      </div>
+                      <div className="ia-kpi-label">Bias Accuracy</div>
+                      <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
                     </div>
                     <div>
-                      <div className="ia-kpi-label">Avg Target Hit Rate</div>
-                      <div className="ia-kpi-value">
-                        {Math.round((dailyPerformance.bias_accuracy_percent + dailyPerformance.exit_accuracy_percent) / 2)}%
-                      </div>
+                      <div className="ia-kpi-label">Trap Accuracy</div>
+                      <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
+                    </div>
+                    <div>
+                      <div className="ia-kpi-label">Exit Accuracy</div>
+                      <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
+                    </div>
+                    <div>
+                      <div className="ia-kpi-label">Signals Logged</div>
+                      <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
                     </div>
                   </div>
                 )
-              ) : (
-                <div className="ia-kpi-grid">
-                  <div>
-                    <div className="ia-kpi-label">Bias Accuracy</div>
-                    <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
-                  </div>
-                  <div>
-                    <div className="ia-kpi-label">Trap Accuracy</div>
-                    <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
-                  </div>
-                  <div>
-                    <div className="ia-kpi-label">Exit Accuracy</div>
-                    <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
-                  </div>
-                  <div>
-                    <div className="ia-kpi-label">Signals Logged</div>
-                    <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
-                  </div>
-                </div>
-              )}
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -2126,43 +2226,52 @@ export default function App() {
         ) : null}
 
         <div className="ia-section-gap">
-          <div className="ia-card">
-            <h3 className="ia-card-title">Trade Plan</h3>
-            <div className="ia-subtle-divider">How to Trade This Structure</div>
-            <div className="ia-kpi-grid">
-              <div>
-                <div className="ia-kpi-label">Strategy</div>
-                <div className="ia-kpi-value">{displayTradePlan.strategy_type}</div>
-              </div>
-              <div>
-                <div className="ia-kpi-label">Primary Target</div>
-                <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_primary)}</div>
-              </div>
-              {displayConfidence >= 40 ? (
-                <div>
-                  <div className="ia-kpi-label">Extended Target</div>
-                  <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_extended)}</div>
+          <div className={`ia-card ia-collapsible ${showTradePlan ? "" : "ia-collapsed"}`}>
+            <div className="ia-card-title-row">
+              <h3 className="ia-card-title">Trade Plan</h3>
+              <button type="button" className="ia-detail-toggle" onClick={() => setShowTradePlan((prev) => !prev)}>
+                {showTradePlan ? "Hide Details" : "Show Details"}
+              </button>
+            </div>
+            {showTradePlan ? (
+              <>
+                <div className="ia-subtle-divider">How to Trade This Structure</div>
+                <div className="ia-kpi-grid">
+                  <div>
+                    <div className="ia-kpi-label">Strategy</div>
+                    <div className="ia-kpi-value">{displayTradePlan.strategy_type}</div>
+                  </div>
+                  <div>
+                    <div className="ia-kpi-label">Primary Target</div>
+                    <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_primary)}</div>
+                  </div>
+                  {displayConfidence >= 40 ? (
+                    <div>
+                      <div className="ia-kpi-label">Extended Target</div>
+                      <div className="ia-kpi-value">{formatNumber(displayTradePlan.target_extended)}</div>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-            <div className="ia-kpi-label" style={{ marginTop: 10 }}>
-              Entry Zone
-            </div>
-            <div className="ia-kpi-value ia-entry-zone">
-              {displayTradePlan.entry_zone}
-            </div>
-            <div className="ia-kpi-label" style={{ marginTop: 8 }}>
-              Stop Hint
-            </div>
-            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
-              {displayTradePlan.stop_hint}
-            </div>
-            <div className="ia-kpi-label" style={{ marginTop: 8 }}>
-              Caution
-            </div>
-            <div className="ia-kpi-value" style={{ fontSize: 15 }}>
-              {displayTradePlan.caution_note}
-            </div>
+                <div className="ia-kpi-label" style={{ marginTop: 10 }}>
+                  Entry Zone
+                </div>
+                <div className="ia-kpi-value ia-entry-zone">
+                  {displayTradePlan.entry_zone}
+                </div>
+                <div className="ia-kpi-label" style={{ marginTop: 8 }}>
+                  Stop Hint
+                </div>
+                <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+                  {displayTradePlan.stop_hint}
+                </div>
+                <div className="ia-kpi-label" style={{ marginTop: 8 }}>
+                  Caution
+                </div>
+                <div className="ia-kpi-value" style={{ fontSize: 15 }}>
+                  {displayTradePlan.caution_note}
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -2451,6 +2560,12 @@ export default function App() {
               </table>
             </div>
           ) : null}
+
+          {activeTab === "engine-health" ? (
+            <div className="ia-tab-pane">
+              <EngineHealthPanel data={engineHealth} />
+            </div>
+          ) : null}
         </div>
 
         <div className="alert-bar">
@@ -2465,7 +2580,32 @@ export default function App() {
               {item.type === "counter" ? " (Counter-trend)" : ""}
             </span>
           ))}
+          {hiddenAlertCount > 0 ? (
+            <button
+              type="button"
+              className="alert-more-btn"
+              onClick={() => setShowMoreAlerts((prev) => !prev)}
+            >
+              {showMoreAlerts ? "Hide More Alerts" : `+${hiddenAlertCount} more alerts`}
+            </button>
+          ) : null}
         </div>
+
+        {hiddenAlerts.length > 0 ? (
+          <div className="alert-bar alert-bar-more">
+            {hiddenAlerts.map((item) => (
+              <span
+                key={`more-${item.type}-${item.message}`}
+                className={`alert-item alert-item-${item.severity} ${
+                  item.type === "counter" ? "alert-item-counter" : ""
+                }`}
+              >
+                {item.message}
+                {item.type === "counter" ? " (Counter-trend)" : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
         {MARKETING_MODE ? (
           <section className="why-optionlens">

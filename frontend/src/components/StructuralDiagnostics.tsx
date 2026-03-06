@@ -20,7 +20,7 @@ type StructuralDiagnosticsProps = {
 
 export default function StructuralDiagnostics(props: StructuralDiagnosticsProps) {
   return (
-    <div className="ia-card">
+    <div className={`ia-card ia-collapsible ${props.open ? "" : "ia-collapsed"}`}>
       <button
         type="button"
         onClick={props.onToggle}
@@ -29,10 +29,10 @@ export default function StructuralDiagnostics(props: StructuralDiagnosticsProps)
         <span className="ia-card-title">
           Structural Diagnostics
         </span>
-        <span className="ia-kpi-label">{props.open ? "Hide" : "Show"}</span>
+        <span className="ia-kpi-label">{props.open ? "Hide Details" : "Show Details"}</span>
       </button>
       {props.open ? (
-        <div className="ia-struct-grid">
+        <div className="ia-struct-grid ia-emphasis-low">
           <div>
             <div className="ia-kpi-label">ATM CE OI / Vol</div>
             <div>{props.atmCeOi} / {props.atmCeVol}</div>

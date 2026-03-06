@@ -15,7 +15,7 @@ export default function TradeReadinessIndicator({
         : "ia-readiness-wait";
 
   return (
-    <div className="ia-readiness-wrap">
+    <div className="ia-readiness-wrap ia-emphasis-high">
       <span className="ia-kpi-label">Trade Readiness</span>
       <span className={`ia-readiness-pill ${toneClass}`}>
         {state} ({Math.round(Math.max(0, Math.min(100, score)))}%)
@@ -23,4 +23,3 @@ export default function TradeReadinessIndicator({
     </div>
   );
 }
-

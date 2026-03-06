@@ -1,4 +1,5 @@
 import MarketStructureScoreBadge from "./MarketStructureScoreBadge";
+import { useState } from "react";
 import MarketPressureBar from "./MarketPressureBar";
 import TradeReadinessIndicator from "./TradeReadinessIndicator";
 
@@ -30,6 +31,7 @@ type DecisionPanelProps = {
 };
 
 export default function DecisionPanel(props: DecisionPanelProps) {
+  const [showMetrics, setShowMetrics] = useState(false);
   const marketingMode = !!props.marketingMode;
   const confidenceStrength =
     props.confidence >= 70 ? "Strong" : props.confidence >= 50 ? "Moderate" : "Weak";
@@ -97,7 +99,7 @@ export default function DecisionPanel(props: DecisionPanelProps) {
         <span
           className={`ia-bias-pill ia-bias-pill-hero ${tone} ${lowConfidence ? "ia-bias-weak" : ""} ${
             veryLowConfidence ? "ia-bias-neutral-weak" : ""
-          }`}
+          } ia-emphasis-high`}
         >
           {biasLabel}
         </span>
@@ -112,68 +114,69 @@ export default function DecisionPanel(props: DecisionPanelProps) {
         score={props.readinessScore ?? 0}
       />
       <div className="ia-kpi-label ia-decision-summary">
-        {marketingMode && props.summaryLine.length > 120
-          ? `${props.summaryLine.slice(0, 117)}...`
+        {props.summaryLine.length > 80
+          ? `${props.summaryLine.slice(0, 77)}...`
           : props.summaryLine}
       </div>
       <div className="ia-status-badges">
-        <span className="ia-status-chip">Structure: {props.structureBadge ?? props.structureState ?? "-"}</span>
-        <span className="ia-status-chip">Pressure: {props.pressureBadge ?? "-"}</span>
-        <span className="ia-status-chip">Trap Risk: {props.trapBadge ?? "-"}</span>
-        <span className="ia-status-chip">Projection: {props.projection ?? "No Confirmed Breakout"}</span>
-        <span className="ia-status-chip">Conflict: {props.conflictState ?? "Balanced"}</span>
+        <span className="ia-status-chip">
+          State: {props.structureBadge ?? props.structureState ?? "-"} | Pressure: {props.pressureBadge ?? "-"}
+        </span>
+        <span className="ia-status-chip ia-emphasis-medium">Projection: {props.projection ?? "No Confirmed Breakout"}</span>
+        {!conflictDetected ? <span className="ia-status-chip">Conflict: {props.conflictState ?? "Balanced"}</span> : null}
       </div>
       <MarketPressureBar
         score={props.pressureScore ?? 0}
         state={props.pressureStateLabel ?? "Balanced"}
       />
-      <div className="ia-confidence-wrap">
-        <div className="ia-kpi-label" title="Structural alignment strength across engines.">
-          {marketingMode ? `Confidence: ${props.confidence}% (${confidenceStrength})` : "Confidence"}
-        </div>
-        <div className="ia-kpi-value ia-confidence-value">{props.confidence}%</div>
-        <div className="ia-confidence-track">
-          <div className="ia-confidence-fill" style={{ width: `${props.confidence}%` }} />
-        </div>
-      </div>
       {!marketingMode ? (
+        <button type="button" className="ia-detail-toggle" style={{ marginTop: 10 }} onClick={() => setShowMetrics((v) => !v)}>
+          {showMetrics ? "Hide Metrics" : "Show Metrics"}
+        </button>
+      ) : null}
+      {!marketingMode && showMetrics ? (
         <>
-          <div className="ia-prob-track">
-            <div className="ia-prob-bull" style={{ width: `${props.bullProbability}%` }} />
-            <div className="ia-prob-bear" style={{ width: `${props.bearProbability}%` }} />
+          <div className="ia-confidence-wrap ia-emphasis-low">
+            <div className="ia-kpi-label" title="Structural alignment strength across engines.">
+              Confidence
+            </div>
+            <div className="ia-kpi-value ia-confidence-value">{props.confidence}%</div>
+            <div className="ia-confidence-track">
+              <div className="ia-confidence-fill" style={{ width: `${props.confidence}%` }} />
+            </div>
           </div>
-          <div className="ia-prob-legend" title="Directional bias weight distribution.">
-            <span>Bull {props.bullProbability}%</span>
-            <span>Bear {props.bearProbability}%</span>
+          {(props.readinessState ?? "WAIT") !== "WAIT" ? (
+            <>
+              <div className="ia-prob-track">
+                <div className="ia-prob-bull" style={{ width: `${props.bullProbability}%` }} />
+                <div className="ia-prob-bear" style={{ width: `${props.bearProbability}%` }} />
+              </div>
+              <div className="ia-prob-legend ia-emphasis-low" title="Directional bias weight distribution.">
+                <span>Bull {props.bullProbability}%</span>
+                <span>Bear {props.bearProbability}%</span>
+              </div>
+            </>
+          ) : null}
+          <div className="ia-kpi-grid">
+            <div>
+              <div className="ia-kpi-label">Reversal Risk</div>
+              <div className="ia-mini-track">
+                <div className="ia-mini-fill ia-mini-fill-reversal" style={{ width: `${props.reversalRisk}%` }} />
+              </div>
+              <div className="ia-kpi-value ia-kpi-value-sm">{props.reversalRisk}%</div>
+            </div>
+            <div className="ia-emphasis-low">
+              <div className="ia-kpi-label">Structural Agreement</div>
+              <div className="ia-kpi-value">{alignmentLabel}</div>
+            </div>
+          </div>
+          <div className="ia-kpi-label ia-emphasis-low" style={{ marginTop: 8 }}>
+            Adaptive Mode: {props.adaptiveMode ?? "Base"} | OI Weight:{" "}
+            {props.adaptiveOiWeight !== undefined ? `${Math.round(props.adaptiveOiWeight * 100)}%` : "-"} | Breakout
+            Weight:{" "}
+            {props.adaptiveBreakoutWeight !== undefined ? `${Math.round(props.adaptiveBreakoutWeight * 100)}%` : "-"}
           </div>
         </>
-      ) : null}
-      <div className="ia-kpi-grid">
-        <div>
-          <div className="ia-kpi-label">Trap Risk</div>
-          <div className="ia-kpi-value">{props.trapRisk}%</div>
-        </div>
-        <div>
-          <div className="ia-kpi-label">Reversal Risk</div>
-          <div className="ia-mini-track">
-            <div className="ia-mini-fill ia-mini-fill-reversal" style={{ width: `${props.reversalRisk}%` }} />
-          </div>
-          <div className="ia-kpi-value ia-kpi-value-sm">{props.reversalRisk}%</div>
-        </div>
-        {!marketingMode ? (
-          <div>
-            <div className="ia-kpi-label">Structural Agreement</div>
-            <div className="ia-kpi-value">{alignmentLabel}</div>
-          </div>
-        ) : null}
-      </div>
-      {!marketingMode ? (
-        <div className="ia-kpi-label" style={{ marginTop: 8 }}>
-          Adaptive Mode: {props.adaptiveMode ?? "Base"} | OI Weight:{" "}
-          {props.adaptiveOiWeight !== undefined ? `${Math.round(props.adaptiveOiWeight * 100)}%` : "-"} | Breakout
-          Weight:{" "}
-          {props.adaptiveBreakoutWeight !== undefined ? `${Math.round(props.adaptiveBreakoutWeight * 100)}%` : "-"}
-        </div>
       ) : null}
     </div>
   );

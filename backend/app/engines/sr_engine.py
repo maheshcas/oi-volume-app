@@ -153,6 +153,153 @@ def _compute_cluster_zone(
     return max(candidates, key=lambda c: c["strength"])
 
 
+def _safe_range(zone_range: list[Any] | None, center: float | None, step: float) -> tuple[float | None, float | None]:
+    if isinstance(zone_range, list) and len(zone_range) == 2:
+        low = _to_float(zone_range[0], 0.0)
+        high = _to_float(zone_range[1], 0.0)
+        if high >= low:
+            return low, high
+    if center is None:
+        return None, None
+    w = max(step, 1.0)
+    return float(center - w), float(center + w)
+
+
+def _zone_proximity_to_edge(spot: float | None, low: float | None, high: float | None) -> float:
+    if spot is None or low is None or high is None or high <= low:
+        return 0.0
+    if spot < low or spot > high:
+        return 0.0
+    width = max(1e-9, high - low)
+    dist_left = abs(spot - low)
+    dist_right = abs(high - spot)
+    dist_edge = min(dist_left, dist_right)
+    return max(0.0, min(1.0, 1.0 - (dist_edge / (width / 2.0))))
+
+
+def _time_inside_zone_ratio(
+    observations: list[dict[str, Any]],
+    low: float | None,
+    high: float | None,
+) -> float:
+    if low is None or high is None or high <= low:
+        return 0.0
+    if len(observations) < 2:
+        if not observations:
+            return 0.0
+        px = _to_float(observations[-1].get("spot"), 0.0)
+        return 1.0 if low <= px <= high else 0.0
+
+    total = 0.0
+    inside = 0.0
+    for i in range(1, len(observations)):
+        prev = observations[i - 1]
+        cur = observations[i]
+        dt = max(0.0, _to_float(cur.get("ts"), 0.0) - _to_float(prev.get("ts"), 0.0))
+        total += dt
+        px = _to_float(prev.get("spot"), 0.0)
+        if low <= px <= high:
+            inside += dt
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, inside / total))
+
+
+def _zone_oi_unwinding_score(rows: list[dict[str, Any]], low: float | None, high: float | None, side: OptionType) -> float:
+    if low is None or high is None or high <= low:
+        return 0.0
+    in_zone = [r for r in rows if low <= _to_float(r.get("strike"), 0.0) <= high]
+    if not in_zone:
+        return 0.0
+    if side == "PE":
+        unwind = sum(max(0.0, -_to_float(r.get("PE_DeltaOI"), 0.0)) for r in in_zone)
+        base = sum(abs(_to_float(r.get("PE_DeltaOI"), 0.0)) for r in in_zone)
+    else:
+        unwind = sum(max(0.0, -_to_float(r.get("CE_DeltaOI"), 0.0)) for r in in_zone)
+        base = sum(abs(_to_float(r.get("CE_DeltaOI"), 0.0)) for r in in_zone)
+    return max(0.0, min(1.0, unwind / max(1.0, base)))
+
+
+def _zone_volume_expansion_near_zone(rows: list[dict[str, Any]], low: float | None, high: float | None) -> float:
+    if low is None or high is None or high <= low:
+        return 0.0
+    in_zone = [r for r in rows if low <= _to_float(r.get("strike"), 0.0) <= high]
+    if not in_zone:
+        return 0.0
+    zone_vol = sum(_to_float(r.get("CE_Volume"), 0.0) + _to_float(r.get("PE_Volume"), 0.0) for r in in_zone)
+    avg_row_vol = (
+        sum(_to_float(r.get("CE_Volume"), 0.0) + _to_float(r.get("PE_Volume"), 0.0) for r in rows) / max(1, len(rows))
+    )
+    zone_avg_vol = zone_vol / max(1, len(in_zone))
+    ratio = zone_avg_vol / max(1.0, avg_row_vol)
+    return max(0.0, min(1.0, ratio / 2.0))
+
+
+def _zone_retest_count_score(
+    observations: list[dict[str, Any]],
+    low: float | None,
+    high: float | None,
+) -> float:
+    if low is None or high is None or high <= low or len(observations) < 2:
+        return 0.0
+    transitions = 0
+    prev_inside = low <= _to_float(observations[0].get("spot"), 0.0) <= high
+    for i in range(1, len(observations)):
+        cur_inside = low <= _to_float(observations[i].get("spot"), 0.0) <= high
+        if cur_inside and not prev_inside:
+            transitions += 1
+        prev_inside = cur_inside
+    return max(0.0, min(1.0, transitions / 4.0))
+
+
+def _zone_state_from_pressure(pressure: float) -> str:
+    if pressure < 35:
+        return "Stable"
+    if pressure < 60:
+        return "Under Pressure"
+    return "Likely Break"
+
+
+def _compute_zone_pressure(
+    rows: list[dict[str, Any]],
+    spot: float | None,
+    observations: list[dict[str, Any]],
+    *,
+    center: float | None,
+    zone_range: list[Any] | None,
+    side: OptionType,
+    step: float,
+) -> dict[str, Any]:
+    low, high = _safe_range(zone_range, center, step)
+    proximity_to_edge = _zone_proximity_to_edge(spot, low, high)
+    time_inside_zone_ratio = _time_inside_zone_ratio(observations, low, high)
+    oi_unwinding_score = _zone_oi_unwinding_score(rows, low, high, side)
+    volume_expansion_near_zone = _zone_volume_expansion_near_zone(rows, low, high)
+    retest_count_score = _zone_retest_count_score(observations, low, high)
+
+    pressure = (
+        0.30 * proximity_to_edge
+        + 0.25 * time_inside_zone_ratio
+        + 0.20 * oi_unwinding_score
+        + 0.15 * volume_expansion_near_zone
+        + 0.10 * retest_count_score
+    )
+    pressure_100 = max(0.0, min(100.0, pressure * 100.0))
+    return {
+        "center": center,
+        "range": [low, high],
+        "pressure": round(pressure_100, 2),
+        "state": _zone_state_from_pressure(pressure_100),
+        "components": {
+            "proximity_to_edge": round(proximity_to_edge, 4),
+            "time_inside_zone_ratio": round(time_inside_zone_ratio, 4),
+            "oi_unwinding_score": round(oi_unwinding_score, 4),
+            "volume_expansion_near_zone": round(volume_expansion_near_zone, 4),
+            "retest_count_score": round(retest_count_score, 4),
+        },
+    }
+
+
 def _detect_shift(
     *,
     side: OptionType,
@@ -294,6 +441,34 @@ def run_sr_engine(
     support_immediate = immediate_sup.strike if immediate_sup is not None else (major_sup.strike if major_sup else None)
     support_zone = _compute_cluster_zone(rows, side="PE", spot=spot_num, step_window=2)
     resistance_zone = _compute_cluster_zone(rows, side="CE", spot=spot_num, step_window=2)
+    sorted_strikes = sorted({_to_float(r.get("strike"), 0.0) for r in rows})
+    strike_step = 50.0
+    if len(sorted_strikes) >= 2:
+        diffs = [abs(sorted_strikes[i] - sorted_strikes[i - 1]) for i in range(1, len(sorted_strikes))]
+        diffs = [d for d in diffs if d > 0]
+        if diffs:
+            strike_step = min(diffs)
+    observations = (previous_state or {}).get("spot_observations", [])
+    observations = observations if isinstance(observations, list) else []
+
+    support_pressure = _compute_zone_pressure(
+        rows,
+        spot_num,
+        observations,
+        center=support_zone.get("center"),
+        zone_range=support_zone.get("range"),
+        side="PE",
+        step=strike_step,
+    )
+    resistance_pressure = _compute_zone_pressure(
+        rows,
+        spot_num,
+        observations,
+        center=resistance_zone.get("center"),
+        zone_range=resistance_zone.get("range"),
+        side="CE",
+        step=strike_step,
+    )
 
     return {
         # Backward compatible fields: strike/score default to immediate levels.
@@ -331,8 +506,16 @@ def run_sr_engine(
         "support_center": support_zone.get("center"),
         "support_range": support_zone.get("range"),
         "support_strength": support_zone.get("strength"),
+        "support_zone_pressure": support_pressure.get("pressure"),
+        "support_zone_state": support_pressure.get("state"),
         "resistance_center": resistance_zone.get("center"),
         "resistance_range": resistance_zone.get("range"),
         "resistance_strength": resistance_zone.get("strength"),
+        "resistance_zone_pressure": resistance_pressure.get("pressure"),
+        "resistance_zone_state": resistance_pressure.get("state"),
+        "zone_pressure": {
+            "support": support_pressure,
+            "resistance": resistance_pressure,
+        },
         "alerts": alerts,
     }

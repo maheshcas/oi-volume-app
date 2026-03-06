@@ -15,7 +15,7 @@ export default function MarketPressureBar({ score, state }: MarketPressureBarPro
           : "ia-pressure-strong-buy";
 
   return (
-    <div className="ia-pressure-wrap">
+    <div className="ia-pressure-wrap ia-emphasis-medium">
       <div className="ia-pressure-head">
         <span className="ia-kpi-label">Market Pressure</span>
         <span className={`ia-pressure-state ${toneClass}`}>{state}</span>
@@ -32,4 +32,3 @@ export default function MarketPressureBar({ score, state }: MarketPressureBarPro
     </div>
   );
 }
-
