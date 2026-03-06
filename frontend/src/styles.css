@@ -1146,6 +1146,101 @@ button:hover {
   color: var(--ink);
 }
 
+.price-chart-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.price-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.price-chart-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e6edf7;
+}
+
+.price-chart-tfs {
+  display: flex;
+  gap: 6px;
+}
+
+.price-chart-tf-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #c6d4e7;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.price-chart-tf-btn.active {
+  border-color: rgba(99, 181, 255, 0.6);
+  color: #e9f3ff;
+  background: rgba(59, 130, 246, 0.22);
+}
+
+.price-chart-wrap {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pc-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.pc-support {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.pc-resistance {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.pc-label {
+  position: absolute;
+  right: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.pc-label-support {
+  color: #d7fbe4;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.22);
+}
+
+.pc-label-resistance {
+  color: #ffe2e2;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.22);
+}
+
+.pc-tooltip {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 11px;
+  color: #d9e3f3;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(7, 14, 26, 0.9);
+  border-radius: 8px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+
 .impact-grid {
   margin-top: 16px;
   display: grid;
