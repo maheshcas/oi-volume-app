@@ -1,16 +1,16 @@
-type MarketPlaybookCardProps = {
+type TradePlanCardProps = {
   bias: string;
   regime?: string;
   plan: string;
   trapRisk: string;
 };
 
-export default function MarketPlaybookCard({
+export default function TradePlanCard({
   bias,
   regime,
   plan,
   trapRisk,
-}: MarketPlaybookCardProps) {
+}: TradePlanCardProps) {
   return (
     <div className="ia-card ia-playbook-card">
       <h3 className="ia-card-title">Trade Plan</h3>

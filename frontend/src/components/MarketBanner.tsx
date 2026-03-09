@@ -4,6 +4,7 @@ type MarketBannerProps = {
   spotDelta?: string;
   pctChange: string;
   volatilityState: "Expanding" | "Contracting" | "Stable";
+  regime?: string;
   updatedAt: string;
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
   expiryMode?: boolean;
@@ -79,7 +80,7 @@ export default function MarketBanner(props: MarketBannerProps) {
       </div>
 
       <div className="ia-banner-row ia-banner-row-secondary">
-        <span>Regime: {props.volatilityState === "Stable" ? "Range Day" : "Trend Day"}</span>
+        <span>Regime: {props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day")}</span>
         <span className="ia-sep">|</span>
         {props.expiryMode ? (
           <>
