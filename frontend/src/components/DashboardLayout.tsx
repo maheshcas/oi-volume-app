@@ -4,7 +4,6 @@ import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
 import StructuralChartCard from "./StructuralChartCard";
 import TradePlanCard from "./TradePlanCard";
-import AdvancedAnalysisCard from "./AdvancedAnalysisCard";
 
 type CandlePoint = {
   time: number;
@@ -68,12 +67,11 @@ type DashboardLayoutProps = {
     suggested_action: string;
     show_affected_level?: boolean;
   };
-  advanced: {
-    open: boolean;
-    onToggle: () => void;
-    preview: string;
-    content: ReactNode;
-  };
+  alerts: Array<{
+    message: string;
+    type: "primary" | "counter";
+    severity: "info" | "watch" | "high";
+  }>;
 };
 
 export default function DashboardLayout({
@@ -83,7 +81,7 @@ export default function DashboardLayout({
   structure,
   tradePlan,
   trap,
-  advanced,
+  alerts,
 }: DashboardLayoutProps) {
   return (
     <div
@@ -93,7 +91,6 @@ export default function DashboardLayout({
           "decision levels trap"
           "decisionlayer levels trap"
           "structure structure playbook"
-          "structure structure advanced"
         `,
       }}
     >
@@ -156,6 +153,27 @@ export default function DashboardLayout({
             suggested_action={trap.suggested_action}
             show_affected_level={trap.show_affected_level}
           />
+          {alerts.length ? (
+            <div className="ia-trap-alerts">
+              <div className="ia-kpi-label">Alerts</div>
+              <div className="ia-trap-alert-list">
+                {alerts.slice(0, 4).map((item) => (
+                  <span
+                    key={`${item.type}-${item.severity}-${item.message}`}
+                    className={`alert-item alert-item-${item.severity} ${item.type === "counter" ? "alert-item-counter" : ""}`}
+                  >
+                    {item.message}
+                    {item.type === "counter" ? " (Counter-trend)" : ""}
+                  </span>
+                ))}
+                {alerts.length > 4 ? (
+                  <span className="alert-item alert-item-info ia-alert-more">
+                    +{alerts.length - 4} more alerts
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -166,16 +184,6 @@ export default function DashboardLayout({
           plan={tradePlan.plan}
           trapRisk={tradePlan.trapRisk}
         />
-      </div>
-
-      <div className="ia-layout-advanced">
-        <AdvancedAnalysisCard
-          open={advanced.open}
-          onToggle={advanced.onToggle}
-          preview={advanced.preview}
-        >
-          {advanced.content}
-        </AdvancedAnalysisCard>
       </div>
     </div>
   );

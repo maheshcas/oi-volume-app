@@ -5,6 +5,7 @@ import DecisionPanel from "./components/DecisionPanel";
 import StructuralDiagnostics from "./components/StructuralDiagnostics";
 import EngineHealthPanel, { type EngineHealthResponse } from "./components/EngineHealthPanel";
 import DashboardLayout from "./components/DashboardLayout";
+import AdvancedAnalysisCard from "./components/AdvancedAnalysisCard";
 import { MARKETING_MODE } from "./config/uiMode";
 
 type SummaryRow = {
@@ -368,10 +369,27 @@ function directionArrow(direction?: string) {
   return "\u2192";
 }
 
+function normalizeRegimeLabel(value: string | null | undefined, volatilityState: "Expanding" | "Contracting" | "Stable") {
+  const text = String(value ?? "").trim();
+  const lower = text.toLowerCase();
+  if (
+    !text ||
+    lower === "-" ||
+    lower.includes("opening") ||
+    lower.includes("midday") ||
+    lower.includes("closing") ||
+    lower.includes("power hour") ||
+    lower.includes("transition")
+  ) {
+    return volatilityState === "Stable" ? "Range Day" : "Trend Day";
+  }
+  return text;
+}
+
 function normalizeBarWidth(value: number, maxValue: number) {
   if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(maxValue) || maxValue <= 0) return 0;
   const ratio = Math.max(0, Math.min(1, value / maxValue));
-  return Math.max(3, Math.round(Math.sqrt(ratio) * 100));
+  return Math.max(3, Math.round(ratio * 100));
 }
 
 function sanitizeTrapType(value: string | null | undefined) {
@@ -544,7 +562,6 @@ export default function App() {
   const [showStructural, setShowStructural] = useState(false);
   const [showDailyPerformance, setShowDailyPerformance] = useState(false);
   const [showAdvancedAnalysis, setShowAdvancedAnalysis] = useState(false);
-  const [showMoreAlerts, setShowMoreAlerts] = useState(false);
   const [stableBadges, setStableBadges] = useState({
     structure: "-",
     pressure: "Stable",
@@ -1671,7 +1688,7 @@ export default function App() {
     caution_note: tradePlan?.caution_note ?? "Keep size controlled when signals are mixed.",
   };
   const playbook = intelligence?.intraday_playbook;
-  const displayRegime = String(playbook?.regime ?? (displayVolatilityState === "Stable" ? "Range Day" : "Trend Day"));
+  const displayRegime = normalizeRegimeLabel(playbook?.regime, displayVolatilityState);
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
   const driftState = intelligence?.market_state?.drift ?? "Stable";
@@ -1883,9 +1900,6 @@ export default function App() {
   const conflictFlags = intelligence?.market_state?.conflict_flags ?? [];
   const breakoutSuppressed = !!intelligence?.signals?.alignment_filter?.breakout_suppressed;
   const primaryAlert = prioritizedAlerts[0]?.message ?? "";
-  const visibleAlerts = prioritizedAlerts.slice(1, 3);
-  const hiddenAlerts = showMoreAlerts ? prioritizedAlerts.slice(3) : [];
-  const hiddenAlertCount = Math.max(0, prioritizedAlerts.length - 3);
   const hasConflict =
     conflictFlags.length > 0 ||
     (conflictState && conflictState !== "Balanced") ||
@@ -1932,10 +1946,6 @@ export default function App() {
       setActiveTab("overview");
     }
   }, [activeTab, visibleTabs]);
-
-  useEffect(() => {
-    setShowMoreAlerts(false);
-  }, [prioritizedAlerts.length]);
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -2284,6 +2294,11 @@ export default function App() {
               ? `${indexRow.last >= indexRow.previousClose ? "▲" : "▼"} ${Math.abs(indexRow.last - indexRow.previousClose).toFixed(1)}`
               : undefined
           }
+          fromOpenDelta={
+            typeof spotValue === "number" && typeof dayOpenValue === "number"
+              ? `${spotValue >= dayOpenValue ? "▲" : "▼"} ${Math.abs(spotValue - dayOpenValue).toFixed(1)}`
+              : undefined
+          }
           pctChange={indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
           volatilityState={displayVolatilityState}
           regime={displayRegime}
@@ -2295,73 +2310,6 @@ export default function App() {
           showProjection={!MARKETING_MODE}
           trend={displayBias}
         />
-
-        {primaryAlert ? (
-          <div
-            className="ia-section-gap ia-priority-alert-wrap"
-            style={{
-              position: "sticky",
-              top: 8,
-              zIndex: 60,
-            }}
-          >
-            <div
-              className="ia-status-bar ia-priority-alert"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "12px 16px",
-                borderRadius: 14,
-                border: `1px solid ${
-                  prioritizedAlerts[0]?.severity === "high"
-                    ? "rgba(239,68,68,0.45)"
-                    : prioritizedAlerts[0]?.severity === "watch"
-                      ? "rgba(245,158,11,0.45)"
-                      : "rgba(96,165,250,0.35)"
-                }`,
-                background:
-                  prioritizedAlerts[0]?.severity === "high"
-                    ? "linear-gradient(90deg, rgba(127,29,29,0.92), rgba(69,10,10,0.95))"
-                    : prioritizedAlerts[0]?.severity === "watch"
-                      ? "linear-gradient(90deg, rgba(120,53,15,0.92), rgba(69,26,3,0.95))"
-                      : "linear-gradient(90deg, rgba(30,58,138,0.92), rgba(15,23,42,0.95))",
-                boxShadow:
-                  prioritizedAlerts[0]?.severity === "high"
-                    ? "0 12px 28px rgba(127,29,29,0.35)"
-                    : prioritizedAlerts[0]?.severity === "watch"
-                      ? "0 12px 28px rgba(120,53,15,0.35)"
-                      : "0 12px 28px rgba(30,58,138,0.28)",
-              }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  fontSize: 18,
-                  lineHeight: 1,
-                }}
-              >
-                {prioritizedAlerts[0]?.severity === "high"
-                  ? "\u26A0"
-                  : prioritizedAlerts[0]?.severity === "watch"
-                    ? "\u25B2"
-                    : "\u2139"}
-              </span>
-              <span
-                className="ia-priority-alert-message"
-                style={{
-                  color: "#f8fbff",
-                  fontWeight: 800,
-                  fontSize: 14,
-                  lineHeight: 1.35,
-                  letterSpacing: "0.01em",
-                }}
-              >
-                {String(primaryAlert).length > 72 ? `${String(primaryAlert).slice(0, 69)}...` : primaryAlert}
-              </span>
-            </div>
-          </div>
-        ) : null}
 
         <DashboardLayout
           decision={{
@@ -2421,13 +2369,18 @@ export default function App() {
             suggested_action: trapSuggestedAction,
             show_affected_level: showTrapAffectedLevel,
           }}
-          advanced={{
-            open: showAdvancedAnalysis,
-            onToggle: () => setShowAdvancedAnalysis((prev) => !prev),
-            preview: dailyPerformancePreview || `MSS ${Math.round(structureScore)} | Pressure ${pressureStateLabel} | Conflict ${conflictState}`,
-            content: advancedAnalysisContent,
-          }}
+          alerts={prioritizedAlerts}
         />
+
+        <div className="ia-section-gap">
+          <AdvancedAnalysisCard
+            open={showAdvancedAnalysis}
+            onToggle={() => setShowAdvancedAnalysis((prev) => !prev)}
+            preview={dailyPerformancePreview || `MSS ${Math.round(structureScore)} | Pressure ${pressureStateLabel} | Conflict ${conflictState}`}
+          >
+            {advancedAnalysisContent}
+          </AdvancedAnalysisCard>
+        </div>
 
         {dailyPerformance ? (
           <div className="ia-section-gap">
@@ -2768,46 +2721,6 @@ export default function App() {
           ) : null}
 
         </div>
-
-        <div className="alert-bar">
-          {visibleAlerts.map((item) => (
-            <span
-              key={`${item.type}-${item.message}`}
-              className={`alert-item alert-item-${item.severity} ${
-                item.type === "counter" ? "alert-item-counter" : ""
-              }`}
-            >
-              {item.message}
-              {item.type === "counter" ? " (Counter-trend)" : ""}
-            </span>
-          ))}
-          {hiddenAlertCount > 0 ? (
-            <button
-              type="button"
-              className="alert-more-btn"
-              onClick={() => setShowMoreAlerts((prev) => !prev)}
-            >
-              {showMoreAlerts ? "Hide More Alerts" : `+${hiddenAlertCount} more alerts`}
-            </button>
-          ) : null}
-        </div>
-
-        {hiddenAlerts.length > 0 ? (
-          <div className="alert-bar alert-bar-more">
-            {hiddenAlerts.map((item) => (
-              <span
-                key={`more-${item.type}-${item.message}`}
-                className={`alert-item alert-item-${item.severity} ${
-                  item.type === "counter" ? "alert-item-counter" : ""
-                }`}
-              >
-                {item.message}
-                {item.type === "counter" ? " (Counter-trend)" : ""}
-              </span>
-            ))}
-          </div>
-        ) : null}
-
         {MARKETING_MODE ? (
           <section className="why-optionlens">
             <h3>Why OptionLens?</h3>

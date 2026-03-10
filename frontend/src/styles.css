@@ -974,6 +974,22 @@ button:hover {
   color: #9babc5;
 }
 
+.ia-trap-alerts {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ia-trap-alert-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.ia-alert-more {
+  opacity: 0.9;
+}
+
 .alert-more-btn {
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
@@ -2237,7 +2253,7 @@ tbody tr:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 18px;
+  gap: 10px 14px;
   font-size: 13px;
   color: #dbe2e5;
 }
@@ -2251,6 +2267,20 @@ tbody tr:hover {
   margin-top: 8px;
 }
 
+.ia-banner-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ia-banner-label {
+  color: #8ea2b7;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .ia-banner-title {
   font-size: 24px;
   font-weight: 700;
@@ -2258,8 +2288,8 @@ tbody tr:hover {
 }
 
 .ia-spot-strong {
-  font-size: 46px;
-  line-height: 1;
+  font-size: 30px;
+  line-height: 1.05;
   font-weight: 800;
   color: #ffffff;
   letter-spacing: 0.02em;
@@ -2312,6 +2342,7 @@ tbody tr:hover {
 
 .ia-live-badge {
   margin-left: auto;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -3416,6 +3447,10 @@ tbody tr:hover {
 
   .ia-live-badge {
     margin-left: 0;
+  }
+
+  .ia-banner-group {
+    width: 100%;
   }
 
   .page {

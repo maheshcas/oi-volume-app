@@ -2,6 +2,7 @@ type MarketBannerProps = {
   indexName: string;
   spot: string;
   spotDelta?: string;
+  fromOpenDelta?: string;
   pctChange: string;
   volatilityState: "Expanding" | "Contracting" | "Stable";
   regime?: string;
@@ -36,6 +37,7 @@ export default function MarketBanner(props: MarketBannerProps) {
             : "CHECKING";
 
   const pctDown = props.pctChange.trim().startsWith("-");
+  const openDeltaDown = String(props.fromOpenDelta ?? "").trim().startsWith("-") || String(props.fromOpenDelta ?? "").includes("▼");
   const trendTone =
     props.trend === "Bullish" ? "ia-text-bull" : props.trend === "Bearish" ? "ia-text-bear" : "";
   const projectionTone =
@@ -64,15 +66,28 @@ export default function MarketBanner(props: MarketBannerProps) {
     <div className="ia-status-bar">
       <div className="ia-banner-row ia-banner-row-primary">
         <span className="ia-inline-pill">{props.indexName}</span>
-        <span className="ia-sep">|</span>
-        <span>Spot:</span>
-        <span className="ia-spot-strong">{props.spot}</span>
-        {props.spotDelta ? <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.spotDelta}</span> : null}
-        <span className="ia-sep">|</span>
-        <span>% Change:</span>
-        <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.pctChange}</span>
-        <span className="ia-sep">|</span>
-        <span>Updated: {props.updatedAt}</span>
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Spot</span>
+          <span className="ia-spot-strong">{props.spot}</span>
+        </span>
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Vs Prev Close</span>
+          {props.spotDelta ? <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.spotDelta}</span> : <span>-</span>}
+        </span>
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Change</span>
+          <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.pctChange}</span>
+        </span>
+        {props.fromOpenDelta ? (
+          <span className="ia-banner-group">
+            <span className="ia-banner-label">From Open</span>
+            <span className={openDeltaDown ? "ia-text-bear" : "ia-text-bull"}>{props.fromOpenDelta}</span>
+          </span>
+        ) : null}
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Updated</span>
+          <span>{props.updatedAt}</span>
+        </span>
         <span className={`ia-live-badge ${liveTone}`}>
           <span className={`ia-live-dot ${liveTone}`} />
           {liveLabel}
@@ -80,22 +95,23 @@ export default function MarketBanner(props: MarketBannerProps) {
       </div>
 
       <div className="ia-banner-row ia-banner-row-secondary">
-        <span>Regime: {props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day")}</span>
-        <span className="ia-sep">|</span>
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Regime</span>
+          <span>{props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day")}</span>
+        </span>
         {props.expiryMode ? (
-          <>
-            <span className="ia-inline-pill ia-chip-expiry">Expiry Mode</span>
-            <span className="ia-sep">|</span>
-          </>
+          <span className="ia-inline-pill ia-chip-expiry">Expiry Mode</span>
         ) : null}
         {props.showProjection === false ? null : (
-          <>
-            <span>Projection: <span className={projectionTone}>{props.projection ?? "Range"}</span></span>
-            <span className="ia-sep">|</span>
-          </>
+          <span className="ia-banner-group">
+            <span className="ia-banner-label">Projection</span>
+            <span className={projectionTone}>{props.projection ?? "Range"}</span>
+          </span>
         )}
-        <span>Trend: <span className={trendTone}>{props.trend ?? "Neutral"}</span></span>
-        <span className="ia-sep">|</span>
+        <span className="ia-banner-group">
+          <span className="ia-banner-label">Trend</span>
+          <span className={trendTone}>{props.trend ?? "Neutral"}</span>
+        </span>
         <span className={`ia-inline-pill ${phaseTone}`}>Phase: {phaseLabel}</span>
       </div>
     </div>
