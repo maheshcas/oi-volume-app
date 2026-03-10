@@ -35,8 +35,7 @@ def _compute_raw_score(row: dict[str, Any], side: OptionType) -> tuple[float, fl
         oi = _to_float(row.get("PE_OI"), 0.0)
         doi = max(0.0, _to_float(row.get("PE_DeltaOI"), 0.0))
         vol = _to_float(row.get("PE_Volume"), 0.0)
-    raw = (oi * 0.5) + (doi * 0.3) + (vol * 0.2)
-    return raw, oi, doi, vol
+    return 0.0, oi, doi, vol
 
 
 def _normalize_scores(values: list[float]) -> list[float]:
@@ -50,23 +49,38 @@ def _normalize_scores(values: list[float]) -> list[float]:
 
 
 def _build_scored_rows(rows: list[dict[str, Any]], side: OptionType, spot: float | None) -> list[_ScoredStrike]:
-    raw_list: list[tuple[float, dict[str, Any], float, float, float]] = []
+    raw_list: list[tuple[dict[str, Any], float, float, float, float]] = []
+    strikes = [_to_float(row.get("strike"), 0.0) for row in rows]
+    if strikes:
+        min_strike = min(strikes)
+        max_strike = max(strikes)
+        max_strike_range = max(1.0, max_strike - min_strike)
+    else:
+        max_strike_range = 1.0
+
     for row in rows:
         strike = _to_float(row.get("strike"), 0.0)
-        raw, oi, doi, vol = _compute_raw_score(row, side)
-        raw_list.append((raw, row, oi, doi, vol))
+        _, oi, doi, vol = _compute_raw_score(row, side)
+        if spot is not None:
+            proximity = 1.0 - (abs(strike - spot) / max_strike_range)
+            proximity = max(0.0, min(1.0, proximity))
+        else:
+            proximity = 0.0
+        raw_list.append((row, oi, doi, vol, proximity))
 
-    normalized = _normalize_scores([item[0] for item in raw_list])
+    normalized_oi = _normalize_scores([item[1] for item in raw_list])
+    normalized_doi = _normalize_scores([item[2] for item in raw_list])
     scored: list[_ScoredStrike] = []
-    for idx, (_, row, oi, doi, vol) in enumerate(raw_list):
+    for idx, (row, oi, doi, vol, proximity) in enumerate(raw_list):
         strike = _to_float(row.get("strike"), 0.0)
         distance_pct = 999.0
         if spot is not None and spot > 0:
             distance_pct = abs(strike - spot) / spot
+        strike_strength = (0.5 * normalized_oi[idx]) + (0.3 * normalized_doi[idx]) + (0.2 * proximity)
         scored.append(
             _ScoredStrike(
                 strike=strike,
-                score=round(normalized[idx], 6),
+                score=round(max(0.0, min(1.0, strike_strength)), 6),
                 oi=oi,
                 doi=doi,
                 vol=vol,

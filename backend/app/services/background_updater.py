@@ -194,6 +194,157 @@ def _compute_market_structure_score(
     return {"market_structure_score": round(mss, 2), "structure_state": structure}
 
 
+def _apply_mss_bias_conflict(*, market_structure_score: float, bias: str, state: str, conflict_flags: list[str] | None = None) -> dict[str, Any]:
+    score = float(market_structure_score or 0.0)
+    bias_text = str(bias or "Neutral")
+    flags = list(conflict_flags or [])
+
+    if score <= 3.0:
+        structure_bias = "Bearish"
+    elif score >= 7.0:
+        structure_bias = "Bullish"
+    else:
+        structure_bias = "Mixed"
+
+    transition_phase = (
+        (score <= 3.0 and bias_text == "Bullish")
+        or (score >= 7.0 and bias_text == "Bearish")
+    )
+
+    if transition_phase:
+        resolved_state = "Transition Phase"
+    elif 4.0 <= score <= 6.0:
+        resolved_state = "Balanced Structure"
+    else:
+        resolved_state = str(state or "Balanced Structure")
+    if transition_phase and "mss_bias_transition_phase" not in flags:
+        flags.append("mss_bias_transition_phase")
+
+    logger.debug(
+        "MSSConflict[mss=%.2f bias=%s structure_bias=%s transition=%s state=%s]",
+        score,
+        bias_text,
+        structure_bias,
+        transition_phase,
+        resolved_state,
+    )
+
+    return {
+        "state": resolved_state,
+        "structure_bias": structure_bias,
+        "conflict_flags": flags,
+        "transition_phase": transition_phase,
+    }
+
+
+def _validate_response_consistency(
+    *,
+    rows: list[dict[str, Any]],
+    support_level: float | None,
+    resistance_level: float | None,
+    stable_bias: str,
+    market_structure_score: float,
+) -> list[str]:
+    warnings: list[str] = []
+
+    def _find_row(strike_value: float | None) -> dict[str, Any] | None:
+        if strike_value is None:
+            return None
+        for row in rows:
+            strike = row.get("strike")
+            if strike is None:
+                continue
+            try:
+                if float(strike) == float(strike_value):
+                    return row
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    support_row = _find_row(support_level)
+    resistance_row = _find_row(resistance_level)
+
+    support_label = str((support_row or {}).get("strike_interpretation_label", "") or "")
+    resistance_label = str((resistance_row or {}).get("strike_interpretation_label", "") or "")
+
+    if support_row and support_label not in {"PE Dominant", "Mixed"}:
+        warnings.append("Support strike dominance inconsistent")
+    if resistance_row and resistance_label not in {"CE Dominant", "Mixed"}:
+        warnings.append("Resistance strike dominance inconsistent")
+
+    if (market_structure_score <= 3.0 and stable_bias == "Bullish") or (
+        market_structure_score >= 7.0 and stable_bias == "Bearish"
+    ):
+        warnings.append("Bias and MSS conflict detected")
+
+    if warnings and "Signal conflict detected" not in warnings:
+        warnings.insert(0, "Signal conflict detected")
+
+    return warnings
+
+
+def _detect_oi_imbalance_trap(
+    *,
+    rows: list[dict[str, Any]],
+    support_level: float | None,
+    resistance_level: float | None,
+) -> dict[str, Any]:
+    def _find_row(strike_value: float | None) -> dict[str, Any] | None:
+        if strike_value is None:
+            return None
+        for row in rows:
+            strike = row.get("strike")
+            if strike is None:
+                continue
+            try:
+                if float(strike) == float(strike_value):
+                    return row
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    resistance_row = _find_row(resistance_level)
+    support_row = _find_row(support_level)
+
+    resistance_ce_change = float((resistance_row or {}).get("CE_OIChangePct", 0.0) or 0.0)
+    resistance_pe_change = float((resistance_row or {}).get("PE_OIChangePct", 0.0) or 0.0)
+    support_pe_change = float((support_row or {}).get("PE_OIChangePct", 0.0) or 0.0)
+    support_ce_change = float((support_row or {}).get("CE_OIChangePct", 0.0) or 0.0)
+
+    trap_probability = 0
+    trap_reason = None
+    support_strength = 0
+    support_reason = None
+
+    if resistance_row and resistance_ce_change > 15.0 and resistance_pe_change < 5.0:
+        trap_probability = 80
+        trap_reason = "Call writers defending resistance."
+
+    if support_row and support_pe_change > 15.0 and support_ce_change < 5.0:
+        support_strength = 80
+        support_reason = "Put writers strengthening support."
+
+    logger.debug(
+        "OIImbalance[%s/%s] resistance_ce=%.2f resistance_pe=%.2f support_pe=%.2f support_ce=%.2f trap_probability=%s support_strength=%s",
+        support_level,
+        resistance_level,
+        resistance_ce_change,
+        resistance_pe_change,
+        support_pe_change,
+        support_ce_change,
+        trap_probability,
+        support_strength,
+    )
+
+    return {
+        "trap_probability": int(trap_probability),
+        "trap_reason": trap_reason,
+        "support_strength": int(support_strength),
+        "support_reason": support_reason,
+        "resistance_strike": resistance_level,
+        "support_strike": support_level,
+    }
+
 def _apply_signal_stability_layer(
     *,
     previous_state: dict[str, Any] | None,
@@ -656,6 +807,11 @@ def _build_v2_intelligence(
         target["expansion_score"] = 0.0
     support_level = sr.get("support", {}).get("strike")
     resistance_level = sr.get("resistance", {}).get("strike")
+    oi_imbalance_trap = _detect_oi_imbalance_trap(
+        rows=rows,
+        support_level=support_level,
+        resistance_level=resistance_level,
+    )
     strongest_oi_strike = support_level
     if resistance_score > support_score:
         strongest_oi_strike = resistance_level
@@ -735,6 +891,17 @@ def _build_v2_intelligence(
     decision["primary_bias"] = stable_bias
     decision["micro_bias"] = current_bias
     decision["framework_status"] = "Stable"
+
+    mss_conflict = _apply_mss_bias_conflict(
+        market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+        bias=stable_bias,
+        state=str(decision.get("state", "")),
+        conflict_flags=list(decision.get("conflict_flags", []) or []),
+    )
+    decision["state"] = mss_conflict["state"]
+    decision["structure_bias"] = mss_conflict["structure_bias"]
+    decision["transition_phase"] = bool(mss_conflict["transition_phase"])
+    decision["conflict_flags"] = list(mss_conflict["conflict_flags"])
     trap_conf_adj = adjust_trap_by_confidence(
         base_trap=float(trap.get("trap_probability_pct", 0) or 0),
         smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
@@ -748,6 +915,12 @@ def _build_v2_intelligence(
     if high_zone_pressure and int(trap["trap_probability_pct"]) >= 60:
         trap["trap_type"] = "False-Break Risk"
         trap["trap_message"] = "Zone pressure is high but trap risk is elevated: false-break risk."
+
+    trap["oi_imbalance_trap"] = oi_imbalance_trap
+    if int(oi_imbalance_trap.get("trap_probability", 0) or 0) > 0:
+        trap["trap_reason"] = oi_imbalance_trap.get("trap_reason")
+    if int(oi_imbalance_trap.get("support_strength", 0) or 0) > 0:
+        trap["support_reason"] = oi_imbalance_trap.get("support_reason")
 
     weighted_score = float(decision.get("weighted_score", 0.0) or 0.0)
 
@@ -1075,6 +1248,21 @@ def _build_v2_intelligence(
             ",".join(validation_warnings),
         )
 
+    response_warnings = _validate_response_consistency(
+        rows=rows,
+        support_level=support_level,
+        resistance_level=resistance_level,
+        stable_bias=stable_bias,
+        market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+    )
+    if response_warnings:
+        logger.warning(
+            "ResponseWarnings[%s %s] %s",
+            symbol,
+            expiry,
+            ",".join(response_warnings),
+        )
+
     cycle_log_entry = {
         "timestamp": features.get("meta", {}).get("timestamp"),
         "symbol": symbol,
@@ -1089,6 +1277,10 @@ def _build_v2_intelligence(
         "trap_probability": trap_probability,
         "trap_level": trap.get("trap_level") or _trap_level_from_probability(trap_probability),
         "trap_type": trap.get("trap_type"),
+        "oi_imbalance_trap_probability": int(oi_imbalance_trap.get("trap_probability", 0) or 0),
+        "oi_imbalance_trap_reason": oi_imbalance_trap.get("trap_reason"),
+        "oi_imbalance_support_strength": int(oi_imbalance_trap.get("support_strength", 0) or 0),
+        "oi_imbalance_support_reason": oi_imbalance_trap.get("support_reason"),
         "support_level": support_level,
         "resistance_level": resistance_level,
         "support_zone_pressure": round(float(support_zone_pressure), 2),
@@ -1107,7 +1299,10 @@ def _build_v2_intelligence(
         "price_momentum_score": round(float(price_momentum_score), 4),
         "alignment_score": round(float(alignment_score), 4),
         "market_structure_score": mss.get("market_structure_score"),
+        "mss_score": mss.get("market_structure_score"),
         "structure_state": mss.get("structure_state"),
+        "structural_state": decision.get("state") or mss.get("structure_state"),
+        "structure_bias": decision.get("structure_bias"),
         "validation_warnings": validation_warnings,
         "engine_contribution_map": engine_debug_map,
         "previous_bias": stability.get("previous_bias"),
@@ -1132,6 +1327,7 @@ def _build_v2_intelligence(
 
     return {
         "meta": features["meta"],
+        "warnings": response_warnings,
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },
@@ -1148,6 +1344,7 @@ def _build_v2_intelligence(
             "execution_risk": float(decision.get("execution_risk", 0.0) or 0.0),
             "risk": float(decision.get("risk", decision.get("execution_risk", 0.0)) or 0.0),
             "state": str(decision.get("state", "")),
+            "transition_phase": bool(decision.get("transition_phase", False)),
             "projection": str(decision.get("projection", "No Confirmed Breakout")),
             "conflict_market_state": str(decision.get("conflict_market_state", "Balanced")),
             "conflict_flags": list(decision.get("conflict_flags", [])),
@@ -1180,7 +1377,10 @@ def _build_v2_intelligence(
             "summary_line": summary_line,
             "alignment_score": round(float(alignment_score), 4),
             "market_structure_score": mss.get("market_structure_score"),
+            "mss_score": mss.get("market_structure_score"),
             "structure_state": mss.get("structure_state"),
+            "structural_state": decision.get("state") or mss.get("structure_state"),
+            "structure_bias": decision.get("structure_bias"),
         },
         "levels": {
             "resistance": {
@@ -1216,6 +1416,7 @@ def _build_v2_intelligence(
             "sr": sr,
             "breakout": breakout,
             "trap": trap,
+            "oi_imbalance_trap": oi_imbalance_trap,
             "alignment_filter": {
                 "alignment_score": round(float(alignment_score), 4),
                 "price_momentum": round(float(price_momentum_score), 4),

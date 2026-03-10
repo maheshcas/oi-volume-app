@@ -1,3 +1,5 @@
+import logging
+
 def _direction(value, zero_threshold=0):
     if value > zero_threshold:
         return "↑"
@@ -46,7 +48,7 @@ def _interpret(price_dir, oi_dir, vol_dir):
     if price_dir == "→" and oi_dir == "↑" and vol_dir == "↓":
         return "Quiet Position Building", "Smart money accumulation without price movement."
     if price_dir == "→" and oi_dir == "↓" and vol_dir == "↓":
-        return "No Interest Zone", "Low participation. Time decay dominates."
+        return "Low Interest", "Low participation at this strike."
     return "Mixed", "Signals are not aligned."
 def _confidence(price_change_pct, oi_change, volume_ratio, vol_dir):
     score = 50
@@ -73,28 +75,67 @@ def _percentile(values, p):
     frac = idx - lo
     return ordered[lo] * (1 - frac) + ordered[hi] * frac
 
-def _strike_ladder_interpretation(ce_oi_change, pe_oi_change, threshold_high, threshold_low):
-    delta = (ce_oi_change or 0) - (pe_oi_change or 0)
-    abs_delta = abs(delta)
-    if delta > threshold_high:
-        label = "Call Writing"
-    elif delta < -threshold_high:
-        label = "Put Writing"
-    elif abs_delta < threshold_low:
-        label = "Balanced"
-    else:
-        label = "Shift Building"
+MIN_STRIKE_TOTAL_OI = 10000.0
 
-    if abs_delta >= (threshold_high * 1.5):
+logger = logging.getLogger("optionlens.parser")
+
+
+def _strike_ladder_interpretation(ce_oi, pe_oi, strike=None, spot=None, min_oi_threshold=MIN_STRIKE_TOTAL_OI):
+    ce_oi = float(ce_oi or 0)
+    pe_oi = float(pe_oi or 0)
+    total_oi = ce_oi + pe_oi
+    pe_share = ((pe_oi / total_oi) * 100.0) if total_oi > 0 else 50.0
+
+    if total_oi < float(min_oi_threshold):
+        label = "Low Interest"
+    elif pe_share >= 60.0:
+        label = "PE Dominant"
+    elif pe_share <= 40.0:
+        label = "CE Dominant"
+    else:
+        label = "Mixed"
+
+    dominance_distance = abs(pe_share - 50.0)
+    if dominance_distance >= 20.0:
         strength = "High"
-    elif abs_delta >= threshold_high:
+    elif dominance_distance >= 10.0:
         strength = "Medium"
     else:
         strength = "Low"
 
+    strike_value = float(strike) if strike is not None else None
+    spot_value = float(spot) if spot is not None else None
+    if label == "Low Interest":
+        description = "Low participation at this strike."
+    elif label == "PE Dominant":
+        if strike_value is not None and spot_value is not None and strike_value <= spot_value:
+            description = "Strong put writing indicates support formation."
+        else:
+            description = "Put side interest is dominant at this strike."
+    elif label == "CE Dominant":
+        if strike_value is not None and spot_value is not None and strike_value >= spot_value:
+            description = "Call writers defending higher strikes."
+        else:
+            description = "Call side interest is dominant at this strike."
+    else:
+        description = "Balanced positioning suggests market indecision."
+
+    logger.debug(
+        "StrikeDominance[strike=%s] ce_oi=%s pe_oi=%s pe_percent=%.2f dominance=%s strength=%s",
+        strike,
+        ce_oi,
+        pe_oi,
+        pe_share,
+        label,
+        strength,
+    )
+
     return {
         "interpretation_label": label,
         "strength_level": strength,
+        "interpretation_description": description,
+        "pe_percent": round(pe_share, 2),
+        "dominance": label,
     }
 
 def build_strike_ladder_interpretations(rows):
@@ -108,30 +149,24 @@ def build_strike_ladder_interpretations(rows):
     """
     if not rows:
         return []
-    deltas = [abs((r.get("CE_DeltaOI", 0) or 0) - (r.get("PE_DeltaOI", 0) or 0)) for r in rows]
-    threshold_high = _percentile(deltas, 0.75)
-    threshold_low = _percentile(deltas, 0.25)
-    if threshold_high <= 0:
-        threshold_high = 1.0
-    if threshold_low < 0:
-        threshold_low = 0.0
-
     output = []
     for r in rows:
         strike = r.get("strike")
-        ce_oi_change = r.get("CE_DeltaOI", 0) or 0
-        pe_oi_change = r.get("PE_DeltaOI", 0) or 0
         interp = _strike_ladder_interpretation(
-            ce_oi_change=ce_oi_change,
-            pe_oi_change=pe_oi_change,
-            threshold_high=threshold_high,
-            threshold_low=threshold_low,
+            ce_oi=r.get("CE_OI", 0) or 0,
+            pe_oi=r.get("PE_OI", 0) or 0,
+            strike=r.get("strike"),
+            spot=r.get("spot"),
+            min_oi_threshold=MIN_STRIKE_TOTAL_OI,
         )
         output.append(
             {
                 "strike": strike,
                 "interpretation_label": interp["interpretation_label"],
                 "strength_level": interp["strength_level"],
+                "interpretation_description": interp["interpretation_description"],
+                "pe_percent": interp["pe_percent"],
+                "dominance": interp["dominance"],
             }
         )
     return output
@@ -156,19 +191,6 @@ def build_oi_volume_summary(nse_json):
     pe_sorted = sorted(pe_vols, reverse=True)
     ce_top_20 = ce_sorted[max(0, int(len(ce_sorted) * 0.2) - 1)] if ce_sorted else None
     pe_top_20 = pe_sorted[max(0, int(len(pe_sorted) * 0.2) - 1)] if pe_sorted else None
-
-    ladder_deltas = []
-    for item in data:
-        ce = item.get("CE", {})
-        pe = item.get("PE", {})
-        ladder_deltas.append((ce.get("changeinOpenInterest", 0) or 0) - (pe.get("changeinOpenInterest", 0) or 0))
-    abs_ladder_deltas = [abs(v) for v in ladder_deltas if v is not None]
-    threshold_high = _percentile(abs_ladder_deltas, 0.75)
-    threshold_low = _percentile(abs_ladder_deltas, 0.25)
-    if threshold_high <= 0:
-        threshold_high = 1.0
-    if threshold_low < 0:
-        threshold_low = 0.0
 
     rows = []
 
@@ -240,10 +262,11 @@ def build_oi_volume_summary(nse_json):
             return "—"
 
         ladder_interp = _strike_ladder_interpretation(
-            ce_oi_change=ce_doi,
-            pe_oi_change=pe_doi,
-            threshold_high=threshold_high,
-            threshold_low=threshold_low,
+            ce_oi=ce_oi,
+            pe_oi=pe_oi,
+            strike=strike,
+            spot=spot,
+            min_oi_threshold=MIN_STRIKE_TOTAL_OI,
         )
 
         rows.append({
@@ -286,9 +309,18 @@ def build_oi_volume_summary(nse_json):
                 "strike": strike,
                 "interpretation_label": ladder_interp["interpretation_label"],
                 "strength_level": ladder_interp["strength_level"],
+                "interpretation_description": ladder_interp["interpretation_description"],
+                "pe_percent": ladder_interp["pe_percent"],
+                "dominance": ladder_interp["dominance"],
             },
             "strike_interpretation_label": ladder_interp["interpretation_label"],
             "strike_interpretation_strength": ladder_interp["strength_level"],
+            "strike_interpretation_description": ladder_interp["interpretation_description"],
+            "pe_oi": pe_oi,
+            "ce_oi": ce_oi,
+            "pe_percent": ladder_interp["pe_percent"],
+            "dominance": ladder_interp["dominance"],
+            "interpretation": ladder_interp["interpretation_description"],
         })
 
     return rows
