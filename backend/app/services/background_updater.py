@@ -24,6 +24,8 @@ from app.engines.early_reversal_probability_engine import compute_early_reversal
 from app.engines.oi_analyzer import run_oi_analysis
 from app.engines.momentum_exhaustion_engine import detect_momentum_exhaustion
 from app.engines.intraday_playbook_engine import generate_intraday_playbook
+from app.engines.liquidity_map_engine import build_liquidity_map
+from app.engines.insight_engine import generate_market_insight
 from app.engines.preprocessing import build_feature_frame, normalize_chain
 from app.engines.regime_engine import run_regime_engine
 from app.engines.regime_shift_engine import detect_regime_shift
@@ -31,6 +33,7 @@ from app.engines.signal_priority_engine import prioritize_signals
 from app.engines.sr_engine import run_sr_engine
 from app.engines.target_engine import run_target_engine
 from app.engines.trade_plan_engine import generate_trade_plan
+from app.engines.wall_break_engine import detect_wall_break
 from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
 from app.services.decision_engine import build_decision_input, master_decision_engine
@@ -937,6 +940,14 @@ def _build_v2_intelligence(
     current_oi_delta = abs(float(atm_row.get("CE_DeltaOI", 0.0) or 0.0)) + abs(
         float(atm_row.get("PE_DeltaOI", 0.0) or 0.0)
     )
+    wall_break = detect_wall_break(
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
+        support_center=sr.get("support_center"),
+        resistance_center=sr.get("resistance_center"),
+        rows=rows,
+    )
     regime_shift = detect_regime_shift(
         previous_smoothed_score=float(previous_score or 0.0),
         current_smoothed_score=weighted_score,
@@ -1007,6 +1018,16 @@ def _build_v2_intelligence(
     if breakout_down and support_strike is not None and not breakout_suppressed:
         alert = {"message": f"Breakdown below {support_strike}", "direction": "down", "tier": "immediate", "source": "breakout"}
         alerts.append(alert)
+
+    if bool(wall_break.get("wall_break_signal")) and wall_break.get("wall_break_reason"):
+        alerts.append(
+            {
+                "message": str(wall_break.get("wall_break_reason")),
+                "direction": "up" if wall_break.get("wall_break_direction") == "upside" else "down",
+                "tier": "immediate",
+                "source": "wall_break",
+            }
+        )
 
     regime_now = str(decision.get("regime", "") or "")
     projection_now = str(decision.get("projection", "") or "")
@@ -1115,6 +1136,14 @@ def _build_v2_intelligence(
                 "message": str(auto_exit.get("exit_reason") or "Consider protecting open gains"),
             }
         )
+    if bool(wall_break.get("wall_break_signal")) and wall_break.get("wall_break_reason"):
+        candidate_signals.append(
+            {
+                "type": "breakout",
+                "base_priority": 82,
+                "message": str(wall_break.get("wall_break_reason")),
+            }
+        )
     prioritized = prioritize_signals(
         signals=candidate_signals,
         confidence=float(decision.get("confidence", 50.0) or 50.0),
@@ -1209,6 +1238,48 @@ def _build_v2_intelligence(
         support_zone=support_zone,
         resistance_zone=resistance_zone,
         expansion_target=target.get("primary_target"),
+    )
+    def _match_row(strike_value: float | None) -> dict[str, Any] | None:
+        if strike_value is None:
+            return None
+        for row in rows:
+            try:
+                if float(row.get("strike")) == float(strike_value):
+                    return row
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    support_row = _match_row(support_level)
+    resistance_row = _match_row(resistance_level)
+    liquidity_map = build_liquidity_map(rows=rows, spot=spot)
+    market_insight = generate_market_insight(
+        support=support_level,
+        resistance=resistance_level,
+        support_center=sr.get("support_center"),
+        resistance_center=sr.get("resistance_center"),
+        support_zone_pressure=support_zone_pressure,
+        resistance_zone_pressure=resistance_zone_pressure,
+        oi_velocity=float(oi.get("oi_velocity_score", 0.0) or 0.0),
+        volume_expansion=float(volume_expansion_score),
+        trap_probability=trap_probability,
+        market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+        spot=spot,
+        pe_oi_change_near_support=(support_row or {}).get("PE_OIChangePct"),
+        ce_oi_change_near_resistance=(resistance_row or {}).get("CE_OIChangePct"),
+    )
+    if bool(wall_break.get("wall_break_signal")) and wall_break.get("wall_break_reason"):
+        market_insight.setdefault("market_insight", []).append(str(wall_break.get("wall_break_reason")))
+        market_insight.setdefault("market_insight", []).append(
+            "Upside breakout probability rising." if wall_break.get("wall_break_direction") == "upside" else "Downside breakout probability rising."
+        )
+    logger.debug(
+        "Insight[%s %s] structure=%s insight=%s wall_break=%s",
+        symbol,
+        expiry or "AUTO",
+        market_insight.get("institutional_structure"),
+        market_insight.get("market_insight"),
+        wall_break,
     )
     warmup_active = bool(trap.get("warmup_active", False))
     spot_sample_count = int(trap.get("spot_sample_count", 0) or 0)
@@ -1320,6 +1391,10 @@ def _build_v2_intelligence(
             if trap.get("volatility_factor") is not None
             else max(0.0, min(1.0, abs(float(current_atr_ratio) - 1.0)))
         ),
+        "institutional_structure": market_insight.get("institutional_structure"),
+        "market_insight": market_insight.get("market_insight", []),
+        "wall_break": wall_break,
+        "liquidity_map": liquidity_map,
     }
     log_key = _cache_key(symbol=symbol, instrument_type=INSTRUMENT_TYPE, expiry=expiry)
     if _should_log_cycle(log_key):
@@ -1328,6 +1403,10 @@ def _build_v2_intelligence(
     return {
         "meta": features["meta"],
         "warnings": response_warnings,
+        "institutional_structure": market_insight.get("institutional_structure"),
+        "market_insight": market_insight.get("market_insight", []),
+        "wall_break": wall_break,
+        "liquidity_map": liquidity_map,
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },

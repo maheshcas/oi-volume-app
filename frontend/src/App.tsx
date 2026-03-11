@@ -230,6 +230,11 @@ type IntelligenceResponse = {
     resistance_zone?: Array<number | null> | string | null;
     expansion_target?: number | null;
   };
+  institutional_structure?: {
+    put_wall?: number | null;
+    call_wall?: number | null;
+  };
+  market_insight?: string[];
 };
 
 type UiAlert = {
@@ -1771,6 +1776,13 @@ export default function App() {
   const dailyPerformancePreview = dailyPerformance
     ? `${Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/${dailyPerformance.total_signals_logged} setups valid today, trap risk ${String(displayTrapLevel).toLowerCase()}.`
     : "";
+  const institutionalStructure = intelligence?.institutional_structure as
+    | { put_wall?: number | null; call_wall?: number | null }
+    | undefined;
+  const marketInsights = Array.isArray(intelligence?.market_insight)
+    ? intelligence.market_insight.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+
   const decisionLayerContent = (
     <DecisionPanel
       bias={displayBias}
@@ -1797,6 +1809,8 @@ export default function App() {
       pressureStateLabel={pressureStateLabel}
       readinessState={readinessDisplay.state}
       readinessScore={readinessDisplay.score}
+      institutionalStructure={institutionalStructure}
+      marketInsight={marketInsights}
     />
   );
   const advancedAnalysisContent = (

@@ -3497,3 +3497,55 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 }
+
+
+.ia-market-insight-strip {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(120, 160, 255, 0.18);
+  background: linear-gradient(180deg, rgba(15, 24, 38, 0.88), rgba(10, 16, 28, 0.88));
+}
+
+.ia-market-insight-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8ea2b7;
+  margin-bottom: 8px;
+}
+
+.ia-market-insight-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ia-market-insight-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 160, 255, 0.2);
+  background: rgba(120, 160, 255, 0.08);
+  color: #d8e4f2;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ia-market-insight-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #b8c7d9;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.ia-market-insight-list li {
+  line-height: 1.4;
+}
+
+.ia-key-footer-grid-single {
+  grid-template-columns: 1fr;
+}

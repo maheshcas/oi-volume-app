@@ -6,6 +6,8 @@ export type TrapCardProps = {
   trap_type: string;
   trap_zone: number;
   suggested_action: string;
+  trap_reason?: string | null;
+  support_reason?: string | null;
   show_affected_level?: boolean;
 };
 
@@ -52,6 +54,8 @@ export default function TrapCard({
   trap_type,
   trap_zone,
   suggested_action,
+  trap_reason,
+  support_reason,
   show_affected_level = true,
 }: TrapCardProps) {
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
@@ -106,6 +110,20 @@ export default function TrapCard({
           <div className="trap-key" style={{ marginBottom: 4 }}>Trap Type</div>
           <div className="trap-value" style={{ fontWeight: 700 }}>{trap_type || "-"}</div>
         </div>
+
+        {trap_reason ? (
+          <div className="trap-row" style={{ padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
+            <div className="trap-key" style={{ marginBottom: 4 }}>OI Imbalance Trap</div>
+            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{trap_reason}</div>
+          </div>
+        ) : null}
+
+        {support_reason ? (
+          <div className="trap-row" style={{ padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
+            <div className="trap-key" style={{ marginBottom: 4 }}>Support Strength</div>
+            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{support_reason}</div>
+          </div>
+        ) : null}
 
         {show_affected_level ? (
           <div className="trap-row" style={{ padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>

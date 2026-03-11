@@ -28,6 +28,11 @@ type DecisionPanelProps = {
   pressureStateLabel?: string;
   readinessState?: "WAIT" | "CAUTION" | "READY";
   readinessScore?: number;
+  institutionalStructure?: {
+    put_wall?: number | null;
+    call_wall?: number | null;
+  };
+  marketInsight?: string[];
 };
 
 export default function DecisionPanel(props: DecisionPanelProps) {
@@ -130,6 +135,27 @@ export default function DecisionPanel(props: DecisionPanelProps) {
       </div>
 
       <MarketPressureBar score={props.pressureScore ?? 0} state={pressureLabel} />
+
+      {(props.marketInsight?.length || props.institutionalStructure?.put_wall || props.institutionalStructure?.call_wall) ? (
+        <div className="ia-market-insight-strip">
+          <div className="ia-market-insight-title">Market Insight</div>
+          <div className="ia-market-insight-badges">
+            {props.institutionalStructure?.put_wall ? (
+              <span className="ia-market-insight-chip">Put Wall: {Number(props.institutionalStructure.put_wall).toLocaleString("en-IN")}</span>
+            ) : null}
+            {props.institutionalStructure?.call_wall ? (
+              <span className="ia-market-insight-chip">Call Wall: {Number(props.institutionalStructure.call_wall).toLocaleString("en-IN")}</span>
+            ) : null}
+          </div>
+          {props.marketInsight?.length ? (
+            <ul className="ia-market-insight-list">
+              {props.marketInsight.slice(0, 3).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {!marketingMode ? (
         <button type="button" className="ia-detail-toggle" style={{ marginTop: 10 }} onClick={() => setShowMetrics((v) => !v)}>

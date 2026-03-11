@@ -56,11 +56,7 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
           </div>
         </div>
 
-        <div className="ia-key-footer-grid">
-          <div className="ia-key-note">
-            <div className="ia-kpi-label">Trap Risk</div>
-            <div className="ia-kpi-value">{props.trapRisk}</div>
-          </div>
+        <div className="ia-key-footer-grid ia-key-footer-grid-single">
           <div className="ia-key-note">
             <div className="ia-kpi-label">Watch</div>
             <div className="ia-kpi-value">{props.watchNote}</div>

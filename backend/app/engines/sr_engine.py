@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Literal
 
 
 OptionType = Literal["CE", "PE"]
+
+logger = logging.getLogger("optionlens.sr_engine")
 
 
 @dataclass
@@ -16,6 +19,9 @@ class _ScoredStrike:
     vol: float
     distance_pct: float
     side: OptionType
+    normalized_oi: float = 0.0
+    normalized_doi: float = 0.0
+    proximity_to_spot: float = 0.0
 
 
 def _to_float(value: Any, fallback: float = 0.0) -> float:
@@ -86,6 +92,9 @@ def _build_scored_rows(rows: list[dict[str, Any]], side: OptionType, spot: float
                 vol=vol,
                 distance_pct=distance_pct,
                 side=side,
+                normalized_oi=round(normalized_oi[idx], 6),
+                normalized_doi=round(normalized_doi[idx], 6),
+                proximity_to_spot=round(proximity, 6),
             )
         )
     return scored
@@ -94,6 +103,23 @@ def _build_scored_rows(rows: list[dict[str, Any]], side: OptionType, spot: float
 def _top_levels(scored: list[_ScoredStrike]) -> list[dict[str, Any]]:
     ordered = sorted(scored, key=lambda x: x.score, reverse=True)[:5]
     return [{"strike": item.strike, "score": round(item.score * 100, 2)} for item in ordered]
+
+
+def _trace_candidates(stage: str, side: OptionType, candidates: list[_ScoredStrike], *, reasons: dict[float, str] | None = None) -> None:
+    ordered = sorted(candidates, key=lambda x: x.score, reverse=True)[:5]
+    payload = [
+        {
+            "strike": item.strike,
+            "normalized_oi": round(item.normalized_oi, 4),
+            "normalized_oi_change": round(item.normalized_doi, 4),
+            "proximity_to_spot": round(item.proximity_to_spot, 4),
+            "total_score": round(item.score, 6),
+            "distance_pct": round(item.distance_pct, 6),
+            "rejection_reason": (reasons or {}).get(item.strike),
+        }
+        for item in ordered
+    ]
+    logger.debug("SRTrace[%s][%s] %s", side, stage, payload)
 
 
 def _pick_major(scored: list[_ScoredStrike]) -> _ScoredStrike | None:
@@ -105,23 +131,44 @@ def _pick_major(scored: list[_ScoredStrike]) -> _ScoredStrike | None:
 def _pick_immediate(scored: list[_ScoredStrike], spot: float | None, side: OptionType) -> _ScoredStrike | None:
     if not scored or spot is None or spot <= 0:
         return None
-    if side == "CE":
-        directional = [s for s in scored if s.strike > spot]
-    else:
-        directional = [s for s in scored if s.strike < spot]
-    if not directional:
-        return None
 
-    zone = [s for s in directional if 0.005 <= s.distance_pct <= 0.01]
-    if not zone:
-        zone = [s for s in directional if s.distance_pct <= 0.01]
+    _trace_candidates("raw_score_ranking", side, scored)
+
+    directional: list[_ScoredStrike] = []
+    directional_reasons: dict[float, str] = {}
+    for item in scored:
+        allowed = item.strike > spot if side == "CE" else item.strike < spot
+        if allowed:
+            directional.append(item)
+        else:
+            directional_reasons[item.strike] = "failed_spot_constraint"
+    if not directional:
+        logger.debug("SRTrace[%s][directional_filter] no candidates after spot constraint", side)
+        return None
+    _trace_candidates("after_spot_constraint", side, directional, reasons=directional_reasons)
+
+    zone = [s for s in directional if s.distance_pct <= 0.01]
+    zone_reasons: dict[float, str] = {item.strike: "above_max_distance_1pct" for item in directional if item not in zone}
+    stage = "after_zone_filter_le_1pct"
     if not zone:
         zone = directional
+        stage = "after_zone_filter_full_directional_fallback"
+        zone_reasons = {}
 
-    top3 = sorted(zone, key=lambda x: x.score, reverse=True)[:3]
-    if not top3:
+    _trace_candidates(stage, side, zone, reasons=zone_reasons)
+
+    chosen = max(zone, key=lambda x: x.score) if zone else None
+    if chosen is None:
         return None
-    return min(top3, key=lambda x: abs(x.strike - spot))
+    logger.debug(
+        "SRTrace[%s][final_immediate] chosen=%s score=%.6f distance_pct=%.6f major_candidate=%s",
+        side,
+        chosen.strike,
+        chosen.score,
+        chosen.distance_pct,
+        max(scored, key=lambda x: x.score).strike if scored else None,
+    )
+    return chosen
 
 
 def _compute_cluster_zone(
@@ -410,6 +457,8 @@ def run_sr_engine(
 
     major_res = _pick_major(ce_scored)
     major_sup = _pick_major(pe_scored)
+    logger.debug("SRTrace[PE][major_support] chosen=%s score=%.6f", major_sup.strike if major_sup else None, major_sup.score if major_sup else 0.0)
+    logger.debug("SRTrace[CE][major_resistance] chosen=%s score=%.6f", major_res.strike if major_res else None, major_res.score if major_res else 0.0)
     immediate_res = _pick_immediate(ce_scored, spot_num, "CE")
     immediate_sup = _pick_immediate(pe_scored, spot_num, "PE")
 
@@ -482,6 +531,18 @@ def run_sr_engine(
         zone_range=resistance_zone.get("range"),
         side="CE",
         step=strike_step,
+    )
+
+    logger.debug(
+        "SRTrace[return] support_immediate=%s support_major=%s support_frontend=%s resistance_immediate=%s resistance_major=%s resistance_frontend=%s support_center=%s resistance_center=%s",
+        support_immediate,
+        major_sup.strike if major_sup else None,
+        support_immediate,
+        resistance_immediate,
+        major_res.strike if major_res else None,
+        resistance_immediate,
+        support_zone.get("center"),
+        resistance_zone.get("center"),
     )
 
     return {
