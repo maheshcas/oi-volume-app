@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.cache import cache
 from app.engines.breakout_engine import run_breakout_engine
+from app.engines.breakout_probability_engine import compute_breakout_probability
 from app.engines.auto_exit_suggestion_engine import generate_auto_exit_suggestion
 from app.engines.adaptive_calibration import load_adaptive_weights, update_end_of_day_calibration
 from app.engines.adaptive_weighting_engine import compute_adaptive_weights
@@ -33,6 +34,7 @@ from app.engines.signal_priority_engine import prioritize_signals
 from app.engines.sr_engine import run_sr_engine
 from app.engines.target_engine import run_target_engine
 from app.engines.trade_plan_engine import generate_trade_plan
+from app.engines.material_breach_engine import detect_material_breach
 from app.engines.wall_break_engine import detect_wall_break
 from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
@@ -195,6 +197,186 @@ def _compute_market_structure_score(
     else:
         structure = "High Trap Risk"
     return {"market_structure_score": round(mss, 2), "structure_state": structure}
+
+
+def _compute_directional_pressure_score(
+    *,
+    directional_force: dict[str, Any],
+    alignment_score: float,
+    market_structure_score: float,
+    oi_bias: float,
+    volume_expansion_score: float,
+    trap_probability: float,
+    previous_alignment_score: float | None = None,
+    previous_directional_dominance: str | None = None,
+) -> dict[str, Any]:
+    bull_force = max(0.0, min(1.0, float(directional_force.get("bull", 0.0) or 0.0) / 100.0))
+    bear_force = max(0.0, min(1.0, float(directional_force.get("bear", 0.0) or 0.0) / 100.0))
+    alignment = float(alignment_score or 0.0)
+    oi_bias_value = float(oi_bias or 0.0)
+    volume_expansion = max(0.0, min(1.0, float(volume_expansion_score or 0.0)))
+    mss_component = max(0.0, min(10.0, float(market_structure_score or 0.0) / 10.0))
+    trap_penalty = max(0.0, min(1.0, float(trap_probability or 0.0) / 100.0)) * 0.2
+
+    bull_score = (
+        (bull_force * 0.35)
+        + (max(0.0, alignment) * 0.25)
+        + (max(0.0, oi_bias_value) * 0.15)
+        + (volume_expansion * 0.10)
+        + (mss_component * 0.10)
+    )
+    bear_score = (
+        (bear_force * 0.35)
+        + (max(0.0, -alignment) * 0.25)
+        + (max(0.0, -oi_bias_value) * 0.15)
+        + (volume_expansion * 0.10)
+        + (mss_component * 0.10)
+    )
+
+    dps = bull_score - bear_score
+    dps_adjusted = dps * (1.0 - trap_penalty)
+    current_alignment_sign = 1 if alignment > 0 else -1 if alignment < 0 else 0
+    previous_alignment_value = float(previous_alignment_score or 0.0)
+    previous_alignment_sign = 1 if previous_alignment_value > 0 else -1 if previous_alignment_value < 0 else 0
+    current_directional_dominance = "bullish" if bull_force > bear_force else "bearish" if bear_force > bull_force else "neutral"
+    previous_dominance = str(previous_directional_dominance or "neutral").strip().lower()
+    reversal_detected = (
+        (previous_alignment_sign != 0 and current_alignment_sign != 0 and previous_alignment_sign != current_alignment_sign)
+        or (previous_dominance in {"bullish", "bearish"} and current_directional_dominance != previous_dominance)
+    )
+    if reversal_detected:
+        dps *= 0.5
+        dps_adjusted *= 0.5
+
+    if dps_adjusted > 0.5:
+        pressure_state = "Strong Bull Pressure"
+    elif dps_adjusted > 0.35:
+        pressure_state = "Mild Bull Pressure"
+    elif dps_adjusted < -0.5:
+        pressure_state = "Strong Bear Pressure"
+    elif dps_adjusted < -0.35:
+        pressure_state = "Mild Bear Pressure"
+    else:
+        pressure_state = "Balanced Pressure"
+
+    if dps_adjusted > 0.35:
+        trade_action = "LONG BIAS"
+        explanation = "Upside pressure building across OI and alignment."
+    elif dps_adjusted < -0.35:
+        trade_action = "SHORT BIAS"
+        explanation = "Downside pressure increasing across writer activity."
+    else:
+        trade_action = "WAIT"
+        explanation = "Directional pressure remains balanced."
+
+    return {
+        "directional_pressure_score": round(dps, 4),
+        "dps_adjusted": round(dps_adjusted, 4),
+        "pressure_state": pressure_state,
+        "trade_action": trade_action,
+        "pressure_explanation": explanation,
+        "directional_dominance": current_directional_dominance,
+        "dps_decay_applied": reversal_detected,
+    }
+
+
+def _compute_trade_readiness(
+    *,
+    clarity: float,
+    alignment_score: float,
+    trap_probability: float,
+    execution_risk: float,
+    breakout_suppressed: bool,
+    breakout_probability: float = 0.0,
+) -> dict[str, Any]:
+    clarity_value = max(0.0, min(100.0, float(clarity or 0.0)))
+    alignment_component = max(0.0, min(100.0, abs(float(alignment_score or 0.0)) * 100.0))
+    risk_component = (1.0 - max(0.0, min(1.0, float(execution_risk or 0.0) / 100.0))) * 100.0
+    base_score = (
+        (clarity_value * 0.35)
+        + (alignment_component * 0.25)
+        + (risk_component * 0.15)
+    )
+    trap_deduction = 0.0 if breakout_suppressed else (0.25 * max(0.0, min(100.0, float(trap_probability or 0.0))) / 100.0 * 100.0)
+    readiness = base_score - trap_deduction
+    readiness += max(0.0, min(100.0, float(breakout_probability or 0.0))) * 0.10
+    readiness = max(0.0, min(100.0, readiness))
+    if readiness >= 70.0:
+        readiness_state = "High"
+    elif readiness >= 40.0:
+        readiness_state = "Moderate"
+    else:
+        readiness_state = "Low"
+    return {
+        "trade_readiness": round(readiness, 2),
+        "readiness_state": readiness_state,
+    }
+
+
+def _apply_momentum_override(
+    *,
+    trade_action: str,
+    spot: float | None,
+    open_price: float | None,
+    day_high: float | None,
+    day_low: float | None,
+    support: float | None,
+    resistance: float | None,
+    directional_force: dict[str, Any],
+    clarity: float,
+    volume_expansion_score: float,
+    alignment_score: float,
+) -> dict[str, Any]:
+    current_action = str(trade_action or "WAIT")
+    spot_value = _safe_float(spot)
+    open_value = _safe_float(open_price)
+    high_value = _safe_float(day_high)
+    low_value = _safe_float(day_low)
+    support_value = _safe_float(support)
+    resistance_value = _safe_float(resistance)
+    if (
+        current_action != "WAIT"
+        or spot_value is None
+        or open_value in (None, 0)
+        or high_value is None
+        or low_value is None
+        or high_value <= low_value
+    ):
+        return {
+            "trade_action": current_action,
+            "momentum_score": 0.0,
+            "momentum_override_explanation": None,
+        }
+
+    price_displacement = abs(spot_value - open_value) / open_value
+    range_position = max(0.0, min(1.0, (spot_value - low_value) / max(high_value - low_value, 1e-9)))
+    directional_strength = max(
+        0.0,
+        min(1.0, float((directional_force or {}).get("strength", 0.0) or 0.0) / 100.0),
+    )
+    momentum_score = (price_displacement * 0.4) + (directional_strength * 0.3) + (range_position * 0.3)
+    momentum_score = max(0.0, min(1.0, momentum_score))
+
+    override_action = current_action
+    explanation = None
+    if (
+        momentum_score > 0.60
+        and float(clarity or 0.0) > 60.0
+        and float(volume_expansion_score or 0.0) > 0.5
+        and abs(float(alignment_score or 0.0)) > 0.15
+    ):
+        if resistance_value not in (None, 0) and spot_value > resistance_value * 0.995:
+            override_action = "BREAKOUT WATCH"
+            explanation = "Momentum is building near resistance. Breakout watch is active."
+        elif support_value not in (None, 0) and spot_value < support_value * 1.005:
+            override_action = "BREAKDOWN WATCH"
+            explanation = "Momentum is building near support. Breakdown watch is active."
+
+    return {
+        "trade_action": override_action,
+        "momentum_score": round(momentum_score, 4),
+        "momentum_override_explanation": explanation,
+    }
 
 
 def _apply_mss_bias_conflict(*, market_structure_score: float, bias: str, state: str, conflict_flags: list[str] | None = None) -> dict[str, Any]:
@@ -471,6 +653,11 @@ def _run_ordered_pipeline(
     base_volume = run_volume_analysis(features, previous_state=previous_state)
     base_breakout = run_breakout_engine(features, sr)
     base_trap = run_trap_engine(features, base_breakout, oi, base_volume, previous_state=previous_state)
+    base_material_breach = detect_material_breach(
+        spot=features.get("spot"),
+        support=sr.get("support", {}).get("strike"),
+        resistance=sr.get("resistance", {}).get("strike"),
+    )
 
     # Stage 2: Regime from base features
     atr_threshold_for_regime = float(base_breakout.get("atr_threshold") or 0.0)
@@ -507,8 +694,110 @@ def _run_ordered_pipeline(
         "volume": volume,
         "breakout": breakout,
         "trap": trap,
+        "material_breach": base_material_breach,
         "regime": regime,
         "adjusted_thresholds": regime.get("adjusted_thresholds", pre_adjusted_thresholds),
+    }
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_day_trend(
+    *,
+    spot: float | None,
+    previous_close: float | None,
+    open_price: float | None,
+) -> str:
+    spot_value = _safe_float(spot)
+    prev_close_value = _safe_float(previous_close)
+    open_value = _safe_float(open_price)
+
+    pct_vs_prev_close = (
+        (spot_value - prev_close_value) / prev_close_value
+        if spot_value is not None and prev_close_value not in (None, 0)
+        else None
+    )
+    pct_from_open = (
+        (spot_value - open_value) / open_value
+        if spot_value is not None and open_value not in (None, 0)
+        else None
+    )
+    composite_score = (0.6 * float(pct_vs_prev_close or 0.0)) + (0.4 * float(pct_from_open or 0.0))
+
+    if composite_score >= 0.007:
+        return "Bullish"
+    if composite_score <= -0.007:
+        return "Bearish"
+    return "Neutral"
+
+
+def _classify_long_trend(
+    *,
+    spot: float | None,
+    previous_close: float | None,
+    structure_bias: str | None,
+) -> str:
+    spot_value = _safe_float(spot)
+    prev_close_value = _safe_float(previous_close)
+    bias_text = str(structure_bias or "Neutral").lower()
+
+    if spot_value is not None and prev_close_value is not None:
+        if spot_value > prev_close_value and "bullish" in bias_text:
+            return "Bullish"
+        if spot_value < prev_close_value and "bearish" in bias_text:
+            return "Bearish"
+    return "Neutral"
+
+
+def check_sr_breach(spot: float | None, support: float | None, resistance: float | None) -> str | None:
+    spot_value = _safe_float(spot)
+    support_value = _safe_float(support)
+    resistance_value = _safe_float(resistance)
+    if spot_value is None:
+        return None
+
+    if resistance_value is not None:
+        res_threshold = max(50.0, resistance_value * 0.002)
+        if spot_value > resistance_value + res_threshold:
+            return "resistance_breached"
+
+    if support_value is not None:
+        sup_threshold = max(50.0, support_value * 0.002)
+        if spot_value < support_value - sup_threshold:
+            return "support_breached"
+
+    return None
+
+
+def _compute_price_displacement_momentum(
+    *,
+    spot: float | None,
+    open_price: float | None,
+) -> dict[str, Any]:
+    spot_value = _safe_float(spot)
+    open_value = _safe_float(open_price)
+    if spot_value is None or open_value in (None, 0):
+        return {
+            "displacement": 0.0,
+            "displacement_pct": 0.0,
+            "momentum_score": 0.0,
+            "momentum_direction": "neutral",
+        }
+
+    displacement = float(spot_value - open_value)
+    displacement_pct = abs(displacement) / float(open_value)
+    momentum_score = min(1.0, displacement_pct / 0.01)
+    momentum_direction = "bullish" if displacement > 0 else "bearish" if displacement < 0 else "neutral"
+    return {
+        "displacement": round(displacement, 2),
+        "displacement_pct": round(displacement_pct, 6),
+        "momentum_score": round(momentum_score, 4),
+        "momentum_direction": momentum_direction,
     }
 
 
@@ -518,6 +807,10 @@ def _build_v2_intelligence(
     symbol: str,
     expiry: str | None,
     timestamp: str | None,
+    previous_close: float | None = None,
+    open_price: float | None = None,
+    day_high: float | None = None,
+    day_low: float | None = None,
     previous_score: float | None = None,
     last_10_scores: list[float] | None = None,
     previous_regime: str | None = None,
@@ -554,8 +847,13 @@ def _build_v2_intelligence(
     volume = pipeline["volume"]
     breakout = pipeline["breakout"]
     trap = pipeline["trap"]
+    material_breach = pipeline["material_breach"]
     regime = pipeline["regime"]
     adjusted_thresholds = pipeline["adjusted_thresholds"]
+    price_momentum = _compute_price_displacement_momentum(
+        spot=spot,
+        open_price=open_price,
+    )
 
     atr_threshold = float(breakout.get("atr_threshold") or 0.0)
     avg_atr = _update_and_get_avg_atr(symbol=symbol, expiry=expiry, atr_value=atr_threshold)
@@ -624,6 +922,25 @@ def _build_v2_intelligence(
     trap["trap_probability"] = trap_probability_pct
     trap["trap_level"] = _trap_level_from_probability(trap_probability_pct)
     trap_penalty = max(0.0, min(1.0, float(trap_probability_pct) / 100.0))
+    sr_breach_state = check_sr_breach(
+        spot=spot,
+        support=sr.get("support", {}).get("strike"),
+        resistance=sr.get("resistance", {}).get("strike"),
+    )
+    breakout_candidate = False
+
+    if sr_breach_state == "resistance_breached":
+        breakout_strength_raw = max(0.0, min(1.0, breakout_strength_raw + 0.2))
+        breakout_score = max(0.3, breakout_score)
+        trap_penalty = max(0.0, trap_penalty * 0.75)
+        regime["regime_type"] = "Trend Day Candidate"
+        breakout["breakout_up"] = True
+    elif sr_breach_state == "support_breached":
+        breakout_strength_raw = max(0.0, min(1.0, breakout_strength_raw + 0.2))
+        breakout_score = min(-0.3, breakout_score) if breakout_score < 0 else -0.3
+        trap_penalty = max(0.0, trap_penalty * 0.75)
+        regime["regime_type"] = "Trend Day Candidate"
+        breakout["breakout_down"] = True
 
     # Zone-pressure integration:
     # - High support pressure increases breakdown potential.
@@ -645,6 +962,12 @@ def _build_v2_intelligence(
             aligned += 1
     current_alignment = aligned / max(1, len(directional_scores))
 
+    day_trend = _classify_day_trend(
+        spot=spot,
+        previous_close=previous_close,
+        open_price=open_price,
+    )
+
     confidence_proxy = max(
         0.0,
         min(
@@ -662,15 +985,30 @@ def _build_v2_intelligence(
         support_strength=float(support_strength_01),
         resistance_strength=float(resistance_strength_01),
         alignment_score=float(alignment_score),
+        support_zone_pressure=float(support_zone_pressure),
+        resistance_zone_pressure=float(resistance_zone_pressure),
+        material_breach=material_breach,
     )
+    breakout_strength_adjusted = float(
+        conflict_resolver.get("adjusted_breakout_strength", breakout_strength_adjusted) or breakout_strength_adjusted
+    )
+    breakout["breakout_strength"] = round(float(breakout_strength_adjusted), 4)
     conflict_suppressed = set(str(x) for x in (conflict_resolver.get("suppressed_signals") or []))
     conflict_breakout_suppressed = "breakout" in conflict_suppressed
     if conflict_breakout_suppressed:
+        raw_breakout_strength = float(breakout.get("breakout_strength_raw", 0.0) or 0.0)
         breakout["breakout_up"] = False
         breakout["breakout_down"] = False
-        breakout["breakout_strength"] = 0.0
-        breakout_strength_adjusted = 0.0
-        breakout_score = 0.0
+        if raw_breakout_strength > 0.70:
+            breakout_candidate = True
+            breakout["breakout_candidate"] = True
+            breakout_strength_adjusted = max(0.0, min(1.0, raw_breakout_strength * 0.3))
+            breakout["breakout_strength"] = round(float(breakout_strength_adjusted), 4)
+            breakout_score = breakout_score * 0.3
+        else:
+            breakout["breakout_strength"] = 0.0
+            breakout_strength_adjusted = 0.0
+            breakout_score = 0.0
 
     bias_stability = compute_bias_stability(last_10_scores)
     now_dt = evaluation_time or datetime.now(timezone.utc)
@@ -751,6 +1089,35 @@ def _build_v2_intelligence(
         resistance_major=resistance_major,
         weights=current_weights,
     )
+    directional_force = dict(decision_v3.get("directional_force") or {})
+    bull_force_raw = max(0.0, float(directional_force.get("bull", 50.0) or 50.0) / 100.0)
+    bear_force_raw = max(0.0, float(directional_force.get("bear", 50.0) or 50.0) / 100.0)
+    momentum_score = float(price_momentum.get("momentum_score", 0.0) or 0.0)
+    momentum_direction = str(price_momentum.get("momentum_direction", "neutral") or "neutral")
+    if momentum_direction == "bullish":
+        bull_force_raw += momentum_score * 0.10
+    elif momentum_direction == "bearish":
+        bear_force_raw += momentum_score * 0.10
+    force_total = bull_force_raw + bear_force_raw
+    if force_total > 0:
+        bull_force = int(round((bull_force_raw / force_total) * 100.0))
+        bull_force = max(0, min(100, bull_force))
+        bear_force = 100 - bull_force
+        directional_force["bull"] = bull_force
+        directional_force["bear"] = bear_force
+        directional_force["strength"] = abs(bull_force - bear_force)
+        decision_v3["directional_force"] = directional_force
+        decision_v3["directional_force_value"] = abs(bull_force - bear_force)
+        decision_v3["bull_probability"] = round(bull_force / 100.0, 4)
+        decision_v3["bear_probability"] = round(bear_force / 100.0, 4)
+        decision_v3["probability_bull"] = bull_force
+        decision_v3["probability_bear"] = bear_force
+        if bull_force > 55:
+            decision_v3["bias"] = "Bullish"
+        elif bear_force > 55:
+            decision_v3["bias"] = "Bearish"
+        else:
+            decision_v3["bias"] = "Neutral"
     current_regime = str(regime.get("regime_type") or regime.get("regime") or "Transition")
     regime_mapped = (
         "Trend"
@@ -861,6 +1228,81 @@ def _build_v2_intelligence(
         clarity=float(decision.get("clarity", decision.get("structural_clarity_score", 0.0)) or 0.0),
         trap_probability=trap_probability,
     )
+    dps = _compute_directional_pressure_score(
+        directional_force=dict(decision.get("directional_force") or {}),
+        alignment_score=alignment_score,
+        market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+        oi_bias=oi_score,
+        volume_expansion_score=volume_expansion_score,
+        trap_probability=trap_probability,
+        previous_alignment_score=previous_alignment,
+        previous_directional_dominance=(previous_state or {}).get("directional_force_dominance"),
+    )
+    decision["directional_pressure_score"] = dps["directional_pressure_score"]
+    decision["dps_adjusted"] = dps["dps_adjusted"]
+    decision["pressure_state"] = dps["pressure_state"]
+    decision["trade_action"] = dps["trade_action"]
+    decision["pressure_explanation"] = dps["pressure_explanation"]
+    decision["directional_force_dominance"] = dps["directional_dominance"]
+    decision["dps_decay_applied"] = bool(dps.get("dps_decay_applied"))
+    wall_break_pre = detect_wall_break(
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
+        support_center=sr.get("support_center"),
+        resistance_center=sr.get("resistance_center"),
+        rows=features.get("rows") or [],
+    )
+    suppression_threshold = 0.55 * (0.7 if bool(wall_break_pre.get("wall_break_signal")) else 1.0)
+    breakout_suppressed = alignment_score < suppression_threshold or conflict_breakout_suppressed
+    breakout_probability = compute_breakout_probability(
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
+        alignment_score=alignment_score,
+        volume_expansion_score=volume_expansion_score,
+        oi_bias=oi_score,
+        trap_probability=trap_probability,
+        support_zone_pressure=support_zone_pressure,
+        resistance_zone_pressure=resistance_zone_pressure,
+        breakout_strength=breakout_strength,
+        clarity=float(decision.get("clarity", 0.0) or 0.0),
+        directional_force=dict(decision.get("directional_force") or {}),
+        day_trend=day_trend,
+    )
+    trade_readiness = _compute_trade_readiness(
+        clarity=float(decision.get("clarity", 0.0) or 0.0),
+        alignment_score=alignment_score,
+        trap_probability=trap_probability,
+        execution_risk=float(decision.get("execution_risk", 0.0) or 0.0),
+        breakout_suppressed=breakout_suppressed,
+        breakout_probability=max(
+            float(breakout_probability.get("upside", 0.0) or 0.0),
+            float(breakout_probability.get("downside", 0.0) or 0.0),
+        ),
+    )
+    decision["trade_readiness"] = trade_readiness["trade_readiness"]
+    decision["readiness_state"] = trade_readiness["readiness_state"]
+    if float(decision.get("trade_readiness", 0.0) or 0.0) < 25.0:
+        decision["trade_action"] = "WAIT"
+    elif float(decision.get("trade_readiness", 0.0) or 0.0) < 40.0 and str(decision.get("trade_action")) in {"LONG BIAS", "SHORT BIAS"}:
+        decision["trade_action"] = "WAIT"
+    momentum_override = _apply_momentum_override(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        spot=spot,
+        open_price=open_price,
+        day_high=day_high,
+        day_low=day_low,
+        support=support_level,
+        resistance=resistance_level,
+        directional_force=dict(decision.get("directional_force") or {}),
+        clarity=float(decision.get("clarity", 0.0) or 0.0),
+        volume_expansion_score=volume_expansion_score,
+        alignment_score=alignment_score,
+    )
+    decision["trade_action"] = momentum_override["trade_action"]
+    decision["momentum_override_score"] = momentum_override["momentum_score"]
+    decision["momentum_override_explanation"] = momentum_override["momentum_override_explanation"]
 
     current_bias = str(decision.get("bias", "Neutral"))
     current_projection = str(decision.get("projection", "No Confirmed Breakout"))
@@ -905,6 +1347,22 @@ def _build_v2_intelligence(
     decision["structure_bias"] = mss_conflict["structure_bias"]
     decision["transition_phase"] = bool(mss_conflict["transition_phase"])
     decision["conflict_flags"] = list(mss_conflict["conflict_flags"])
+    bull_prob_pct = round(float((decision.get("bull_probability", 0.5) or 0.5) * 100.0), 2)
+    bear_prob_pct = round(float((decision.get("bear_probability", 0.5) or 0.5) * 100.0), 2)
+    directional_force_value = float((decision.get("directional_force") or {}).get("strength", 0.0) or 0.0)
+    if abs(bull_prob_pct - bear_prob_pct) < 30.0 and directional_force_value < 55.0:
+        decision["conflict_market_state"] = "Range Conflict"
+    if sr_breach_state == "resistance_breached":
+        decision["projection"] = "Upside Breakout"
+    elif sr_breach_state == "support_breached":
+        decision["projection"] = "Downside Breakout"
+    if breakout_candidate and str(decision.get("projection", "No Confirmed Breakout")) == "No Confirmed Breakout":
+        decision["projection"] = "Potential Breakout Watch"
+    long_trend = _classify_long_trend(
+        spot=spot,
+        previous_close=previous_close,
+        structure_bias=str(decision.get("structure_bias", stable_bias)),
+    )
     trap_conf_adj = adjust_trap_by_confidence(
         base_trap=float(trap.get("trap_probability_pct", 0) or 0),
         smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
@@ -940,14 +1398,7 @@ def _build_v2_intelligence(
     current_oi_delta = abs(float(atm_row.get("CE_DeltaOI", 0.0) or 0.0)) + abs(
         float(atm_row.get("PE_DeltaOI", 0.0) or 0.0)
     )
-    wall_break = detect_wall_break(
-        spot=spot,
-        support=support_level,
-        resistance=resistance_level,
-        support_center=sr.get("support_center"),
-        resistance_center=sr.get("resistance_center"),
-        rows=rows,
-    )
+    wall_break = wall_break_pre
     regime_shift = detect_regime_shift(
         previous_smoothed_score=float(previous_score or 0.0),
         current_smoothed_score=weighted_score,
@@ -980,7 +1431,7 @@ def _build_v2_intelligence(
     breakout_down = bool(breakout.get("breakout_down")) and (volume_expansion_score > 0.4)
     breakout["breakout_up"] = breakout_up
     breakout["breakout_down"] = breakout_down
-    breakout_suppressed = alignment_score < 0.55 or conflict_breakout_suppressed
+    breakout_suppressed = alignment_score < suppression_threshold or conflict_breakout_suppressed
     strong_bias = abs(weighted_score) > 0.5
     dominant_direction = "up" if weighted_score > 0 else "down" if weighted_score < 0 else "neutral"
 
@@ -1211,6 +1662,19 @@ def _build_v2_intelligence(
         if stable_bias == "Bearish"
         else f"Price balancing between {support_level} and {resistance_level}; wait for cleaner move."
     )
+    decision_explanation = (
+        "Price has moved materially below support. Breakdown confirmation in progress."
+        if bool(material_breach.get("support_broken"))
+        else "Price has moved materially above resistance. Breakout confirmation in progress."
+        if bool(material_breach.get("resistance_broken"))
+        else "Trap risk elevated near key levels."
+        if trap_probability_pct >= 60
+        else summary_line
+    )
+    if momentum_score > 0.7:
+        decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
+    if decision.get("momentum_override_explanation"):
+        decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
     trade_plan = generate_trade_plan(
         bias=stable_bias,
         probability_bull=float((decision.get("bull_probability", 0.5) or 0.5) * 100.0),
@@ -1354,11 +1818,13 @@ def _build_v2_intelligence(
         "oi_imbalance_support_reason": oi_imbalance_trap.get("support_reason"),
         "support_level": support_level,
         "resistance_level": resistance_level,
+        "sr_breach_state": sr_breach_state,
         "support_zone_pressure": round(float(support_zone_pressure), 2),
         "support_zone_state": support_zone_state,
         "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
         "resistance_zone_state": resistance_zone_state,
         "breakout_strength": round(float(breakout_strength), 4),
+        "breakout_candidate": breakout_candidate,
         "rejection_wick_score": rejection_wick_score,
         "time_above_level_ratio": time_above_level_ratio,
         "oi_shift_score": float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
@@ -1369,11 +1835,20 @@ def _build_v2_intelligence(
         "observation_window_seconds": observation_window_seconds,
         "price_momentum_score": round(float(price_momentum_score), 4),
         "alignment_score": round(float(alignment_score), 4),
+        "directional_pressure_score": decision.get("directional_pressure_score"),
+        "dps_adjusted": decision.get("dps_adjusted"),
+        "pressure_state": decision.get("pressure_state"),
+        "trade_action": decision.get("trade_action"),
+        "trade_readiness": decision.get("trade_readiness"),
+        "readiness_state": decision.get("readiness_state"),
+        "momentum_override_score": decision.get("momentum_override_score"),
+        "momentum_override_explanation": decision.get("momentum_override_explanation"),
         "market_structure_score": mss.get("market_structure_score"),
         "mss_score": mss.get("market_structure_score"),
         "structure_state": mss.get("structure_state"),
         "structural_state": decision.get("state") or mss.get("structure_state"),
         "structure_bias": decision.get("structure_bias"),
+        "breakout_probability": breakout_probability,
         "validation_warnings": validation_warnings,
         "engine_contribution_map": engine_debug_map,
         "previous_bias": stability.get("previous_bias"),
@@ -1410,6 +1885,13 @@ def _build_v2_intelligence(
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },
+        "decision_engine": {
+            "directional_pressure_score": decision.get("directional_pressure_score"),
+            "dps_adjusted": decision.get("dps_adjusted"),
+            "pressure_state": decision.get("pressure_state"),
+            "trade_action": decision.get("trade_action"),
+            "pressure_explanation": decision.get("pressure_explanation"),
+        },
         "market_state": {
             "volatility_state": decision.get("volatility_state"),
             "bias": stable_bias,
@@ -1441,12 +1923,17 @@ def _build_v2_intelligence(
             "engine_scores": decision.get("engine_scores", {}),
             "adaptive_mode": "Active" if allow_adaptation else "Base",
             "adaptive_weights": decision.get("weight_distribution", base_weights),
+            "day_trend": day_trend,
+            "long_trend": long_trend,
+            "momentum_score": momentum_score,
+            "momentum_direction": momentum_direction,
             "bias_stability_label": bias_stability.get("bias_stability_label"),
             "bias_stability_score": bias_stability.get("bias_stability_score"),
             "trap_risk": int(trap.get("trap_probability_pct", 0) or 0),
             "reversal_risk": reversal_risk,
             "support": support_level,
             "resistance": resistance_level,
+            "material_breach": material_breach,
             "support_zone_pressure": round(float(support_zone_pressure), 2),
             "support_zone_state": support_zone_state,
             "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
@@ -1454,12 +1941,22 @@ def _build_v2_intelligence(
             "target1": target.get("target_1"),
             "target2": target.get("target_2"),
             "summary_line": summary_line,
+            "decision_explanation": decision_explanation,
+            "sr_breach_state": sr_breach_state,
             "alignment_score": round(float(alignment_score), 4),
+            "pressure_state": decision.get("pressure_state"),
+            "trade_action": decision.get("trade_action"),
+            "trade_readiness": decision.get("trade_readiness"),
+            "readiness_state": decision.get("readiness_state"),
+            "momentum_override_score": decision.get("momentum_override_score"),
+            "momentum_override_explanation": decision.get("momentum_override_explanation"),
+            "breakout_candidate": breakout_candidate,
             "market_structure_score": mss.get("market_structure_score"),
             "mss_score": mss.get("market_structure_score"),
             "structure_state": mss.get("structure_state"),
             "structural_state": decision.get("state") or mss.get("structure_state"),
             "structure_bias": decision.get("structure_bias"),
+            "breakout_probability": breakout_probability,
         },
         "levels": {
             "resistance": {
@@ -1496,6 +1993,9 @@ def _build_v2_intelligence(
             "breakout": breakout,
             "trap": trap,
             "oi_imbalance_trap": oi_imbalance_trap,
+            "material_breach": material_breach,
+            "breakout_candidate": breakout_candidate,
+            "sr_breach_state": sr_breach_state,
             "alignment_filter": {
                 "alignment_score": round(float(alignment_score), 4),
                 "price_momentum": round(float(price_momentum_score), 4),
@@ -1565,6 +2065,9 @@ def _build_v2_intelligence(
             "bias_stability_cycles": int(bias_stability_cycles),
             "market_structure_score_prev": float(mss.get("market_structure_score", 0.0) or 0.0),
             "force_strength": round(float(force_strength), 4),
+            "material_breach": material_breach,
+            "sr_breach_state": sr_breach_state,
+            "breakout_candidate": breakout_candidate,
             "wick_zero_streak": int(wick_zero_streak),
             "oi_near_one_streak": int(oi_near_one_streak),
             "volume_near_one_streak": int(volume_near_one_streak),
@@ -1664,6 +2167,10 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             symbol=symbol,
             expiry=expiry,
             timestamp=records.get("timestamp"),
+            previous_close=records.get("previousClose"),
+            open_price=records.get("OPEN", records.get("open", records.get("dayOpen"))),
+            day_high=records.get("HIGH", records.get("high", records.get("dayHigh"))),
+            day_low=records.get("LOW", records.get("low", records.get("dayLow"))),
             previous_score=previous_score,
             last_10_scores=last_10_scores,
             previous_regime=previous_state.get("regime"),

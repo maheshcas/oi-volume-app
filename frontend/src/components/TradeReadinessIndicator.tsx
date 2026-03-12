@@ -1,5 +1,5 @@
 type TradeReadinessIndicatorProps = {
-  state: "WAIT" | "CAUTION" | "READY";
+  state: string;
   score: number;
 };
 
@@ -7,10 +7,11 @@ export default function TradeReadinessIndicator({
   state,
   score,
 }: TradeReadinessIndicatorProps) {
+  const normalizedState = String(state || "Low");
   const toneClass =
-    state === "READY"
+    normalizedState === "High"
       ? "ia-readiness-ready"
-      : state === "CAUTION"
+      : normalizedState === "Moderate"
         ? "ia-readiness-caution"
         : "ia-readiness-wait";
 
@@ -18,7 +19,7 @@ export default function TradeReadinessIndicator({
     <div className="ia-readiness-wrap ia-emphasis-high">
       <span className="ia-kpi-label">Trade Readiness</span>
       <span className={`ia-readiness-pill ${toneClass}`}>
-        {state} ({Math.round(Math.max(0, Math.min(100, score)))}%)
+        {Math.round(Math.max(0, Math.min(100, score)))}% ? {normalizedState}
       </span>
     </div>
   );

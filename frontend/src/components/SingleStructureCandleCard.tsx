@@ -59,33 +59,16 @@ export default function SingleStructureCandleCard({
   regime,
   support,
   resistance,
-  supportStart,
-  supportEnd,
-  resistanceStart,
-  resistanceEnd,
-  target1,
-  target2,
   width = 1000,
   height = 320,
 }: Props) {
   const supportCenter = typeof support === "number" ? support : null;
   const resistanceCenter = typeof resistance === "number" ? resistance : null;
-  const supportZoneTop =
-    typeof supportStart === "number" && typeof supportEnd === "number"
-      ? Math.max(supportStart, supportEnd)
-      : supportCenter;
-  const supportZoneBot =
-    typeof supportStart === "number" && typeof supportEnd === "number"
-      ? Math.min(supportStart, supportEnd)
-      : supportCenter;
-  const resistanceZoneTop =
-    typeof resistanceStart === "number" && typeof resistanceEnd === "number"
-      ? Math.max(resistanceStart, resistanceEnd)
-      : resistanceCenter;
-  const resistanceZoneBot =
-    typeof resistanceStart === "number" && typeof resistanceEnd === "number"
-      ? Math.min(resistanceStart, resistanceEnd)
-      : resistanceCenter;
+  const zoneHalfWidth = 50;
+  const supportZoneTop = typeof supportCenter === "number" ? supportCenter + zoneHalfWidth : null;
+  const supportZoneBot = typeof supportCenter === "number" ? supportCenter - zoneHalfWidth : null;
+  const resistanceZoneTop = typeof resistanceCenter === "number" ? resistanceCenter + zoneHalfWidth : null;
+  const resistanceZoneBot = typeof resistanceCenter === "number" ? resistanceCenter - zoneHalfWidth : null;
 
   const trapRisk = inferTrapRisk(subtitle);
   const trapType = title ?? subtitle?.replace(/^Trap Zone:\s*/i, "") ?? "-";
@@ -93,21 +76,12 @@ export default function SingleStructureCandleCard({
   const mssScore = bias ?? "-";
 
   const option = useMemo(() => {
-    const srGap =
-      typeof supportCenter === "number" && typeof resistanceCenter === "number"
-        ? resistanceCenter - supportCenter
-        : 0;
-    const PAD = Math.max(80, srGap * 0.12);
-    const lowerBase =
-      typeof supportZoneBot === "number"
-        ? supportZoneBot
-        : Math.min(low, open, close, spot, target1 ?? Number.POSITIVE_INFINITY, target2 ?? Number.POSITIVE_INFINITY);
-    const upperBase =
-      typeof resistanceZoneTop === "number"
-        ? resistanceZoneTop
-        : Math.max(high, open, close, spot, target1 ?? Number.NEGATIVE_INFINITY, target2 ?? Number.NEGATIVE_INFINITY);
-    const yMin = lowerBase - PAD;
-    const yMax = upperBase + PAD;
+    const padding = 60;
+    const minBound = Math.min(low, supportCenter ?? spot, spot) - padding;
+    const maxBound = Math.max(high, resistanceCenter ?? spot, spot) + padding;
+    console.log("SPC bounds", { low, high, spot, support: supportCenter, resistance: resistanceCenter, minBound, maxBound });
+    const yMin = minBound;
+    const yMax = maxBound;
     const isBearish = spot < open;
     const chartHeight = Math.max(320, height) - 44;
     const chartInnerWidth = width - 70 - 116;
@@ -574,8 +548,6 @@ export default function SingleStructureCandleCard({
     supportCenter,
     supportZoneBot,
     supportZoneTop,
-    target1,
-    target2,
   ]);
 
   return (
@@ -731,3 +703,7 @@ export default function SingleStructureCandleCard({
     </div>
   );
 }
+
+
+
+

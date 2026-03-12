@@ -21,17 +21,28 @@ type DashboardLayoutProps = {
     explanation: string;
     support: string;
     resistance: string;
+    majorSupport?: string;
+    majorResistance?: string;
   };
   decisionLayer: ReactNode;
   keyLevels: {
     support: string;
     resistance: string;
+    majorSupport?: string;
+    majorResistance?: string;
+    breakoutTrigger?: string;
     breakAbovePrimary: string;
     breakAboveExtended: string;
     breakBelowPrimary: string;
     breakBelowExtended: string;
     trapRisk: string;
     watchNote: string;
+    breakoutProbability?: {
+      upside?: number;
+      downside?: number;
+      upside_state?: string;
+      downside_state?: string;
+    };
   };
   structure: {
     candles: CandlePoint[];
@@ -58,6 +69,9 @@ type DashboardLayoutProps = {
     regime?: string;
     plan: string;
     trapRisk: string;
+    bullishTrigger?: string;
+    bearishTrigger?: string;
+    invalidation?: string;
   };
   trap: {
     trap_probability: number;
@@ -112,12 +126,16 @@ export default function DashboardLayout({
         <KeyLevelsCard
           support={keyLevels.support}
           resistance={keyLevels.resistance}
+          majorSupport={keyLevels.majorSupport}
+          majorResistance={keyLevels.majorResistance}
+          breakoutTrigger={keyLevels.breakoutTrigger}
           breakAbovePrimary={keyLevels.breakAbovePrimary}
           breakAboveExtended={keyLevels.breakAboveExtended}
           breakBelowPrimary={keyLevels.breakBelowPrimary}
           breakBelowExtended={keyLevels.breakBelowExtended}
           trapRisk={keyLevels.trapRisk}
           watchNote={keyLevels.watchNote}
+          breakoutProbability={keyLevels.breakoutProbability}
         />
       </div>
 
@@ -142,6 +160,18 @@ export default function DashboardLayout({
           regime={structure.regime}
           trapZoneLabel={structure.trapZoneLabel}
           volumeLabel={structure.volumeLabel}
+        />
+      </div>
+
+      <div className="ia-layout-playbook">
+        <TradePlanCard
+          bias={tradePlan.bias}
+          regime={tradePlan.regime}
+          plan={tradePlan.plan}
+          trapRisk={tradePlan.trapRisk}
+          bullishTrigger={tradePlan.bullishTrigger}
+          bearishTrigger={tradePlan.bearishTrigger}
+          invalidation={tradePlan.invalidation}
         />
       </div>
 
@@ -182,14 +212,8 @@ export default function DashboardLayout({
         </div>
       </div>
 
-      <div className="ia-layout-playbook">
-        <TradePlanCard
-          bias={tradePlan.bias}
-          regime={tradePlan.regime}
-          plan={tradePlan.plan}
-          trapRisk={tradePlan.trapRisk}
-        />
-      </div>
     </div>
   );
 }
+
+

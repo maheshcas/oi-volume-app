@@ -125,6 +125,8 @@ type IntelligenceResponse = {
     target1?: number;
     target2?: number;
     summary_line?: string;
+    pressure_state?: string;
+    trade_action?: string;
     state?: string;
     primary_bias?: "Bullish" | "Bearish" | "Neutral";
     composite_score?: number;
@@ -166,11 +168,20 @@ type IntelligenceResponse = {
     };
     day_trend?: "Bullish" | "Bearish" | "Neutral";
     long_trend?: "Bullish" | "Bearish" | "Neutral";
+    trade_readiness?: number;
+    readiness_state?: "High" | "Moderate" | "Low" | string;
+    breakout_probability?: {
+      upside?: number;
+      downside?: number;
+      upside_state?: string;
+      downside_state?: string;
+    };
   };
   levels?: {
     support?: {
       strike?: number;
       score?: number;
+      major?: number | null;
       range?: [number | null, number | null] | null;
       zone_pressure?: number;
       zone_state?: string;
@@ -178,6 +189,7 @@ type IntelligenceResponse = {
     resistance?: {
       strike?: number;
       score?: number;
+      major?: number | null;
       range?: [number | null, number | null] | null;
       zone_pressure?: number;
       zone_state?: string;
@@ -257,6 +269,13 @@ type IntelligenceResponse = {
     call_wall?: number | null;
   };
   market_insight?: string[];
+  decision_engine?: {
+    directional_pressure_score?: number;
+    dps_adjusted?: number;
+    pressure_state?: string;
+    trade_action?: string;
+    pressure_explanation?: string;
+  };
 };
 
 type UiAlert = {
@@ -314,9 +333,9 @@ function classifyAlertSeverity(message: string): "info" | "watch" | "high" {
 
 function alertPriority(item: UiAlert): number {
   const text = String(item.message || "").toLowerCase();
-  if (text.includes("trap")) return 1;
-  if (text.includes("breakout") || text.includes("breakdown")) return 2;
-  if (text.includes("target") || text.includes("expansion")) return 3;
+  if (text.includes("breakout") || text.includes("breakdown")) return 1;
+  if (text.includes("trap")) return 2;
+  if (text.includes("volume") || text.includes("spike")) return 3;
   return 4;
 }
 
@@ -409,6 +428,40 @@ function normalizeRegimeLabel(value: string | null | undefined, volatilityState:
     lower.includes("transition")
   ) {
     return volatilityState === "Stable" ? "Range Day" : "Trend Day";
+  }
+  return text;
+}
+
+function normalizeTrendDisplay(value: string | null | undefined, displacement: number | null | undefined) {
+  const text = String(value ?? "Neutral").trim().replace(/([a-z])([A-Z])/g, "$1 $2");
+  if (text !== "Neutral") return text;
+  if (typeof displacement === "number") {
+    if (displacement > 0) return "Neutral Up";
+    if (displacement < 0) return "Neutral Down";
+  }
+  return "Neutral";
+}
+
+function normalizeResistanceAlertLabel(
+  message: string,
+  activeResistance: number | null | undefined,
+  majorResistance: number | null | undefined,
+  callWall: number | null | undefined
+) {
+  const text = String(message || '').trim();
+  const lower = text.toLowerCase();
+  const activeTxt = typeof activeResistance === 'number' ? activeResistance.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : null;
+  const majorTxt = typeof majorResistance === 'number' ? majorResistance.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : null;
+  const callWallTxt = typeof callWall === 'number' ? callWall.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : null;
+
+  if (callWallTxt && (lower.includes('call wall') || text.includes(callWallTxt))) {
+    return lower.startsWith('call wall:') ? text : `Call Wall: ${text}`;
+  }
+  if (majorTxt && majorTxt !== activeTxt && text.includes(majorTxt)) {
+    return lower.startsWith('major resistance:') ? text : `Major Resistance: ${text}`;
+  }
+  if (activeTxt && (text.includes(activeTxt) || lower.includes('breakout above')) && lower.includes('resistance')) {
+    return lower.startsWith('active resistance:') ? text : `Active Resistance: ${text}`;
   }
   return text;
 }
@@ -1733,6 +1786,8 @@ export default function App() {
   const displayRegime = normalizeRegimeLabel(playbook?.regime, displayVolatilityState);
   const displayDayTrend = intelligence?.market_state?.day_trend;
   const displayLongTrend = intelligence?.market_state?.long_trend;
+  const dayTrendDisplay = normalizeTrendDisplay(displayDayTrend, typeof spotValue === "number" && typeof dayOpenValue === "number" ? spotValue - dayOpenValue : null);
+  const longTrendDisplay = normalizeTrendDisplay(displayLongTrend, typeof spotValue === "number" && typeof indexRow?.previousClose === "number" ? spotValue - indexRow.previousClose : null);
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
   const driftState = intelligence?.market_state?.drift ?? "Stable";
@@ -1785,6 +1840,14 @@ export default function App() {
         : pressureSmoothed < 75
           ? "Buy Pressure"
           : "Strong Buy Pressure";
+  const displayReadinessScore = Number(intelligence?.market_state?.trade_readiness ?? readinessDisplay.score ?? 0);
+  const displayReadinessState =
+    intelligence?.market_state?.readiness_state ??
+    (readinessDisplay.state === "READY" ? "High" : readinessDisplay.state === "CAUTION" ? "Moderate" : "Low");
+  const directionalPressureLabel =
+    intelligence?.decision_engine?.pressure_state ??
+    intelligence?.market_state?.pressure_state ??
+    pressureStateLabel;
   const clarityRaw = Number(intelligence?.market_state?.clarity ?? displayConfidence ?? 0);
   const clarityNorm = clarityRaw > 1 ? clarityRaw / 100 : clarityRaw;
   const readinessRaw = Math.max(
@@ -1810,6 +1873,22 @@ export default function App() {
   const derivedBreakAboveExtended = Number(displayResistance ?? 0) + projectedMovePts * 1.0;
   const derivedBreakBelowPrimary = Number(displaySupport ?? 0) - projectedMovePts * 0.6;
   const derivedBreakBelowExtended = Number(displaySupport ?? 0) - projectedMovePts * 1.0;
+  const strikeStep = useMemo(() => {
+    const strikes = displayRows
+      .map((row) => Number(row.strike))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b);
+    if (strikes.length < 2) return 100;
+    let minStep = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < strikes.length; i += 1) {
+      const diff = Math.abs(strikes[i] - strikes[i - 1]);
+      if (diff > 0 && diff < minStep) minStep = diff;
+    }
+    return Number.isFinite(minStep) ? minStep : 100;
+  }, [displayRows]);
+  const breakoutTrigger =
+    typeof displayResistance === "number" ? displayResistance + strikeStep : null;
+
   const canonicalBreakAbovePrimary =
     displayPrimaryBias === "Bullish" && typeof displayTarget1 === "number" ? displayTarget1 : derivedBreakAbovePrimary;
   const canonicalBreakAboveExtended =
@@ -1958,8 +2037,9 @@ export default function App() {
       conflictState={conflictState}
       pressureScore={pressureSmoothed}
       pressureStateLabel={pressureStateLabel}
-      readinessState={readinessDisplay.state}
-      readinessScore={readinessDisplay.score}
+      directionalPressureLabel={directionalPressureLabel}
+      readinessState={displayReadinessState}
+      readinessScore={displayReadinessScore}
       institutionalStructure={institutionalStructure}
       marketInsight={marketInsights}
     />
@@ -2086,7 +2166,20 @@ export default function App() {
 
   const conflictFlags = intelligence?.market_state?.conflict_flags ?? [];
   const breakoutSuppressed = !!intelligence?.signals?.alignment_filter?.breakout_suppressed;
-  const primaryAlert = prioritizedAlerts[0]?.message ?? "";
+  const displayAlerts = useMemo(
+    () =>
+      prioritizedAlerts.map((item) => ({
+        ...item,
+        message: normalizeResistanceAlertLabel(
+          item.message,
+          typeof displayResistance === 'number' ? displayResistance : null,
+          typeof intelligence?.levels?.resistance?.major === 'number' ? intelligence.levels.resistance.major : null,
+          typeof intelligence?.institutional_structure?.call_wall === 'number' ? intelligence.institutional_structure.call_wall : null
+        ),
+      })),
+    [prioritizedAlerts, displayResistance, intelligence?.levels?.resistance?.major, intelligence?.institutional_structure?.call_wall]
+  );
+  const primaryAlert = displayAlerts[0]?.message ?? "";
   const hasMaterialBoundaryBreak = boundaryDisplayState !== "None";
   const hasConflict =
     !hasMaterialBoundaryBreak && (
@@ -2548,8 +2641,8 @@ export default function App() {
           phase={intradayEngine.sessionPhase}
           projection={projectionState}
           showProjection={!MARKETING_MODE}
-          dayTrend={displayDayTrend}
-          longTrend={displayLongTrend}
+          dayTrend={dayTrendDisplay}
+          longTrend={longTrendDisplay}
         />
 
         <DashboardLayout
@@ -2563,12 +2656,16 @@ export default function App() {
           keyLevels={{
             support: formatNumber(displaySupport),
             resistance: formatNumber(displayResistance),
+            majorSupport: formatNumber(intelligence?.levels?.support?.major ?? null),
+            majorResistance: formatNumber(intelligence?.levels?.resistance?.major ?? null),
+            breakoutTrigger: formatNumber(breakoutTrigger),
             breakAbovePrimary: formatNumber(canonicalBreakAbovePrimary),
             breakAboveExtended: formatNumber(canonicalBreakAboveExtended),
             breakBelowPrimary: formatNumber(canonicalBreakBelowPrimary),
             breakBelowExtended: formatNumber(canonicalBreakBelowExtended),
             trapRisk: `${displayTrapLevel} (${Math.round(Number(displayTrapRiskPct ?? 0))}%)`,
             watchNote: keyWatchNote,
+            breakoutProbability: intelligence?.market_state?.breakout_probability,
           }}
           structure={{
             candles: structuralCandles,
@@ -2600,6 +2697,13 @@ export default function App() {
             regime: displayRegime,
             plan: String(playbookPlan),
             trapRisk: String(displayTrapLevel),
+            bullishTrigger: typeof displayResistance === "number"
+              ? `Acceptance above active resistance ${formatNumber(displayResistance)}.`
+              : 'Acceptance above active resistance.',
+            bearishTrigger: typeof displaySupport === "number"
+              ? `Break below active support ${formatNumber(displaySupport)}.`
+              : 'Break below active support.',
+            invalidation: 'Range compression breaks.',
           }}
           decisionLayer={decisionLayerContent}
           trap={{
@@ -2610,7 +2714,7 @@ export default function App() {
             suggested_action: trapSuggestedAction,
             show_affected_level: showTrapAffectedLevel,
           }}
-          alerts={prioritizedAlerts}
+          alerts={displayAlerts}
         />
 
         <div className="ia-section-gap">
@@ -2818,6 +2922,8 @@ export default function App() {
                       key={row.strike}
                       className={[
                         String(row.strike) === String(nearestSpotStrike) ? "spot-row" : "",
+                        String(row.strike) === String(displayResistance) ? "active-resistance-row" : "",
+                        String(row.strike) === String(displaySupport) ? "active-support-row" : "",
                         isResistance ? "resistance-row" : "",
                         isSupport ? "support-row" : "",
                         isBattle ? "battle-row" : "",
@@ -2894,3 +3000,6 @@ export default function App() {
     </div>
   );
 }
+
+
+

@@ -70,6 +70,9 @@ def run_conflict_resolver(
     support_strength: float,
     resistance_strength: float,
     alignment_score: float,
+    support_zone_pressure: float = 0.0,
+    resistance_zone_pressure: float = 0.0,
+    material_breach: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Conflict resolver layer used before final decision output.
@@ -83,6 +86,17 @@ def run_conflict_resolver(
     support_strength = _clamp(support_strength, 0.0, 1.0)
     resistance_strength = _clamp(resistance_strength, 0.0, 1.0)
     alignment_score = _clamp(alignment_score, 0.0, 1.0)
+    support_zone_pressure = _clamp(support_zone_pressure, 0.0, 100.0)
+    resistance_zone_pressure = _clamp(resistance_zone_pressure, 0.0, 100.0)
+
+    breach = material_breach or {}
+    support_broken = bool(breach.get("support_broken"))
+    resistance_broken = bool(breach.get("resistance_broken"))
+    has_material_breach = support_broken or resistance_broken
+    effective_trap_probability = trap_probability * 0.6 if has_material_breach else trap_probability
+    adjusted_breakout_strength = breakout_strength
+    if has_material_breach and max(support_zone_pressure, resistance_zone_pressure) > 50:
+        adjusted_breakout_strength = _clamp(breakout_strength * 1.2, 0.0, 1.0)
 
     normalized_regime = str(regime or "").strip().lower()
     suppressed_signals: list[str] = []
@@ -98,19 +112,21 @@ def run_conflict_resolver(
         conflict_flags.append("low_confidence_suppression")
 
     # Rule 2 - Range regime filter
-    if normalized_regime == "range" or "range" in normalized_regime:
+    if not has_material_breach and (normalized_regime == "range" or "range" in normalized_regime):
         if "breakout" not in suppressed_signals:
             suppressed_signals.append("breakout")
         projection = "No Confirmed Breakout"
         market_state = "Range"
         conflict_flags.append("range_regime_filter")
+    elif has_material_breach and (normalized_regime == "range" or "range" in normalized_regime):
+        conflict_flags.append("range_regime_relaxed_on_breach")
 
     # Rule 3 - High trap risk
-    if trap_probability > 60:
+    if effective_trap_probability > 60:
         if "breakout" not in suppressed_signals:
             suppressed_signals.append("breakout")
         market_state = "High Trap Risk"
-        conflict_flags.append("high_trap_risk_filter")
+        conflict_flags.append("high_trap_risk_filter" if not has_material_breach else "high_trap_risk_relaxed_on_breach")
 
     # Rule 4 - Strong support + resistance compression
     if support_strength > 0.6 and resistance_strength > 0.6:
@@ -127,8 +143,8 @@ def run_conflict_resolver(
 
     # Rule 6 - Final projection logic
     if (
-        breakout_strength > 0.65
-        and trap_probability < 40
+        adjusted_breakout_strength > 0.65
+        and effective_trap_probability < 40
         and alignment_score > 0.6
         and confidence > 35
         and "breakout" not in suppressed_signals
@@ -144,4 +160,6 @@ def run_conflict_resolver(
         "projection": projection,
         "suppressed_signals": suppressed_signals,
         "conflict_flags": conflict_flags,
+        "adjusted_breakout_strength": round(adjusted_breakout_strength, 4),
+        "effective_trap_probability": round(effective_trap_probability, 2),
     }

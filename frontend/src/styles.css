@@ -2471,7 +2471,7 @@ tbody tr:hover {
   font-weight: 700;
 }
 
-.ia-bias-wrap { margin-bottom: 10px; }
+.ia-bias-wrap { margin: 0; display: flex; align-items: center; }
 
 .ia-decision-topbar {
   display: flex;
@@ -2496,6 +2496,14 @@ tbody tr:hover {
   display: grid;
   gap: 8px;
   justify-items: end;
+}
+
+.ia-decision-pressure-chip-wrap {
+  justify-self: end;
+}
+
+.ia-decision-pressure-chip {
+  font-weight: 700;
 }
 
 .ia-decision-side-label,
@@ -2895,6 +2903,41 @@ tbody tr:hover {
 }
 
 @media (max-width: 960px) {
+  .ia-decision-hero {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .ia-decision-header-grid {
+    gap: 10px;
+  }
+
+  .ia-decision-header-main {
+    gap: 6px;
+  }
+
+  .ia-decision-header-side {
+    gap: 6px;
+  }
+
+  .ia-bias-pill-hero {
+    padding: 8px 14px;
+    font-size: 16px;
+  }
+
+  .ia-decision-range {
+    gap: 4px;
+  }
+
+  .ia-decision-summary,
+  .ia-market-insight-inline {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .ia-market-insight-strip {
+    padding: 10px 12px;
+  }
   .lp-hero-grid {
     grid-template-columns: 1fr;
   }
@@ -3623,4 +3666,76 @@ tbody tr:hover {
 
 .ia-key-footer-grid-single {
   grid-template-columns: 1fr;
+}
+
+.ia-key-major-label {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #8fa4b9;
+}
+
+
+
+.ia-market-insight-inline {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #d6e0ee;
+}
+
+.ia-playbook-line {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.ia-playbook-line:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.ia-playbook-trigger {
+  color: #e2e8f0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+
+.active-support-row {
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.45);
+}
+
+.active-resistance-row {
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.45);
+}
+
+.ia-decision-range {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.ia-decision-hero .ia-card-title-row {
+  margin-bottom: 4px;
+}
+
+
+
+.ia-breakout-probability-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ia-key-breakout-probability {
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ia-key-breakout-probability-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
 }

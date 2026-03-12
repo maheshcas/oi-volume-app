@@ -1,16 +1,25 @@
 type KeyLevelsCardProps = {
+  majorSupport?: string;
+  majorResistance?: string;
   support: string;
   resistance: string;
+  breakoutTrigger?: string;
   breakAbovePrimary: string;
   breakAboveExtended: string;
   breakBelowPrimary: string;
   breakBelowExtended: string;
   trapRisk: string;
   watchNote: string;
+  breakoutProbability?: {
+    upside?: number;
+    downside?: number;
+    upside_state?: string;
+    downside_state?: string;
+  };
 };
 
 function parseNumeric(value: string) {
-  const cleaned = String(value ?? "").replace(/,/g, "").trim();
+  const cleaned = String(value ?? '').replace(/,/g, '').trim();
   const num = Number(cleaned);
   return Number.isFinite(num) ? num : null;
 }
@@ -20,7 +29,7 @@ function formatRoundedZone(value: string) {
   if (num === null) return value;
   const lower = Math.floor(num / 50) * 50;
   const upper = Math.ceil(num / 50) * 50;
-  return `${lower.toLocaleString("en-IN")}-${upper.toLocaleString("en-IN")}`;
+  return `${lower.toLocaleString('en-IN')}-${upper.toLocaleString('en-IN')}`;
 }
 
 export default function KeyLevelsCard(props: KeyLevelsCardProps) {
@@ -30,12 +39,33 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
       <div className="ia-key-levels-stack">
         <div className="ia-levels-top-grid">
           <div className="ia-key-level-block">
-            <div className="ia-kpi-label">Support</div>
+            <div className="ia-kpi-label">Active Support</div>
             <div className="ia-level-support ia-emphasis-high">{props.support}</div>
+            {props.majorSupport && props.majorSupport !== props.support ? (
+              <div className="ia-kpi-label ia-key-major-label">Major Support: {props.majorSupport}</div>
+            ) : null}
           </div>
           <div className="ia-key-level-block">
-            <div className="ia-kpi-label">Resistance</div>
+            <div className="ia-kpi-label">Active Resistance</div>
             <div className="ia-level-resistance ia-emphasis-high">{props.resistance}</div>
+            {props.breakoutTrigger && props.breakoutTrigger !== props.resistance ? (
+              <div className="ia-kpi-label ia-key-major-label">Breakout Trigger: {props.breakoutTrigger}</div>
+            ) : null}
+            {props.majorResistance && props.majorResistance !== props.resistance ? (
+              <div className="ia-kpi-label ia-key-major-label">Major Resistance: {props.majorResistance}</div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="ia-key-breakout-probability">
+          <div className="ia-kpi-label">Breakout Probability</div>
+          <div className="ia-key-breakout-probability-grid">
+            <span className="ia-status-chip">
+              Down: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.downside ?? 0)}% (${props.breakoutProbability.downside_state ?? 'Low'})` : '-'}
+            </span>
+            <span className="ia-status-chip">
+              Up: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.upside ?? 0)}% (${props.breakoutProbability.upside_state ?? 'Low'})` : '-'}
+            </span>
           </div>
         </div>
 

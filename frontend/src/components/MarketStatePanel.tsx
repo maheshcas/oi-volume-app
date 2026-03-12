@@ -41,6 +41,12 @@ function meterClass(kind: "force" | "clarity" | "risk", value: number) {
   return "ia-meter-bad";
 }
 
+function forceLabel(bullForce: number, bearForce: number) {
+  if (bearForce > bullForce) return "Bearish Bias";
+  if (bullForce > bearForce) return "Bullish Bias";
+  return "Neutral Bias";
+}
+
 export default function MarketStatePanel(props: MarketStatePanelProps) {
   const force = Math.max(0, Math.min(100, props.directionalForce.strength));
   const bullForce = Math.max(0, Math.min(100, props.directionalForce.bull));
@@ -55,20 +61,36 @@ export default function MarketStatePanel(props: MarketStatePanelProps) {
     <div className="ia-card ia-market-state">
       <h3 className="ia-card-title">Market State</h3>
       <div className="ia-state-label">{props.state || `${props.bias} Bias`}</div>
+
       <div className="ia-state-meta">
-        <span>Primary Bias: {props.bias}</span>
-        <span>Micro Bias: {props.microBias}</span>
-        <span>Framework: {props.frameworkStatus}</span>
-        <span>Drift: {props.drift}</span>
+        <div className="ia-state-meta-item">
+          <span className="ia-state-meta-key">Primary Bias</span>
+          <span className="ia-state-meta-value">{props.bias}</span>
+        </div>
+        <div className="ia-state-meta-item">
+          <span className="ia-state-meta-key">Micro Bias</span>
+          <span className="ia-state-meta-value">{props.microBias}</span>
+        </div>
+        <div className="ia-state-meta-item">
+          <span className="ia-state-meta-key">Framework</span>
+          <span className="ia-state-meta-value">{props.frameworkStatus}</span>
+        </div>
+        <div className="ia-state-meta-item">
+          <span className="ia-state-meta-key">Drift</span>
+          <span className="ia-state-meta-value">{props.drift}</span>
+        </div>
       </div>
+
       <div className="ia-kpi-label ia-state-summary">{props.summaryLine}</div>
 
       <div className="ia-meters">
         <div className="ia-meter-row">
-          <span>Directional Force</span>
-          <span>
-            {force}%{props.retailMapping.force ? ` (${props.retailMapping.force})` : ""}
-          </span>
+          <div className="ia-meter-head">
+            <span>Directional Force</span>
+            <span>
+              {force}%{props.retailMapping.force ? ` (${props.retailMapping.force})` : ""}
+            </span>
+          </div>
           <div className="ia-meter-track">
             <div
               className={`ia-meter-fill ${
@@ -77,15 +99,16 @@ export default function MarketStatePanel(props: MarketStatePanelProps) {
               style={{ width: `${dominantForce}%` }}
             />
           </div>
-          <div className="ia-force-label">
-            {isBearDominant ? "Bearish Bias" : isBullDominant ? "Bullish Bias" : "Neutral Bias"}
-          </div>
+          <div className="ia-force-label">{forceLabel(bullForce, bearForce)}</div>
         </div>
+
         <div className="ia-meter-row">
-          <span>Structural Clarity</span>
-          <span>
-            {clarity.toFixed(0)}%{props.retailMapping.clarity ? ` (${props.retailMapping.clarity})` : ""}
-          </span>
+          <div className="ia-meter-head">
+            <span>Structural Clarity</span>
+            <span>
+              {clarity.toFixed(0)}%{props.retailMapping.clarity ? ` (${props.retailMapping.clarity})` : ""}
+            </span>
+          </div>
           <div className="ia-meter-track">
             <div
               className={`ia-meter-fill ${meterClass("clarity", clarity)} ${
@@ -95,11 +118,14 @@ export default function MarketStatePanel(props: MarketStatePanelProps) {
             />
           </div>
         </div>
+
         <div className="ia-meter-row">
-          <span>Execution Risk</span>
-          <span>
-            {risk.toFixed(0)}%{props.retailMapping.risk ? ` (${props.retailMapping.risk})` : ""}
-          </span>
+          <div className="ia-meter-head">
+            <span>Execution Risk</span>
+            <span>
+              {risk.toFixed(0)}%{props.retailMapping.risk ? ` (${props.retailMapping.risk})` : ""}
+            </span>
+          </div>
           <div className="ia-meter-track">
             <div className={`ia-meter-fill ${meterClass("risk", risk)}`} style={{ width: `${risk}%` }} />
           </div>
@@ -109,10 +135,10 @@ export default function MarketStatePanel(props: MarketStatePanelProps) {
       <details className="ia-struct-details">
         <summary>Structural Diagnostics</summary>
         <div className="ia-struct-grid">
-          <div>OI - {props.engineContributions.oi >= 0 ? "+" : ""}{props.engineContributions.oi.toFixed(3)}</div>
-          <div>Volume - {props.engineContributions.volume >= 0 ? "+" : ""}{props.engineContributions.volume.toFixed(3)}</div>
-          <div>Breakout - {props.engineContributions.breakout >= 0 ? "+" : ""}{props.engineContributions.breakout.toFixed(3)}</div>
-          <div>Writer - {props.engineContributions.writer >= 0 ? "+" : ""}{props.engineContributions.writer.toFixed(3)}</div>
+          <div>OI: {props.engineContributions.oi >= 0 ? "+" : ""}{props.engineContributions.oi.toFixed(3)}</div>
+          <div>Volume: {props.engineContributions.volume >= 0 ? "+" : ""}{props.engineContributions.volume.toFixed(3)}</div>
+          <div>Breakout: {props.engineContributions.breakout >= 0 ? "+" : ""}{props.engineContributions.breakout.toFixed(3)}</div>
+          <div>Writer: {props.engineContributions.writer >= 0 ? "+" : ""}{props.engineContributions.writer.toFixed(3)}</div>
         </div>
       </details>
     </div>
