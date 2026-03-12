@@ -1255,6 +1255,8 @@ button:hover {
   cursor: pointer;
 }
 
+
+
 .price-chart-shell {
   display: grid;
   gap: 8px;
@@ -2007,8 +2009,7 @@ tbody tr:hover {
   grid-template-areas:
     "decision levels trap"
     "decisionlayer levels trap"
-    "structure structure playbook"
-    "structure structure advanced";
+    "structure structure playbook";
 }
 
 .ia-layout-decision { grid-area: decision; }
@@ -2472,6 +2473,41 @@ tbody tr:hover {
 
 .ia-bias-wrap { margin-bottom: 10px; }
 
+.ia-decision-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ia-decision-header-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.ia-decision-header-main {
+  min-width: 0;
+}
+
+.ia-decision-header-side {
+  min-width: 172px;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.ia-decision-side-label,
+.ia-decision-context,
+.ia-decision-subnote {
+  font-size: 12px;
+}
+
+.ia-decision-context {
+  margin-top: -2px;
+}
+
 .ia-vol-chip {
   display: inline-flex;
   align-items: center;
@@ -2518,12 +2554,15 @@ tbody tr:hover {
 .ia-decision-hero {
   border-color: rgba(110, 160, 255, 0.25);
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
+  display: grid;
+  gap: 12px;
 }
 
 .ia-decision-summary {
-  margin: 8px 0 10px;
+  margin: 6px 0 0;
   font-size: 14px;
   color: #e2ebf3;
+  line-height: 1.5;
 }
 
 .ia-confidence-wrap {
@@ -2998,6 +3037,10 @@ tbody tr:hover {
   gap: 8px;
 }
 
+.ia-status-badges-compact {
+  margin-top: 0;
+}
+
 .ia-status-chip {
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
@@ -3009,6 +3052,11 @@ tbody tr:hover {
 
 .ia-pressure-wrap {
   margin-top: 8px;
+}
+
+.ia-decision-section {
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .ia-readiness-wrap {
@@ -3161,6 +3209,16 @@ tbody tr:hover {
   font-size: 12px;
   font-weight: 600;
   padding: 4px 10px;
+}
+
+.ia-decision-toggle {
+  justify-self: start;
+}
+
+.ia-decision-metrics {
+  display: grid;
+  gap: 10px;
+  padding-top: 6px;
 }
 
 .ia-struct-toggle {
@@ -3389,8 +3447,7 @@ tbody tr:hover {
       "levels"
       "trap"
       "structure"
-      "playbook"
-      "advanced";
+      "playbook";
   }
 
   .ia-decision-banner {
@@ -3421,6 +3478,17 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
+  .ia-decision-topbar,
+  .ia-decision-header-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .ia-decision-header-side {
+    min-width: 0;
+    justify-items: start;
+  }
+
   .ia-levels-grid {
     grid-template-columns: 1fr;
   }
@@ -3447,6 +3515,14 @@ tbody tr:hover {
 
   .ia-live-badge {
     margin-left: 0;
+  }
+
+  .ia-state-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-meter-head {
+    font-size: 12px;
   }
 
   .ia-banner-group {
@@ -3500,7 +3576,6 @@ tbody tr:hover {
 
 
 .ia-market-insight-strip {
-  margin-top: 12px;
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid rgba(120, 160, 255, 0.18);

@@ -150,6 +150,22 @@ type IntelligenceResponse = {
       bear?: number;
       strength?: number;
     };
+    execution_risk?: number;
+    micro_bias?: "Bullish" | "Bearish" | "Neutral";
+    framework_status?: string;
+    engine_contributions?: {
+      oi?: number;
+      volume?: number;
+      breakout?: number;
+      writer?: number;
+    };
+    retail_mapping?: {
+      force?: string;
+      clarity?: string;
+      risk?: string;
+    };
+    day_trend?: "Bullish" | "Bearish" | "Neutral";
+    long_trend?: "Bullish" | "Bearish" | "Neutral";
   };
   levels?: {
     support?: {
@@ -173,6 +189,12 @@ type IntelligenceResponse = {
   signals?: {
     oi?: {
       oi_velocity_score?: number;
+    };
+    sr?: {
+      support_range?: [number | null, number | null] | null;
+      resistance_range?: [number | null, number | null] | null;
+      support_center?: number | null;
+      resistance_center?: number | null;
     };
     breakout?: {
       breakout_strength?: number;
@@ -577,11 +599,18 @@ export default function App() {
     score: number;
     state: "WAIT" | "CAUTION" | "READY";
   }>({ score: 0, state: "WAIT" });
+  const [boundaryDisplayState, setBoundaryDisplayState] = useState<
+    "None" | "Support Broken" | "Resistance Broken" | "Breakdown Confirmed" | "Breakout Confirmed"
+  >("None");
   const readinessPendingRef = useRef<{ score: number; state: "WAIT" | "CAUTION" | "READY"; count: number }>({
     score: 0,
     state: "WAIT",
     count: 0,
   });
+  const boundaryPendingRef = useRef<{
+    state: "None" | "Support Broken" | "Resistance Broken";
+    count: number;
+  }>({ state: "None", count: 0 });
   const pendingBadgeRef = useRef({
     structure: { value: "-", count: 0 },
     pressure: { value: "Stable", count: 0 },
@@ -1634,8 +1663,14 @@ export default function App() {
     intelligence?.levels?.resistance?.strike ??
     intelligence?.market_state?.resistance ??
     resistanceStrike;
-  const supportRangeRaw = intelligence?.levels?.support?.range;
-  const resistanceRangeRaw = intelligence?.levels?.resistance?.range;
+  const supportRangeRaw =
+    intelligence?.signals?.sr?.support_range ??
+    intelligence?.levels?.support?.range ??
+    null;
+  const resistanceRangeRaw =
+    intelligence?.signals?.sr?.resistance_range ??
+    intelligence?.levels?.resistance?.range ??
+    null;
   const activeSupportStart =
     Array.isArray(supportRangeRaw) && supportRangeRaw.length === 2 && supportRangeRaw[0] !== null
       ? Number(supportRangeRaw[0])
@@ -1660,12 +1695,14 @@ export default function App() {
       : typeof displayResistance === "number"
         ? displayResistance
         : null;
-  const displayDecisionText = buildDecisionSummary(
-    displayBias,
-    displaySupport,
-    displayResistance,
-    intelligence?.market_state?.summary_line ?? breakoutModel.signal
-  );
+  const displayDecisionText =
+    intelligence?.market_state?.summary_line ??
+    buildDecisionSummary(
+      displayBias,
+      displaySupport,
+      displayResistance,
+      breakoutModel.signal
+    );
   const displayTarget1 = intelligence?.market_state?.target1 ?? effectiveTargetProjection.target1;
   const displayTarget2 = intelligence?.market_state?.target2 ?? effectiveTargetProjection.target2;
   const biasStrengthLabel =
@@ -1694,6 +1731,8 @@ export default function App() {
   };
   const playbook = intelligence?.intraday_playbook;
   const displayRegime = normalizeRegimeLabel(playbook?.regime, displayVolatilityState);
+  const displayDayTrend = intelligence?.market_state?.day_trend;
+  const displayLongTrend = intelligence?.market_state?.long_trend;
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
   const driftState = intelligence?.market_state?.drift ?? "Stable";
@@ -1702,6 +1741,18 @@ export default function App() {
     effectiveTargetProjection.status ??
     "No Confirmed Breakout";
   const conflictState = intelligence?.market_state?.conflict_market_state ?? "Balanced";
+  const supportBreakThreshold =
+    typeof displaySupport === "number" ? Math.max(50, displaySupport * 0.002) : null;
+  const resistanceBreakThreshold =
+    typeof displayResistance === "number" ? Math.max(50, displayResistance * 0.002) : null;
+  const boundaryStateCandidate: "None" | "Support Broken" | "Resistance Broken" =
+    typeof spotValue === "number" && typeof displaySupport === "number" && supportBreakThreshold !== null &&
+    spotValue < displaySupport - supportBreakThreshold
+      ? "Support Broken"
+      : typeof spotValue === "number" && typeof displayResistance === "number" && resistanceBreakThreshold !== null &&
+          spotValue > displayResistance + resistanceBreakThreshold
+        ? "Resistance Broken"
+        : "None";
   const directionalForceBullRaw = Number(
     intelligence?.market_state?.directional_force?.bull ?? displayBullProbability ?? 50
   );
@@ -1782,6 +1833,106 @@ export default function App() {
   const marketInsights = Array.isArray(intelligence?.market_insight)
     ? intelligence.market_insight.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
     : [];
+
+  const strikeLadderContent = (
+    <div className="ladder">
+      <div className="ladder-header">
+        <span>Call Options (CE OI)</span>
+        <span>Strike</span>
+        <span>Put Options (PE OI)</span>
+      </div>
+      {strikeSlice.map((row) => {
+        const ceOi = Number(row.CE_OI) || 0;
+        const peOi = Number(row.PE_OI) || 0;
+        const ceVol = Number(row.CE_Volume) || 0;
+        const peVol = Number(row.PE_Volume) || 0;
+        const totalOi = ceOi + peOi;
+        const peShare = totalOi > 0 ? peOi / totalOi : 0.5;
+        const ceShare = totalOi > 0 ? ceOi / totalOi : 0.5;
+        const isSpot = String(row.strike) === String(nearestSpotStrike);
+        const isRes = String(row.strike) === String(displayResistance);
+        const isSup = String(row.strike) === String(displaySupport);
+        const interpret =
+          row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
+            ? row.PE_Interpretation
+            : isSup && peShare >= 0.58
+              ? "Put Dominance"
+              : isRes && ceShare >= 0.58
+                ? "Call Dominance"
+                : peShare >= 0.64
+                  ? "Put Dominance"
+                  : ceShare >= 0.64
+                    ? "Call Dominance"
+                    : row.CE_Interpretation ?? "Mixed";
+        return (
+          <div
+            key={row.strike}
+            className={[
+              "ladder-row",
+              isSpot ? "spot-row" : "",
+              isRes ? "resistance-row" : "",
+              isSup ? "support-row" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            <div className="ladder-side">
+              <div className="bar-wrap red">
+                <div
+                  className="bar"
+                  style={{
+                    width: `${normalizeBarWidth(ceOi, ladderMetrics.ceOi)}%`,
+                    minWidth: ceOi > 0 ? "2px" : "0px",
+                  }}
+                />
+              </div>
+              <div className="bar-meta">
+                <span>{formatNumber(ceOi)}</span>
+                <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
+                  {row.CE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.CE_DeltaOI))}
+                </span>
+              </div>
+              <div className="bar-sub">
+                {formatNumber(ceVol)}{" "}
+                <span className={normalizeDirection(row.CE_VolDir) === "up" ? "up" : normalizeDirection(row.CE_VolDir) === "down" ? "down" : ""}>
+                  {directionArrow(row.CE_VolDir)}
+                </span>
+              </div>
+            </div>
+            <div className="ladder-center">
+              <div className="strike">{formatNumber(row.strike)}</div>
+              <div className="interp">{interpret}</div>
+            </div>
+            <div className="ladder-side right">
+              <div className="bar-wrap green">
+                <div
+                  className="bar"
+                  style={{
+                    width: `${normalizeBarWidth(peOi, ladderMetrics.peOi)}%`,
+                    minWidth: peOi > 0 ? "2px" : "0px",
+                  }}
+                />
+              </div>
+              <div className="bar-meta">
+                <span>{formatNumber(peOi)}</span>
+                <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
+                  {row.PE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.PE_DeltaOI))}
+                </span>
+              </div>
+              <div className="bar-sub">
+                {formatNumber(peVol)}{" "}
+                <span className={normalizeDirection(row.PE_VolDir) === "up" ? "up" : normalizeDirection(row.PE_VolDir) === "down" ? "down" : ""}>
+                  {directionArrow(row.PE_VolDir)}
+                </span>
+              </div>
+            </div>
+            {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
+            {isSup ? <span className="tag support">SUPPORT</span> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   const decisionLayerContent = (
     <DecisionPanel
@@ -1885,6 +2036,28 @@ export default function App() {
     }
   }, [readinessCandidate, readinessRaw]);
 
+  useEffect(() => {
+    const pending = boundaryPendingRef.current;
+    if (boundaryStateCandidate === "None") {
+      boundaryPendingRef.current = { state: "None", count: 0 };
+      setBoundaryDisplayState("None");
+      return;
+    }
+    if (pending.state !== boundaryStateCandidate) {
+      boundaryPendingRef.current = { state: boundaryStateCandidate, count: 1 };
+      setBoundaryDisplayState(boundaryStateCandidate);
+      return;
+    }
+    pending.count += 1;
+    if (pending.count >= 2) {
+      setBoundaryDisplayState(
+        boundaryStateCandidate === "Support Broken" ? "Breakdown Confirmed" : "Breakout Confirmed"
+      );
+    } else {
+      setBoundaryDisplayState(boundaryStateCandidate);
+    }
+  }, [boundaryStateCandidate]);
+
   const filteredAlerts = useMemo(() => {
     if (!MARKETING_MODE) return combinedAlerts;
     const suppressBreakout =
@@ -1914,14 +2087,64 @@ export default function App() {
   const conflictFlags = intelligence?.market_state?.conflict_flags ?? [];
   const breakoutSuppressed = !!intelligence?.signals?.alignment_filter?.breakout_suppressed;
   const primaryAlert = prioritizedAlerts[0]?.message ?? "";
+  const hasMaterialBoundaryBreak = boundaryDisplayState !== "None";
   const hasConflict =
-    conflictFlags.length > 0 ||
-    (conflictState && conflictState !== "Balanced") ||
-    Math.abs(Number(displayBullProbability ?? 50) - Number(displayBearProbability ?? 50)) < 20;
-  const decisionDirection: "Bullish" | "Bearish" | "Neutral" | "Conflict" = hasConflict
-    ? "Conflict"
-    : displayPrimaryBias ?? displayBias;
+    !hasMaterialBoundaryBreak && (
+      conflictFlags.length > 0 ||
+      (conflictState && conflictState !== "Balanced") ||
+      Math.abs(Number(displayBullProbability ?? 50) - Number(displayBearProbability ?? 50)) < 20
+    );
+  const decisionDirection: "Bullish" | "Bearish" | "Neutral" | "Conflict" =
+    boundaryDisplayState === "Support Broken" || boundaryDisplayState === "Breakdown Confirmed"
+      ? "Bearish"
+      : boundaryDisplayState === "Resistance Broken" || boundaryDisplayState === "Breakout Confirmed"
+        ? "Bullish"
+        : hasConflict
+          ? "Conflict"
+          : displayPrimaryBias ?? displayBias;
+  const decisionActionState: "WAIT" | "CAUTION" | "READY" =
+    boundaryDisplayState === "Support Broken" || boundaryDisplayState === "Resistance Broken"
+      ? "CAUTION"
+      : boundaryDisplayState === "Breakdown Confirmed" || boundaryDisplayState === "Breakout Confirmed"
+        ? "READY"
+        : readinessDisplay.state;
   const decisionExplanation = (() => {
+    if (boundaryDisplayState === "Support Broken") {
+      return "Price is materially below initial support. Breakdown confirmation now depends on persistence or failed reclaim.";
+    }
+    if (boundaryDisplayState === "Resistance Broken") {
+      return "Price is materially above initial resistance. Breakout confirmation now depends on persistence or failed rejection.";
+    }
+    if (boundaryDisplayState === "Breakdown Confirmed") {
+      return "Price has remained materially below initial support for consecutive cycles. Breakdown confirmation is now active unless price quickly reclaims the level.";
+    }
+    if (boundaryDisplayState === "Breakout Confirmed") {
+      return "Price has remained materially above initial resistance for consecutive cycles. Breakout confirmation is now active unless price quickly slips back below the level.";
+    }
+    const explanationParts: string[] = [];
+    const spotBelowInitialSupport =
+      typeof spotValue === "number" &&
+      typeof displaySupport === "number" &&
+      typeof activeSupportStart === "number" &&
+      spotValue < displaySupport &&
+      spotValue >= activeSupportStart;
+    const supportZoneState = String(intelligence?.market_state?.support_zone_state ?? "").trim();
+
+    if (spotBelowInitialSupport) {
+      explanationParts.push("Initial support is broken, but price is still inside the broader support zone.");
+    }
+    if (displayTrapRiskPct >= 60) {
+      explanationParts.push("Trap risk remains elevated, so breakdown may fail.");
+    }
+    if (projectionState === "No Confirmed Breakout") {
+      explanationParts.push("Market still lacks confirmed directional expansion.");
+    }
+    if (supportZoneState === "Likely Break" && conflictState === "Compression") {
+      explanationParts.push("Pressure is building, but compression structure is still active.");
+    }
+    if (explanationParts.length > 0) {
+      return explanationParts.join(" ");
+    }
     if (primaryAlert) return primaryAlert;
     const flagSummary = conflictFlags.map(summarizeConflictFlag).find(Boolean);
     if (flagSummary) return flagSummary;
@@ -1930,7 +2153,10 @@ export default function App() {
       return `Trap probability elevated near resistance at ${formatNumber(displayResistance)}.`;
     }
     if (decisionDirection === "Conflict" && typeof displaySupport === "number" && typeof displayResistance === "number") {
-      return "CE OI is building near resistance while price still holds support.";
+      return "Support and resistance are both active, but directional follow-through is still missing.";
+    }
+    if (readinessDisplay.state === "WAIT") {
+      return displayDecisionText || "Directional confirmation is still incomplete near active boundaries.";
     }
     if (decisionDirection === "Bearish" && typeof displayResistance === "number") {
       return `Sellers are leaning on resistance near ${formatNumber(displayResistance)}.`;
@@ -2322,12 +2548,13 @@ export default function App() {
           phase={intradayEngine.sessionPhase}
           projection={projectionState}
           showProjection={!MARKETING_MODE}
-          trend={displayBias}
+          dayTrend={displayDayTrend}
+          longTrend={displayLongTrend}
         />
 
         <DashboardLayout
           decision={{
-            action: readinessDisplay.state,
+            action: decisionActionState,
             direction: decisionDirection,
             explanation: decisionExplanation,
             support: formatNumber(displaySupport),
@@ -2487,103 +2714,7 @@ export default function App() {
             <div className="ia-tab-pane dashboard-grid">
               <div className="dash-card strike-card">
                 <h3>Strike Ladder</h3>
-                <div className="ladder">
-                  <div className="ladder-header">
-                    <span>Call Options (CE OI)</span>
-                    <span>Strike</span>
-                    <span>Put Options (PE OI)</span>
-                  </div>
-                  {strikeSlice.map((row) => {
-                    const ceOi = Number(row.CE_OI) || 0;
-                    const peOi = Number(row.PE_OI) || 0;
-                    const ceVol = Number(row.CE_Volume) || 0;
-                    const peVol = Number(row.PE_Volume) || 0;
-                    const totalOi = ceOi + peOi;
-                    const peShare = totalOi > 0 ? peOi / totalOi : 0.5;
-                    const ceShare = totalOi > 0 ? ceOi / totalOi : 0.5;
-                    const isSpot = String(row.strike) === String(nearestSpotStrike);
-                    const isRes = String(row.strike) === String(displayResistance);
-                    const isSup = String(row.strike) === String(displaySupport);
-                    const interpret =
-                      row.PE_Interpretation && row.PE_Interpretation !== "Mixed"
-                        ? row.PE_Interpretation
-                        : isSup && peShare >= 0.58
-                          ? "Put Dominance"
-                          : isRes && ceShare >= 0.58
-                            ? "Call Dominance"
-                            : peShare >= 0.64
-                              ? "Put Dominance"
-                              : ceShare >= 0.64
-                                ? "Call Dominance"
-                        : row.CE_Interpretation ?? "Mixed";
-                    return (
-                      <div
-                        key={row.strike}
-                        className={[
-                          "ladder-row",
-                          isSpot ? "spot-row" : "",
-                          isRes ? "resistance-row" : "",
-                          isSup ? "support-row" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                      >
-                        <div className="ladder-side">
-                          <div className="bar-wrap red">
-                            <div
-                              className="bar"
-                              style={{
-                                width: `${normalizeBarWidth(ceOi, ladderMetrics.ceOi)}%`,
-                                minWidth: ceOi > 0 ? "2px" : "0px",
-                              }}
-                            />
-                          </div>
-                          <div className="bar-meta">
-                            <span>{formatNumber(ceOi)}</span>
-                            <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
-                              {row.CE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.CE_DeltaOI))}
-                            </span>
-                          </div>
-                          <div className="bar-sub">
-                            {formatNumber(ceVol)}{" "}
-                            <span className={normalizeDirection(row.CE_VolDir) === "up" ? "up" : normalizeDirection(row.CE_VolDir) === "down" ? "down" : ""}>
-                              {directionArrow(row.CE_VolDir)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="ladder-center">
-                          <div className="strike">{formatNumber(row.strike)}</div>
-                          <div className="interp">{interpret}</div>
-                        </div>
-                        <div className="ladder-side right">
-                          <div className="bar-wrap green">
-                            <div
-                              className="bar"
-                              style={{
-                                width: `${normalizeBarWidth(peOi, ladderMetrics.peOi)}%`,
-                                minWidth: peOi > 0 ? "2px" : "0px",
-                              }}
-                            />
-                          </div>
-                          <div className="bar-meta">
-                            <span>{formatNumber(peOi)}</span>
-                            <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
-                              {row.PE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.PE_DeltaOI))}
-                            </span>
-                          </div>
-                          <div className="bar-sub">
-                            {formatNumber(peVol)}{" "}
-                            <span className={normalizeDirection(row.PE_VolDir) === "up" ? "up" : normalizeDirection(row.PE_VolDir) === "down" ? "down" : ""}>
-                              {directionArrow(row.PE_VolDir)}
-                            </span>
-                          </div>
-                        </div>
-                        {isRes ? <span className="tag resistance">RESISTANCE</span> : null}
-                        {isSup ? <span className="tag support">SUPPORT</span> : null}
-                      </div>
-                    );
-                  })}
-                </div>
+                {strikeLadderContent}
               </div>
               <div className="dash-card double-chart">
                 <h3>Call OI & Volume</h3>

@@ -121,6 +121,7 @@ export default function DashboardLayout({
         />
       </div>
 
+
       <div className="ia-layout-structure">
         <StructuralChartCard
           candles={structure.candles}
