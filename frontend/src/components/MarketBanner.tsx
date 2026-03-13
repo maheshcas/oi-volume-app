@@ -55,18 +55,26 @@ export default function MarketBanner(props: MarketBannerProps) {
   const phaseText = (props.phase || '').toLowerCase();
   const phaseLabel = phaseText.includes('opening')
     ? 'Opening Drive'
-    : phaseText.includes('midday')
-      ? 'Midday Compression'
-      : phaseText.includes('closing')
-        ? 'Power Hour'
-        : 'Transition';
+    : phaseText.includes('structure')
+      ? 'Structure Formation'
+      : phaseText.includes('compression')
+        ? 'Compression Phase'
+        : phaseText.includes('position')
+          ? 'Position Build Phase'
+          : phaseText.includes('expansion') || phaseText.includes('power') || phaseText.includes('closing')
+            ? 'Expansion Window'
+            : 'Transition';
   const phaseTone = phaseText.includes('opening')
     ? 'ia-phase-opening'
-    : phaseText.includes('midday')
-      ? 'ia-phase-midday'
-      : phaseText.includes('closing')
-        ? 'ia-phase-power'
-        : 'ia-phase-transition';
+    : phaseText.includes('structure')
+      ? 'ia-phase-transition'
+      : phaseText.includes('compression')
+        ? 'ia-phase-midday'
+        : phaseText.includes('position')
+          ? 'ia-phase-transition'
+          : phaseText.includes('expansion') || phaseText.includes('power') || phaseText.includes('closing')
+            ? 'ia-phase-power'
+            : 'ia-phase-transition';
 
   return (
     <div className="ia-status-bar">

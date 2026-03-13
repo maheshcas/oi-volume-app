@@ -81,6 +81,8 @@ type DashboardLayoutProps = {
     suggested_action: string;
     trap_reason?: string | null;
     support_reason?: string | null;
+    absorption_detected?: boolean;
+    absorption_message?: string | null;
     show_affected_level?: boolean;
   };
   alerts: Array<{
@@ -186,6 +188,8 @@ export default function DashboardLayout({
             suggested_action={trap.suggested_action}
             trap_reason={trap.trap_reason}
             support_reason={trap.support_reason}
+            absorption_detected={trap.absorption_detected}
+            absorption_message={trap.absorption_message}
             show_affected_level={trap.show_affected_level}
           />
           {alerts.length ? (

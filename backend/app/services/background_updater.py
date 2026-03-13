@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from app.engines.liquidity_map_engine import build_liquidity_map
 from app.engines.insight_engine import generate_market_insight
 from app.engines.preprocessing import build_feature_frame, normalize_chain
 from app.engines.regime_engine import run_regime_engine
+from app.engines.session_phase_engine import compute_session_phase
 from app.engines.regime_shift_engine import detect_regime_shift
 from app.engines.signal_priority_engine import prioritize_signals
 from app.engines.sr_engine import run_sr_engine
@@ -56,18 +57,32 @@ ATR_MIN_SAMPLES = min(ATR_MIN_SAMPLES, ATR_ROLLING_WINDOW)
 ADAPTIVE_RECALC_MINUTES = max(30, int(os.getenv("OPTIONLENS_ADAPTIVE_RECALC_MINUTES", "30")))
 _DEFAULT_CYCLE_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "optionlens_cycle_log.jsonl"
 CYCLE_LOG_PATH = Path(os.getenv("OPTIONLENS_CYCLE_LOG_PATH", str(_DEFAULT_CYCLE_LOG_PATH)))
-ENABLE_CYCLE_LOG = os.getenv("OPTIONLENS_ENABLE_CYCLE_LOG", "true").strip().lower() in {
+ENABLE_CYCLE_LOG = os.getenv("OPTIONLENS_ENABLE_CYCLE_LOG", "false").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
+_DEFAULT_EVENT_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.txt"
+EVENT_LOG_PATH = Path(os.getenv("OPTIONLENS_EVENT_LOG_PATH", str(_DEFAULT_EVENT_LOG_PATH)))
+_DEFAULT_EVENT_STREAM_PATH = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.jsonl"
+EVENT_STREAM_PATH = Path(os.getenv("OPTIONLENS_EVENT_STREAM_PATH", str(_DEFAULT_EVENT_STREAM_PATH)))
+ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
 _calibrated_weights: dict[str, float] = load_adaptive_weights()
 _last_calibrated_session: set[str] = set()
 _last_cycle_log_minute: dict[str, str] = {}
+_last_market_event_minute: dict[str, str] = {}
+_recent_market_event_occurrences: dict[str, deque[datetime]] = defaultdict(lambda: deque())
+_last_market_event_emitted: dict[str, tuple[str, datetime]] = {}
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
@@ -111,6 +126,193 @@ def _should_log_cycle(key: str) -> bool:
         return False
     _last_cycle_log_minute[key] = minute_bucket
     return True
+
+
+def _is_market_hours(dt: datetime | None) -> bool:
+    if not ENABLE_EVENT_LOG or dt is None:
+        return False
+    local_dt = dt.astimezone(IST)
+    if local_dt.weekday() >= 5:
+        return False
+    minutes = (local_dt.hour * 60) + local_dt.minute
+    return 555 <= minutes <= 930  # 09:15 to 15:30 IST
+
+
+def _append_market_event(*, timestamp: datetime | None, event: str, symbol: str, expiry: str | None) -> None:
+    if not _is_market_hours(timestamp):
+        return
+    event_text = str(event or "").strip()
+    if not event_text:
+        return
+    ts = (timestamp or datetime.now(timezone.utc)).astimezone(IST)
+    minute_bucket = ts.strftime("%Y-%m-%d %H:%M")
+    dedupe_key = f"{symbol}|{expiry or 'AUTO'}|{event_text}"
+    if _last_market_event_minute.get(dedupe_key) == minute_bucket:
+        return
+    _last_market_event_minute[dedupe_key] = minute_bucket
+    try:
+        EVENT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not EVENT_LOG_PATH.exists()
+        with EVENT_LOG_PATH.open("a", encoding="utf-8") as fp:
+            if new_file:
+                fp.write("Time      Event\n")
+                fp.write("--------------------------------\n")
+            label = f"{symbol} {expiry}".strip() if expiry else symbol
+            fp.write(f"{ts.strftime('%H:%M')}     [{label}] {event_text}\n")
+    except Exception as exc:
+        logger.debug("Market event log append failed: %s", exc)
+
+
+def _event_family(event_type: str) -> str:
+    normalized = str(event_type or "").strip().lower()
+    if normalized in {"oi spike", "position building", "institutional positioning"}:
+        return "oi_activity"
+    if normalized in {"range compression", "volatility squeeze"}:
+        return "compression"
+    return normalized.replace(" ", "_")
+
+
+def _event_priority(event_type: str) -> int:
+    normalized = str(event_type or "").strip().lower()
+    priority_map = {
+        "oi spike": 1,
+        "position building": 2,
+        "institutional positioning": 3,
+        "range compression": 1,
+        "volatility squeeze": 2,
+        "support break": 2,
+        "resistance break": 2,
+        "trend reversal": 2,
+    }
+    return priority_map.get(normalized, 1)
+
+
+def _append_market_event_record(event_record: dict[str, Any]) -> None:
+    if not ENABLE_EVENT_LOG:
+        return
+    try:
+        EVENT_STREAM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVENT_STREAM_PATH.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(event_record, ensure_ascii=True, default=str) + "\n")
+    except Exception as exc:
+        logger.debug("Market event stream append failed: %s", exc)
+
+
+def _emit_market_event(
+    *,
+    timestamp: datetime | None,
+    raw_event: str,
+    symbol: str,
+    expiry: str | None,
+) -> None:
+    if not _is_market_hours(timestamp):
+        return
+    ts = (timestamp or datetime.now(timezone.utc)).astimezone(IST)
+    symbol_key = f"{symbol}|{expiry or 'AUTO'}"
+    occurrence_key = f"{symbol_key}|{raw_event}"
+    occurrences = _recent_market_event_occurrences[occurrence_key]
+    occurrences.append(ts)
+    cutoff_5m = ts - timedelta(minutes=5)
+    while occurrences and occurrences[0] < cutoff_5m:
+        occurrences.popleft()
+
+    event_type = raw_event
+    confidence = 0.55
+    supporting_events = 1
+
+    if raw_event == "OI spike":
+        count_5m = len(occurrences)
+        count_3m = sum(1 for item in occurrences if item >= ts - timedelta(minutes=3))
+        if count_5m >= 6:
+            event_type = "Institutional Positioning"
+            confidence = min(0.95, 0.72 + ((count_5m - 6) * 0.03))
+            supporting_events = count_5m
+        elif count_3m >= 3:
+            event_type = "Position Building"
+            confidence = min(0.88, 0.62 + ((count_3m - 3) * 0.05))
+            supporting_events = count_3m
+        else:
+            confidence = min(0.6, 0.45 + ((count_3m - 1) * 0.05))
+            supporting_events = count_3m
+    elif raw_event == "Range compression":
+        count_5m = len(occurrences)
+        if count_5m >= 10:
+            event_type = "Volatility Squeeze"
+            confidence = min(0.9, 0.7 + ((count_5m - 10) * 0.02))
+            supporting_events = count_5m
+        else:
+            confidence = min(0.7, 0.48 + ((count_5m - 1) * 0.03))
+            supporting_events = count_5m
+
+    family = _event_family(event_type)
+    dedupe_key = f"{symbol_key}|{family}"
+    previous_emit = _last_market_event_emitted.get(dedupe_key)
+    if previous_emit is not None:
+        previous_type, previous_ts = previous_emit
+        within_60s = (ts - previous_ts).total_seconds() < 60
+        if within_60s and _event_priority(event_type) <= _event_priority(previous_type):
+            return
+    _last_market_event_emitted[dedupe_key] = (event_type, ts)
+
+    event_record = {
+        "time": ts.isoformat(),
+        "symbol": symbol,
+        "expiry": expiry,
+        "event_type": event_type,
+        "confidence": round(float(confidence), 2),
+        "supporting_events": int(supporting_events),
+    }
+    _append_market_event(timestamp=timestamp, event=event_type, symbol=symbol, expiry=expiry)
+    _append_market_event_record(event_record)
+
+
+def _recent_event_count(*, symbol: str, expiry: str | None, raw_event: str, minutes: int, timestamp: datetime | None) -> int:
+    if timestamp is None:
+        return 0
+    ts = timestamp.astimezone(IST)
+    occurrence_key = f"{symbol}|{expiry or 'AUTO'}|{raw_event}"
+    occurrences = _recent_market_event_occurrences.get(occurrence_key)
+    if not occurrences:
+        return 0
+    cutoff = ts - timedelta(minutes=minutes)
+    return sum(1 for item in occurrences if item >= cutoff)
+
+
+def _detect_support_absorption(
+    *,
+    spot: float | None,
+    support: float | None,
+    strike_gap: float | None,
+    pe_oi_change_pct: float | None,
+    volume_expansion_score: float,
+    breakout_strength: float,
+    trap_probability: float,
+) -> dict[str, Any]:
+    spot_value = _safe_float(spot)
+    support_value = _safe_float(support)
+    strike_step = max(1.0, float(strike_gap or 50.0))
+    absorption_offset = strike_step * 0.4
+    pe_change = float(pe_oi_change_pct or 0.0)
+    volume_score = float(volume_expansion_score or 0.0)
+    breakout_score = float(breakout_strength or 0.0)
+    trap_prob = float(trap_probability or 0.0)
+
+    absorption_detected = bool(
+        spot_value is not None
+        and support_value is not None
+        and spot_value < (support_value - absorption_offset)
+        and pe_change > 10.0
+        and volume_score > 0.6
+        and breakout_score < 0.35
+        and trap_prob > 55.0
+    )
+
+    return {
+        "absorption_detected": absorption_detected,
+        "level": support_value,
+        "offset": round(absorption_offset, 2),
+        "message": "Support absorption detected — breakdown likely fake" if absorption_detected else None,
+    }
 
 
 def _infer_session_phase(timestamp_text: str | None) -> str:
@@ -287,6 +489,7 @@ def _compute_trade_readiness(
     trap_probability: float,
     execution_risk: float,
     breakout_suppressed: bool,
+    breakout_candidate: bool,
     breakout_probability: float = 0.0,
 ) -> dict[str, Any]:
     clarity_value = max(0.0, min(100.0, float(clarity or 0.0)))
@@ -297,7 +500,7 @@ def _compute_trade_readiness(
         + (alignment_component * 0.25)
         + (risk_component * 0.15)
     )
-    trap_deduction = 0.0 if breakout_suppressed else (0.25 * max(0.0, min(100.0, float(trap_probability or 0.0))) / 100.0 * 100.0)
+    trap_deduction = 0.0 if (breakout_suppressed or breakout_candidate) else (0.25 * max(0.0, min(100.0, float(trap_probability or 0.0))) / 100.0 * 100.0)
     readiness = base_score - trap_deduction
     readiness += max(0.0, min(100.0, float(breakout_probability or 0.0))) * 0.10
     readiness = max(0.0, min(100.0, readiness))
@@ -326,6 +529,8 @@ def _apply_momentum_override(
     clarity: float,
     volume_expansion_score: float,
     alignment_score: float,
+    breakout_candidate: bool,
+    material_breach: dict[str, Any] | None,
 ) -> dict[str, Any]:
     current_action = str(trade_action or "WAIT")
     spot_value = _safe_float(spot)
@@ -359,18 +564,18 @@ def _apply_momentum_override(
 
     override_action = current_action
     explanation = None
-    if (
-        momentum_score > 0.60
-        and float(clarity or 0.0) > 60.0
-        and float(volume_expansion_score or 0.0) > 0.5
-        and abs(float(alignment_score or 0.0)) > 0.15
-    ):
-        if resistance_value not in (None, 0) and spot_value > resistance_value * 0.995:
-            override_action = "BREAKOUT WATCH"
-            explanation = "Momentum is building near resistance. Breakout watch is active."
-        elif support_value not in (None, 0) and spot_value < support_value * 1.005:
-            override_action = "BREAKDOWN WATCH"
-            explanation = "Momentum is building near support. Breakdown watch is active."
+    momentum_strong = momentum_score > 0.60
+    structural_confirmations = sum(
+        [
+            bool(breakout_candidate),
+            float(volume_expansion_score or 0.0) > 0.5,
+            float(alignment_score or 0.0) > 0.6,
+            bool((material_breach or {}).get("support_broken") or (material_breach or {}).get("resistance_broken")),
+        ]
+    )
+    if current_action == "WAIT" and momentum_strong and structural_confirmations >= 2 and float(clarity or 0.0) > 60.0:
+        override_action = "BREAKOUT WATCH"
+        explanation = "Momentum is building with structural confirmation. Breakout watch is active."
 
     return {
         "trade_action": override_action,
@@ -657,6 +862,7 @@ def _run_ordered_pipeline(
         spot=features.get("spot"),
         support=sr.get("support", {}).get("strike"),
         resistance=sr.get("resistance", {}).get("strike"),
+        rows=features.get("rows") or [],
     )
 
     # Stage 2: Regime from base features
@@ -744,12 +950,12 @@ def _classify_long_trend(
 ) -> str:
     spot_value = _safe_float(spot)
     prev_close_value = _safe_float(previous_close)
-    bias_text = str(structure_bias or "Neutral").lower()
+    bias_text = str(structure_bias or "").strip().lower()
 
     if spot_value is not None and prev_close_value is not None:
-        if spot_value > prev_close_value and "bullish" in bias_text:
+        if spot_value > prev_close_value and bias_text.startswith("bullish"):
             return "Bullish"
-        if spot_value < prev_close_value and "bearish" in bias_text:
+        if spot_value < prev_close_value and bias_text.startswith("bearish"):
             return "Bearish"
     return "Neutral"
 
@@ -928,19 +1134,32 @@ def _build_v2_intelligence(
         resistance=sr.get("resistance", {}).get("strike"),
     )
     breakout_candidate = False
+    projection_override = None
+    regime_hint = None
 
     if sr_breach_state == "resistance_breached":
+        projection_override = "Resistance Broken — Monitoring"
+        regime_hint = "Trend Day Candidate"
+        sr_score = -abs(sr_score)
         breakout_strength_raw = max(0.0, min(1.0, breakout_strength_raw + 0.2))
         breakout_score = max(0.3, breakout_score)
         trap_penalty = max(0.0, trap_penalty * 0.75)
         regime["regime_type"] = "Trend Day Candidate"
         breakout["breakout_up"] = True
     elif sr_breach_state == "support_breached":
+        projection_override = "Support Broken — Monitoring"
+        regime_hint = "Breakdown Candidate"
+        sr_score = -abs(sr_score)
         breakout_strength_raw = max(0.0, min(1.0, breakout_strength_raw + 0.2))
         breakout_score = min(-0.3, breakout_score) if breakout_score < 0 else -0.3
         trap_penalty = max(0.0, trap_penalty * 0.75)
-        regime["regime_type"] = "Trend Day Candidate"
+        regime["regime_type"] = "Breakdown Candidate"
         breakout["breakout_down"] = True
+
+    if bool(material_breach.get("material_breach_confirmed")) and str(material_breach.get("confirmation_type") or "") == "support_abandonment":
+        projection_override = "Support Broken — Support Abandonment Confirmed"
+    elif bool(material_breach.get("material_breach_confirmed")) and str(material_breach.get("confirmation_type") or "") == "bearish_positioning":
+        projection_override = "Support Broken — Bearish Positioning Confirmed"
 
     # Zone-pressure integration:
     # - High support pressure increases breakdown potential.
@@ -1157,6 +1376,9 @@ def _build_v2_intelligence(
         "conflict_market_state": str(conflict_resolver.get("market_state") or "Balanced"),
         "conflict_flags": list(conflict_resolver.get("conflict_flags") or []),
     }
+    if projection_override:
+        decision["projection"] = projection_override
+        decision["regime_hint"] = regime_hint
 
     # Structural clarity override using normalized variance across key live signals.
     clarity_inputs = [
@@ -1238,6 +1460,14 @@ def _build_v2_intelligence(
         previous_alignment_score=previous_alignment,
         previous_directional_dominance=(previous_state or {}).get("directional_force_dominance"),
     )
+    previous_bias = str((previous_state or {}).get("previous_bias") or "Neutral")
+    current_bias_for_dps = str(decision.get("bias", "Neutral") or "Neutral")
+    if previous_bias != "Neutral" and current_bias_for_dps != previous_bias:
+        dps["directional_pressure_score"] = 0.0
+        dps["dps_adjusted"] = 0.0
+        dps["pressure_state"] = "Balanced Pressure"
+        dps["trade_action"] = "WAIT"
+        dps["pressure_explanation"] = "Directional pressure reset after bias reversal."
     decision["directional_pressure_score"] = dps["directional_pressure_score"]
     decision["dps_adjusted"] = dps["dps_adjusted"]
     decision["pressure_state"] = dps["pressure_state"]
@@ -1270,12 +1500,53 @@ def _build_v2_intelligence(
         directional_force=dict(decision.get("directional_force") or {}),
         day_trend=day_trend,
     )
+    support_row_for_absorption = next(
+        (
+            row
+            for row in rows
+            if _safe_float(row.get("strike")) is not None and support_level is not None and abs(float(row.get("strike")) - float(support_level)) < 1e-6
+        ),
+        None,
+    )
+    support_absorption = _detect_support_absorption(
+        spot=spot,
+        support=support_level,
+        strike_gap=features.get("strike_gap"),
+        pe_oi_change_pct=(support_row_for_absorption or {}).get("PE_OIChangePct"),
+        volume_expansion_score=volume_expansion_score,
+        breakout_strength=breakout_strength_adjusted,
+        trap_probability=trap_probability,
+    )
+    confirmation_type = str(material_breach.get("confirmation_type") or "")
+    material_breach_confirmed = bool(material_breach.get("material_breach_confirmed"))
+    absorption_detected = bool(support_absorption.get("absorption_detected"))
+    absorption_wins = False
+    if bool(material_breach.get("support_broken")) and absorption_detected:
+        if not material_breach_confirmed or not confirmation_type:
+            absorption_wins = True
+        elif confirmation_type == "support_abandonment":
+            absorption_wins = False
+        elif confirmation_type == "bearish_positioning":
+            absorption_wins = float(trap_probability or 0.0) > 70.0
+    material_breach["absorption_conflict"] = bool(absorption_detected and material_breach_confirmed)
+    material_breach["absorption_wins"] = absorption_wins
+    if absorption_wins:
+        decision["projection"] = "Support Broken — Monitoring"
+        decision["trade_action"] = "WAIT"
+    elif bool(material_breach.get("support_broken")) and material_breach_confirmed:
+        if confirmation_type == "support_abandonment":
+            decision["projection"] = "Support Broken — Abandonment Confirmed"
+            decision["trade_action"] = "BREAKDOWN WATCH"
+        elif confirmation_type == "bearish_positioning" and float(trap_probability or 0.0) <= 70.0:
+            decision["projection"] = "Support Broken — Bearish Positioning Confirmed"
+            decision["trade_action"] = "BREAKDOWN WATCH"
     trade_readiness = _compute_trade_readiness(
         clarity=float(decision.get("clarity", 0.0) or 0.0),
         alignment_score=alignment_score,
         trap_probability=trap_probability,
         execution_risk=float(decision.get("execution_risk", 0.0) or 0.0),
         breakout_suppressed=breakout_suppressed,
+        breakout_candidate=breakout_candidate,
         breakout_probability=max(
             float(breakout_probability.get("upside", 0.0) or 0.0),
             float(breakout_probability.get("downside", 0.0) or 0.0),
@@ -1283,6 +1554,26 @@ def _build_v2_intelligence(
     )
     decision["trade_readiness"] = trade_readiness["trade_readiness"]
     decision["readiness_state"] = trade_readiness["readiness_state"]
+    backend_state = str(decision.get("state", "") or "")
+    if backend_state == "Aggressive Trend":
+        decision["trade_readiness"] = max(float(decision.get("trade_readiness", 0.0) or 0.0), 55.0)
+    elif backend_state == "Cautious Trend":
+        decision["trade_readiness"] = max(float(decision.get("trade_readiness", 0.0) or 0.0), 40.0)
+    elif backend_state == "Standby":
+        decision["trade_readiness"] = min(float(decision.get("trade_readiness", 0.0) or 0.0), 38.0)
+    if str(decision.get("trade_action", "")) in {"BREAKOUT WATCH", "BREAKDOWN WATCH"}:
+        decision["trade_readiness"] = max(float(decision.get("trade_readiness", 0.0) or 0.0), 55.0)
+    if absorption_wins:
+        decision["trade_readiness"] = min(float(decision.get("trade_readiness", 0.0) or 0.0), 45.0)
+    decision["trade_readiness"] = max(0.0, min(100.0, float(decision.get("trade_readiness", 0.0) or 0.0)))
+    if absorption_wins:
+        decision["readiness_state"] = "Absorption Active"
+    elif float(decision.get("trade_readiness", 0.0) or 0.0) >= 70.0:
+        decision["readiness_state"] = "High"
+    elif float(decision.get("trade_readiness", 0.0) or 0.0) >= 40.0:
+        decision["readiness_state"] = "Moderate"
+    else:
+        decision["readiness_state"] = "Low"
     if float(decision.get("trade_readiness", 0.0) or 0.0) < 25.0:
         decision["trade_action"] = "WAIT"
     elif float(decision.get("trade_readiness", 0.0) or 0.0) < 40.0 and str(decision.get("trade_action")) in {"LONG BIAS", "SHORT BIAS"}:
@@ -1299,10 +1590,15 @@ def _build_v2_intelligence(
         clarity=float(decision.get("clarity", 0.0) or 0.0),
         volume_expansion_score=volume_expansion_score,
         alignment_score=alignment_score,
+        breakout_candidate=breakout_candidate,
+        material_breach=material_breach,
     )
     decision["trade_action"] = momentum_override["trade_action"]
     decision["momentum_override_score"] = momentum_override["momentum_score"]
     decision["momentum_override_explanation"] = momentum_override["momentum_override_explanation"]
+    if absorption_wins:
+        decision["trade_action"] = "WAIT"
+        decision["projection"] = "Support Broken — Monitoring"
 
     current_bias = str(decision.get("bias", "Neutral"))
     current_projection = str(decision.get("projection", "No Confirmed Breakout"))
@@ -1732,6 +2028,8 @@ def _build_v2_intelligence(
         pe_oi_change_near_support=(support_row or {}).get("PE_OIChangePct"),
         ce_oi_change_near_resistance=(resistance_row or {}).get("CE_OIChangePct"),
     )
+    if bool(support_absorption.get("absorption_detected")) and support_absorption.get("message"):
+        market_insight.setdefault("market_insight", []).append(str(support_absorption.get("message")))
     if bool(wall_break.get("wall_break_signal")) and wall_break.get("wall_break_reason"):
         market_insight.setdefault("market_insight", []).append(str(wall_break.get("wall_break_reason")))
         market_insight.setdefault("market_insight", []).append(
@@ -1797,6 +2095,53 @@ def _build_v2_intelligence(
             expiry,
             ",".join(response_warnings),
         )
+
+    event_timestamp = evaluation_time or _parse_timestamp_utc(features.get("meta", {}).get("timestamp"))
+    event_messages: list[str] = []
+    if bool(material_breach.get("resistance_broken")):
+        event_messages.append("Resistance break")
+    if bool(material_breach.get("support_broken")):
+        event_messages.append("Support break")
+    if str(decision.get("conflict_market_state", "") or "").strip().lower() in {"compression", "range conflict"}:
+        event_messages.append("Range compression")
+    if float(oi.get("oi_velocity_score", 0.0) or 0.0) >= 0.8 or float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0) >= 0.85:
+        event_messages.append("OI spike")
+    previous_bias_for_event = str((previous_state or {}).get("previous_bias") or "Neutral")
+    current_bias_for_event = str(decision.get("primary_bias", stable_bias) or stable_bias)
+    if previous_bias_for_event not in {"", "Neutral"} and current_bias_for_event not in {"", "Neutral"} and current_bias_for_event != previous_bias_for_event:
+        event_messages.append("Trend reversal")
+    for event_message in event_messages:
+        _emit_market_event(
+            timestamp=event_timestamp,
+            raw_event=event_message,
+            symbol=symbol,
+            expiry=expiry,
+        )
+
+    session_phase_payload = compute_session_phase(
+        timestamp=event_timestamp,
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
+        volatility_ratio=current_atr_ratio,
+        range_compression_events_5m=_recent_event_count(
+            symbol=symbol,
+            expiry=expiry,
+            raw_event="Range compression",
+            minutes=5,
+            timestamp=event_timestamp,
+        ),
+        oi_spike_events_5m=_recent_event_count(
+            symbol=symbol,
+            expiry=expiry,
+            raw_event="OI spike",
+            minutes=5,
+            timestamp=event_timestamp,
+        ),
+        material_breach=material_breach,
+        volume_expansion_score=volume_expansion_score,
+        oi_shift_score=float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
+    )
 
     cycle_log_entry = {
         "timestamp": features.get("meta", {}).get("timestamp"),
@@ -1870,6 +2215,9 @@ def _build_v2_intelligence(
         "market_insight": market_insight.get("market_insight", []),
         "wall_break": wall_break,
         "liquidity_map": liquidity_map,
+        "support_absorption": support_absorption,
+        "session_phase": session_phase_payload.get("session_phase"),
+        "session_phase_confidence": session_phase_payload.get("confidence"),
     }
     log_key = _cache_key(symbol=symbol, instrument_type=INSTRUMENT_TYPE, expiry=expiry)
     if _should_log_cycle(log_key):
@@ -1882,6 +2230,7 @@ def _build_v2_intelligence(
         "market_insight": market_insight.get("market_insight", []),
         "wall_break": wall_break,
         "liquidity_map": liquidity_map,
+        "support_absorption": support_absorption,
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },
@@ -1907,6 +2256,7 @@ def _build_v2_intelligence(
             "state": str(decision.get("state", "")),
             "transition_phase": bool(decision.get("transition_phase", False)),
             "projection": str(decision.get("projection", "No Confirmed Breakout")),
+            "regime_hint": decision.get("regime_hint"),
             "conflict_market_state": str(decision.get("conflict_market_state", "Balanced")),
             "conflict_flags": list(decision.get("conflict_flags", [])),
             "primary_bias": str(decision.get("primary_bias", stable_bias)),
@@ -1925,6 +2275,8 @@ def _build_v2_intelligence(
             "adaptive_weights": decision.get("weight_distribution", base_weights),
             "day_trend": day_trend,
             "long_trend": long_trend,
+            "session_phase": session_phase_payload.get("session_phase"),
+            "session_phase_confidence": session_phase_payload.get("confidence"),
             "momentum_score": momentum_score,
             "momentum_direction": momentum_direction,
             "bias_stability_label": bias_stability.get("bias_stability_label"),
@@ -1934,6 +2286,10 @@ def _build_v2_intelligence(
             "support": support_level,
             "resistance": resistance_level,
             "material_breach": material_breach,
+            "support_absorption": support_absorption,
+            "absorption_detected": bool(support_absorption.get("absorption_detected")),
+            "absorption_level": support_absorption.get("level"),
+            "absorption_message": support_absorption.get("message"),
             "support_zone_pressure": round(float(support_zone_pressure), 2),
             "support_zone_state": support_zone_state,
             "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
@@ -1994,6 +2350,7 @@ def _build_v2_intelligence(
             "trap": trap,
             "oi_imbalance_trap": oi_imbalance_trap,
             "material_breach": material_breach,
+            "support_absorption": support_absorption,
             "breakout_candidate": breakout_candidate,
             "sr_breach_state": sr_breach_state,
             "alignment_filter": {

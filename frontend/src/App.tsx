@@ -170,12 +170,17 @@ type IntelligenceResponse = {
     long_trend?: "Bullish" | "Bearish" | "Neutral";
     trade_readiness?: number;
     readiness_state?: "High" | "Moderate" | "Low" | string;
+    session_phase?: string;
+    session_phase_confidence?: number;
     breakout_probability?: {
       upside?: number;
       downside?: number;
       upside_state?: string;
       downside_state?: string;
     };
+    absorption_detected?: boolean;
+    absorption_level?: number | null;
+    absorption_message?: string | null;
   };
   levels?: {
     support?: {
@@ -224,6 +229,8 @@ type IntelligenceResponse = {
       show_affected_level?: boolean;
       validity_score?: number;
       trap_raw?: number;
+      trap_reason?: string | null;
+      support_reason?: string | null;
     };
     momentum_exhaustion?: {
       momentum_exhaustion?: boolean;
@@ -1788,6 +1795,7 @@ export default function App() {
   const displayLongTrend = intelligence?.market_state?.long_trend;
   const dayTrendDisplay = normalizeTrendDisplay(displayDayTrend, typeof spotValue === "number" && typeof dayOpenValue === "number" ? spotValue - dayOpenValue : null);
   const longTrendDisplay = normalizeTrendDisplay(displayLongTrend, typeof spotValue === "number" && typeof indexRow?.previousClose === "number" ? spotValue - indexRow.previousClose : null);
+  const displaySessionPhase = intelligence?.market_state?.session_phase ?? intradayEngine.sessionPhase;
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
   const driftState = intelligence?.market_state?.drift ?? "Stable";
@@ -2023,6 +2031,8 @@ export default function App() {
       trapRisk={displayTrapRiskPct}
       reversalRisk={displayReversalRisk}
       summaryLine={displayDecisionText}
+      absorptionDetected={Boolean(intelligence?.market_state?.absorption_detected)}
+      absorptionLevel={intelligence?.market_state?.absorption_level ?? null}
       alignmentCount={displayAlignmentCount}
       marketingMode={MARKETING_MODE}
       adaptiveMode={adaptiveMode}
@@ -2638,7 +2648,7 @@ export default function App() {
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
           expiryMode={isExpiryMode}
-          phase={intradayEngine.sessionPhase}
+          phase={displaySessionPhase}
           projection={projectionState}
           showProjection={!MARKETING_MODE}
           dayTrend={dayTrendDisplay}
@@ -2712,6 +2722,10 @@ export default function App() {
             trap_type: displayTrapType ?? "-",
             trap_zone: Number(displayResistance ?? displaySupport ?? nearestSpotStrike ?? 0),
             suggested_action: trapSuggestedAction,
+            trap_reason: intelligence?.signals?.trap?.trap_reason ?? null,
+            support_reason: intelligence?.signals?.trap?.support_reason ?? null,
+            absorption_detected: Boolean(intelligence?.market_state?.absorption_detected),
+            absorption_message: intelligence?.market_state?.absorption_message ?? null,
             show_affected_level: showTrapAffectedLevel,
           }}
           alerts={displayAlerts}

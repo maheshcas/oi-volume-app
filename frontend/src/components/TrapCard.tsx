@@ -8,6 +8,8 @@ export type TrapCardProps = {
   suggested_action: string;
   trap_reason?: string | null;
   support_reason?: string | null;
+  absorption_detected?: boolean;
+  absorption_message?: string | null;
   show_affected_level?: boolean;
 };
 
@@ -56,6 +58,8 @@ export default function TrapCard({
   suggested_action,
   trap_reason,
   support_reason,
+  absorption_detected,
+  absorption_message,
   show_affected_level = true,
 }: TrapCardProps) {
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
@@ -122,6 +126,20 @@ export default function TrapCard({
           <div className="trap-row" style={{ padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
             <div className="trap-key" style={{ marginBottom: 4 }}>Support Strength</div>
             <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{support_reason}</div>
+          </div>
+        ) : null}
+        {absorption_detected && absorption_message ? (
+          <div
+            className="trap-row"
+            style={{
+              padding: "10px 12px",
+              borderRadius: 12,
+              background: "rgba(245, 158, 11, 0.10)",
+              border: "1px solid rgba(245, 158, 11, 0.24)",
+            }}
+          >
+            <div className="trap-key" style={{ marginBottom: 4, color: "#f59e0b" }}>Absorption Alert</div>
+            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{absorption_message}</div>
           </div>
         ) : null}
 

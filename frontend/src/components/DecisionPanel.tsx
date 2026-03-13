@@ -32,6 +32,8 @@ type DecisionPanelProps = {
     call_wall?: number | null;
   };
   marketInsight?: string[];
+  absorptionDetected?: boolean;
+  absorptionLevel?: number | null;
 };
 
 export default function DecisionPanel(props: DecisionPanelProps) {
@@ -43,7 +45,9 @@ export default function DecisionPanel(props: DecisionPanelProps) {
         : "ia-bias-neutral";
 
   const summary = props.summaryLine?.trim() || 'Waiting for clearer movement between active boundaries.';
-  const shortSummary = summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
+  const absorptionNote = props.absorptionDetected && props.absorptionLevel ? ` - absorption active at ${Number(props.absorptionLevel).toLocaleString('en-IN')}` : '';
+  const summaryWithAbsorption = `${summary}${absorptionNote}`;
+  const shortSummary = summaryWithAbsorption.length > 120 ? `${summaryWithAbsorption.slice(0, 117)}...` : summaryWithAbsorption;
   const insightLine = props.marketInsight?.find((item) => item && item.trim().length > 0) ?? 'No fresh structural insight.';
   const pressureText = String(props.pressureStateLabel ?? 'Balanced').replace(/\s*Pressure$/i, '').trim() || 'Balanced';
   const wallParts = [

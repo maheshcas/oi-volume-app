@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Optional
@@ -216,6 +216,45 @@ async def index_data(names: Optional[str] = None):
 async def engine_health():
     log_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_cycle_log.jsonl"
     return compute_engine_health(log_path=log_path, tail_cycles=200)
+
+
+@router.get("/event-log")
+async def event_log(limit: int = 20):
+    log_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.txt"
+    stream_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.jsonl"
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+    structured_events: list[dict[str, Any]] = []
+    if stream_path.exists():
+        try:
+            raw_lines = stream_path.read_text(encoding="utf-8").splitlines()
+            for line in raw_lines[-limit:]:
+                line = line.strip()
+                if not line:
+                    continue
+                structured_events.append(json.loads(line))
+        except Exception:
+            structured_events = []
+    if not log_path.exists():
+        return {
+            "path": str(log_path),
+            "entries": [],
+            "events": structured_events,
+            "message": "Event log not created yet.",
+        }
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    if len(lines) <= 2:
+        entries: list[str] = []
+    else:
+        entries = lines[2:][-limit:]
+    return {
+        "path": str(log_path),
+        "entries": entries,
+        "events": structured_events,
+    }
 
 
 @router.get("/v2/intelligence/summary")
