@@ -238,6 +238,20 @@ button:hover {
   box-shadow: 0 8px 22px rgba(243, 180, 90, 0.32);
 }
 
+.mobile-bottom-nav-button {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: inherit !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+.mobile-bottom-nav-button:hover {
+  transform: none !important;
+  box-shadow: none !important;
+}
+
 .refresh-pill-button {
   background: transparent;
   border: 1px solid #00c8ff;

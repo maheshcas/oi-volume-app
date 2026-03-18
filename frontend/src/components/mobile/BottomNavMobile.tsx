@@ -7,91 +7,49 @@ type BottomNavMobileProps = {
 
 const NAV_ITEMS: Array<{ key: MobileNavKey; label: string }> = [
   { key: "overview", label: "Overview" },
-  { key: "signal", label: "Signal" },
-  { key: "heatmap", label: "Heatmap" },
-  { key: "chart", label: "Charts" },
-  { key: "settings", label: "Settings" },
+  { key: "chart", label: "Chart" },
+  { key: "ladder", label: "Ladder" },
+  { key: "writers", label: "Writers" },
+  { key: "alerts", label: "Alerts" },
 ];
 
-function NavIcon({ itemKey, active }: { itemKey: MobileNavKey; active: boolean }) {
-  const stroke = active ? "#38bdf8" : "#64748b";
-  const fill = active ? "rgba(56,189,248,0.12)" : "rgba(148,163,184,0.08)";
-
-  if (itemKey === "overview") {
-    return (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <rect x="3" y="4" width="5" height="16" rx="1.5" fill={fill} stroke={stroke} />
-        <rect x="10" y="8" width="5" height="12" rx="1.5" fill={fill} stroke={stroke} />
-        <rect x="17" y="2" width="4" height="18" rx="1.5" fill={fill} stroke={stroke} />
-      </svg>
-    );
+function Icon({ name }: { name: MobileNavKey }) {
+  if (name === "overview") {
+    return <svg viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="9" cy="9" r="7" /><path d="M9 5v4l3 2" /></svg>;
   }
-
-  if (itemKey === "signal") {
-    return (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <circle cx="11" cy="13" r="7" stroke={stroke} strokeWidth="1.8" />
-        <circle cx="11" cy="13" r="3" fill={fill} stroke={stroke} strokeWidth="1.4" />
-        <path d="M16.5 7.5L21 3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" />
-        <path d="M18 3h3v3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
+  if (name === "chart") {
+    return <svg viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="2,14 6,8 10,11 14,5 16,5" /></svg>;
   }
-
-  if (itemKey === "heatmap") {
-    return (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <path d="M12 2c2 3 1 4.8-.2 6.3C10 10.6 8 12.3 8 15a4 4 0 0 0 8 0c0-1.5-.6-2.7-1.7-4.1-.7-.9-.9-2 .1-3.9 1.8 1.2 3.6 3.9 3.6 7A6 6 0 0 1 6 14.7c0-4.1 2.3-7.9 6-12.7Z" fill={fill} stroke={stroke} strokeWidth="1.2" />
-      </svg>
-    );
+  if (name === "ladder") {
+    return <svg viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 5h14M2 9h10M2 13h12" /></svg>;
   }
-
-  if (itemKey === "chart") {
-    return (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="16" rx="2" fill={fill} stroke={stroke} />
-        <path d="M6 16l4-4 3 2 5-6" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M6 8v8M10 6v10M14 10v6M18 7v9" stroke={stroke} strokeOpacity="0.55" strokeLinecap="round" />
-      </svg>
-    );
+  if (name === "writers") {
+    return <svg viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2" width="5" height="5" rx="1" /><rect x="11" y="2" width="5" height="5" rx="1" /><rect x="2" y="11" width="5" height="5" rx="1" /><rect x="11" y="11" width="5" height="5" rx="1" /></svg>;
   }
-
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" fill={fill} stroke={stroke} strokeWidth="1.6" />
-      <path
-        d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18 6l-1.6 1.6M7.6 16.4 6 18M18 18l-1.6-1.6M7.6 7.6 6 6"
-        stroke={stroke}
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return <svg viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 2a5 5 0 0 1 5 5c0 3 1 4 1.5 5H2.5C3 12 4 11 4 7a5 5 0 0 1 5-5z" /><circle cx="9" cy="15.5" r="0.5" fill="currentColor" /></svg>;
 }
 
 export default function BottomNavMobile({ active, onChange }: BottomNavMobileProps) {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-white/7 bg-[rgba(7,12,20,0.97)] px-2 py-2 backdrop-blur">
-      <div className="grid grid-cols-5 gap-1">
-        {NAV_ITEMS.map((item) => {
-          const isActive = item.key === active;
-          return (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => onChange(item.key)}
-              className={`rounded-lg px-2 py-2 text-center transition ${
-                isActive ? "bg-sky-400/10 text-sky-300" : "text-slate-500"
-              }`}
-            >
-              <div className="flex justify-center">
-                <NavIcon itemKey={item.key} active={isActive} />
-              </div>
-              <div className="mt-1 text-[9px] uppercase tracking-[0.05em]">{item.label}</div>
-            </button>
-          );
-        })}
-      </div>
+    <nav className="mobile-bottom-nav sticky bottom-0 z-10 mt-auto flex h-[60px] shrink-0 border-t border-white/8 bg-[rgba(8,15,24,0.96)] backdrop-blur">
+      {NAV_ITEMS.map((item) => {
+        const isActive = item.key === active;
+        return (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onChange(item.key)}
+            className={`mobile-bottom-nav-button flex flex-1 flex-col items-center justify-center gap-1 rounded-none bg-transparent text-[10px] font-medium transition-colors ${
+              isActive ? "text-sky-300" : "text-slate-500"
+            }`}
+          >
+            <div className={`flex h-[18px] items-center justify-center ${isActive ? "opacity-100" : "opacity-80"}`}>
+              <Icon name={item.key} />
+            </div>
+            <span className="text-[9px] tracking-[0.04em]">{item.label}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 }

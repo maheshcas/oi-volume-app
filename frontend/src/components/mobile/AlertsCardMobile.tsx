@@ -8,18 +8,18 @@ export default function AlertsCardMobile({ alerts }: AlertsCardMobileProps) {
   if (!alerts.length) return null;
 
   return (
-    <section className="mx-4 overflow-hidden rounded-[12px] border border-amber-300/20 bg-amber-300/5">
-      <div className="flex items-center gap-2 border-b border-amber-300/10 px-4 py-3 text-[11px] uppercase tracking-[0.08em] text-amber-300">
-        <span className="h-1.5 w-1.5 rounded-full bg-amber-300 shadow-[0_0_8px_rgba(255,184,48,0.8)]" />
-        Alerts
-      </div>
-      <div>
-        {alerts.slice(0, 4).map((alert, index) => (
-          <div key={`${alert.message}-${index}`} className="flex gap-2 border-b border-amber-300/8 px-4 py-3 text-sm text-slate-100 last:border-b-0">
-            <span className="text-amber-300">.</span>
-            <span>{alert.message}</span>
-          </div>
-        ))}
+    <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-4">
+      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.07em] text-slate-600">Alerts</div>
+      <div className="space-y-0.5">
+        {alerts.slice(0, 4).map((alert, index) => {
+          const tone = alert.severity === "watch" || alert.severity === "high" ? "bg-amber-300" : "bg-sky-400";
+          return (
+            <div key={`${alert.message}-${index}`} className="flex items-start gap-2 border-b border-white/8 py-2 text-[12px] leading-5 text-slate-400 last:border-b-0">
+              <span className={`mt-1.5 h-1.5 w-1.5 rounded-full ${tone}`} />
+              <span>{alert.message}</span>
+            </div>
+          );
+        })}
       </div>
     </section>
   );

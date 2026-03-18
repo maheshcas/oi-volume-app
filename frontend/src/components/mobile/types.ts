@@ -1,4 +1,4 @@
-export type MobileNavKey = "overview" | "signal" | "heatmap" | "chart" | "settings";
+export type MobileNavKey = "overview" | "chart" | "ladder" | "writers" | "alerts";
 
 export type MobileOption = {
   label: string;
@@ -41,6 +41,8 @@ export type MobileDashboardData = {
   tradeAction: string;
   resolvedReason: string;
   bias: string;
+  dayTrend: string;
+  longTrend: string;
   readinessScore: number | null;
   readinessState: string;
   readinessActive: boolean | null;
@@ -53,6 +55,7 @@ export type MobileDashboardData = {
   supportTransitionActive: boolean;
   trapProbability: number | null;
   trapType: string;
+  trapDirection?: "upside" | "downside" | "";
   trapExplanation: string;
   trapSeverity: "low" | "moderate" | "high";
   support: number | null;

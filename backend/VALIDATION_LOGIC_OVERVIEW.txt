@@ -28,12 +28,25 @@ SR Engine Hysteresis
 backend/app/engines/sr_engine.py
 - Immediate support/resistance selection now includes a hold-previous hysteresis layer.
 - A new immediate level only replaces the previous active level when it is meaningfully stronger:
-  - roughly 18 percent score improvement
-  - or roughly 15 percent OI improvement
+  - current active implementation uses roughly 15 percent OI improvement for both support and resistance flips
+  - score-only improvement is intentionally not enough to flip the immediate active level
 - Purpose:
   - stop 23,800 <-> 24,000 resistance ping-pong
+  - stop equivalent support ping-pong
   - stabilize detected regime input
   - allow candidate_regime_count to accumulate instead of resetting on every minor SR flip
+
+Range Day Trap Cap
+backend/app/services/background_updater.py
+- Quiet range sessions now apply a soft trap cap before readiness is computed.
+- Condition:
+  - committed_regime == Range Day
+  - material_breach_confirmed == false
+- Effect:
+  - trap_probability is capped at 72
+- Ordering is important:
+  - this cap is now applied before MSS, DPS, trade_readiness, and readiness_active reconciliation
+  - earlier code applied the cap only in the final expiry/trap writeback path, which was too late to affect the 57-entry gate
 
 Session Phase Timestamp Fix
 backend/app/services/background_updater.py
@@ -500,7 +513,12 @@ In background_updater.py
     - alignment magnitude
     - trap penalty
     - execution risk
+  - trap penalty now behaves as:
+    - trap below 55 deducts nothing
+    - trap above 55 deducts 0.25 per point
+    - deduction is capped at 10
   - trap deduction skipped when breakout is suppressed or breakout_candidate is true
+  - on quiet Range Day sessions without confirmed breach, trap_probability may first be reduced by the Range Day trap cap before readiness is computed
   - breakout probability is added lightly into readiness
   - returns:
     - trade_readiness

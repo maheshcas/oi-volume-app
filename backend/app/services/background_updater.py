@@ -1771,6 +1771,13 @@ def _build_v2_intelligence(
         next_candidate_regime = ""
         next_candidate_regime_count = 0
 
+    if committed_regime == "Range Day" and not material_breach_confirmed:
+        trap_probability = min(float(trap_probability or 0.0), 72.0)
+        trap["trap_probability_pct"] = int(trap_probability)
+        trap["trap_probability"] = int(trap_probability)
+        trap["trap_risk"] = int(trap_probability)
+        trap["trap_level"] = _trap_level_from_probability(trap_probability)
+
     trade_readiness = _compute_trade_readiness(
         clarity=float(decision.get("clarity", 0.0) or 0.0),
         alignment_score=alignment_score,

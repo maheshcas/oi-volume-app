@@ -69,7 +69,7 @@ class _StreamState:
 class StabilityLoggerService:
     def __init__(self) -> None:
         self.logger = logging.getLogger(LOGGER_NAME)
-        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "true").strip().lower() in {
+        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "false").strip().lower() in {
             "1",
             "true",
             "yes",

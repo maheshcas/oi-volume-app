@@ -1739,7 +1739,7 @@ export default function App() {
     intelligence?.signals?.trap?.trap_level ??
     (displayTrapRiskPct > 65 ? "High" : displayTrapRiskPct > 45 ? "Moderate" : "Low");
   const rawTrapType = intelligence?.signals?.trap?.trap_type;
-  const trapDirection =
+  const trapDirection: "upside" | "downside" | "" =
     intelligence?.signals?.trap?.trap_direction === "upside" || intelligence?.signals?.trap?.trap_direction === "downside"
       ? intelligence.signals.trap.trap_direction
       : "";
@@ -2746,6 +2746,8 @@ export default function App() {
     tradeAction: mobileTradeAction,
     resolvedReason: mobileResolvedReason,
     bias: displayPrimaryBias,
+    dayTrend: dayTrendDisplay,
+    longTrend: longTrendDisplay,
     readinessScore: intelligence?.market_state?.trade_readiness ?? null,
     readinessState: intelligence?.market_state?.readiness_state ?? "Unknown",
     readinessActive: intelligence?.market_state?.readiness_active ?? null,
@@ -2758,6 +2760,7 @@ export default function App() {
     supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
     trapProbability: displayTrapRiskPct,
     trapType: displayTrapType ?? "No active trap",
+    trapDirection,
     trapExplanation: mobileTrapExplanation,
     trapSeverity:
       (displayTrapRiskPct >= 70 ? "high" : displayTrapRiskPct >= 40 ? "moderate" : "low") as
@@ -2797,7 +2800,7 @@ export default function App() {
 
   return (
     <>
-      <div className="hidden">
+      <div className="md:hidden">
         <OptionLensMobileDashboard
           data={mobileDashboardData}
           symbolOptions={SYMBOLS.map((item) => ({ label: item, value: item }))}
@@ -2806,7 +2809,7 @@ export default function App() {
           onSelectExpiry={setExpiry}
         />
       </div>
-      <div className="page block">
+      <div className="page hidden md:block">
       <header className="hero">
         <div>
           <p className="eyebrow">Intraday Dashboard</p>

@@ -2,15 +2,12 @@ import { useState } from "react";
 import MobileHeader from "./MobileHeader";
 import SpotHeroCard from "./SpotHeroCard";
 import PrimarySignalCard from "./PrimarySignalCard";
-import AbsorptionAlertCard from "./AbsorptionAlertCard";
+import StructuralRangeTrackMobile from "./StructuralRangeTrackMobile";
 import TrapCardMobile from "./TrapCardMobile";
 import KeyLevelsCard from "./KeyLevelsCard";
-import SessionPhaseCard from "./SessionPhaseCard";
-import StrikeLadderMobile from "./StrikeLadderMobile";
-import BottomNavMobile from "./BottomNavMobile";
-import TopWritersMobile from "./TopWritersMobile";
-import FuturesBasisCardMobile from "./FuturesBasisCardMobile";
+import TradePlanMobile from "./TradePlanMobile";
 import AlertsCardMobile from "./AlertsCardMobile";
+import BottomNavMobile from "./BottomNavMobile";
 import type { MobileDashboardData, MobileNavKey, MobileOption } from "./types";
 
 type OptionLensMobileDashboardProps = {
@@ -23,73 +20,31 @@ type OptionLensMobileDashboardProps = {
 
 export default function OptionLensMobileDashboard({
   data,
-  symbolOptions,
-  expiryOptions,
-  onSelectSymbol,
-  onSelectExpiry,
+  symbolOptions: _symbolOptions,
+  expiryOptions: _expiryOptions,
+  onSelectSymbol: _onSelectSymbol,
+  onSelectExpiry: _onSelectExpiry,
 }: OptionLensMobileDashboardProps) {
   const [activeNav, setActiveNav] = useState<MobileNavKey>("overview");
 
   return (
-    <div className="min-h-screen bg-[#070c14] pb-24 text-slate-100">
-      <MobileHeader liveStatus={data.liveStatus} />
+    <div className="mx-auto flex h-dvh max-w-[480px] flex-col overflow-hidden bg-[#080f18] text-slate-100">
+      <MobileHeader liveStatus={data.liveStatus} updatedAt={data.updatedAt} />
 
-      <div className="space-y-3 pb-4">
-        <section className="border-b border-white/7">
-          <div className="flex gap-2 overflow-x-auto px-4 py-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {symbolOptions.map((option) => {
-              const active = option.value === data.symbol;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => onSelectSymbol(option.value)}
-                  className={`shrink-0 rounded-full border px-4 py-1.5 font-mono text-xs ${
-                    active ? "border-sky-400 bg-sky-400 text-slate-950" : "border-white/10 text-slate-500"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex gap-2 overflow-x-auto border-t border-white/7 px-4 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {expiryOptions.map((option) => {
-              const active = option.value === (data.expiry ?? "");
-              return (
-                <button
-                  key={option.value || "auto"}
-                  type="button"
-                  onClick={() => onSelectExpiry(option.value)}
-                  className={`shrink-0 rounded-full border px-3 py-1.5 font-mono text-[11px] ${
-                    active
-                      ? "border-cyan-300/30 bg-cyan-300/10 text-cyan-200"
-                      : "border-white/10 text-slate-500"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
+      <div className="flex-1 overflow-y-auto px-0 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <SpotHeroCard
           symbol={data.symbol}
+          expiry={data.expiry}
           spot={data.spot}
           spotChange={data.spotChange}
           openChange={data.openChange}
           pctChange={data.pctChange}
-          maxPain={data.maxPain}
-          pcr={data.pcr}
           updatedAt={data.updatedAt}
-        />
-
-        <SessionPhaseCard
-          sessionPhase={data.sessionPhase}
           regime={data.regime}
-          pressureState={data.pressureState}
-          readinessActive={data.readinessActive}
+          projection={data.materialBreachConfirmed ? data.confirmationType || "Confirmed" : "No breakout"}
+          dayTrend={data.dayTrend}
+          longTrend={data.longTrend}
+          sessionPhase={data.sessionPhase}
         />
 
         <PrimarySignalCard
@@ -102,19 +57,15 @@ export default function OptionLensMobileDashboard({
           regime={data.regime}
         />
 
-        {data.absorptionDetected || data.absorptionMessage ? (
-          <AbsorptionAlertCard
-            absorptionLevel={data.absorptionLevel}
-            absorptionMessage={data.absorptionMessage}
-            supportTransitionActive={data.supportTransitionActive}
-          />
-        ) : null}
+        <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />
 
         <TrapCardMobile
           trapProbability={data.trapProbability}
           trapType={data.trapType}
+          trapDirection={data.trapDirection}
           explanation={data.trapExplanation}
           severity={data.trapSeverity}
+          affectedLevel={data.trapDirection === "downside" ? data.support : data.trapDirection === "upside" ? data.resistance : null}
         />
 
         <KeyLevelsCard
@@ -126,26 +77,18 @@ export default function OptionLensMobileDashboard({
           breakoutDown={data.breakoutDown}
         />
 
-        <StrikeLadderMobile rows={data.ladderRows} />
-
-        <TopWritersMobile ce={data.topWriters.ce} pe={data.topWriters.pe} />
-
-        <FuturesBasisCardMobile
-          syntheticFuture={data.futuresBasis.syntheticFuture}
-          basis={data.futuresBasis.basis}
-          basisPct={data.futuresBasis.basisPct}
-          basisType={data.futuresBasis.basisType}
-          direction={data.futuresBasis.direction}
+        <TradePlanMobile
+          tradeAction={data.tradeAction}
+          bullishTrigger={data.bullishTrigger}
+          bearishTrigger={data.bearishTrigger}
+          support={data.support}
+          resistance={data.resistance}
         />
 
         <AlertsCardMobile alerts={data.alerts} />
-
-        <div className="px-4 text-center text-[10px] leading-6 text-slate-500">
-          Educational and analytical purposes only. Not SEBI registered. No buy/sell recommendation.
-        </div>
-
-        <BottomNavMobile active={activeNav} onChange={setActiveNav} />
       </div>
+
+      <BottomNavMobile active={activeNav} onChange={setActiveNav} />
     </div>
   );
 }

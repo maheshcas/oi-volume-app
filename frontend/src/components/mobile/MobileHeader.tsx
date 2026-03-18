@@ -1,34 +1,24 @@
 type MobileHeaderProps = {
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
+  updatedAt: string;
 };
 
-const LIVE_LABELS: Record<MobileHeaderProps["liveStatus"], string> = {
-  live: "LIVE",
-  stale: "STALE",
-  delayed: "DELAYED",
-  blocked: "BLOCKED",
-  checking: "CHECKING",
-};
+function statusTone(liveStatus: MobileHeaderProps["liveStatus"]) {
+  if (liveStatus === "live") return "text-emerald-300 border-emerald-400/20 bg-emerald-400/10";
+  if (liveStatus === "checking") return "text-sky-300 border-sky-400/20 bg-sky-400/10";
+  return "text-amber-200 border-amber-300/20 bg-amber-300/10";
+}
 
-const LIVE_TONES: Record<MobileHeaderProps["liveStatus"], string> = {
-  live: "text-emerald-300",
-  stale: "text-amber-300",
-  delayed: "text-rose-300",
-  blocked: "text-rose-300",
-  checking: "text-sky-300",
-};
-
-export default function MobileHeader({ liveStatus }: MobileHeaderProps) {
+export default function MobileHeader({ liveStatus, updatedAt }: MobileHeaderProps) {
   return (
-    <header className="sticky top-0 z-30 border-b border-white/7 bg-[rgba(7,12,20,0.95)] px-4 py-3 backdrop-blur">
-      <div className="flex items-center justify-between">
-        <div className="font-['Syne'] text-base font-bold tracking-tight text-slate-50">
-          Option<span className="text-sky-400">Lens</span>
+    <header className="shrink-0 border-b border-white/10 bg-[#0d1824] px-4 py-2">
+      <div className="flex items-center justify-between text-[11px] font-medium text-slate-500">
+        <span className="font-mono">{updatedAt || "--:--"}</span>
+        <div className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${statusTone(liveStatus)}`}>
+          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          {liveStatus === "live" ? "Live" : liveStatus.toUpperCase()}
         </div>
-        <div className={`flex items-center gap-2 font-mono text-[11px] ${LIVE_TONES[liveStatus]}`}>
-          <span className="h-1.5 w-1.5 rounded-full bg-current shadow-[0_0_10px_currentColor]" />
-          {LIVE_LABELS[liveStatus]} · 15s
-        </div>
+        <span className="font-mono tracking-[0.14em] text-slate-600">●●●</span>
       </div>
     </header>
   );
