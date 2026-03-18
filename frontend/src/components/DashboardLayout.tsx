@@ -19,6 +19,14 @@ type DashboardLayoutProps = {
     action: "WAIT" | "CAUTION" | "READY";
     direction: "Bullish" | "Bearish" | "Neutral" | "Conflict";
     explanation: string;
+    bias: string;
+    readinessScore: number;
+    readinessState: string;
+    pressureState: string;
+    regime: string;
+    detailSummary?: string;
+    detailInsight?: string;
+    detailWalls?: string | null;
     support: string;
     resistance: string;
     majorSupport?: string;
@@ -58,6 +66,10 @@ type DashboardLayoutProps = {
     resistanceEnd: number | null;
     target1: number | null;
     target2: number | null;
+    previousSupport?: number | null;
+    previousResistance?: number | null;
+    materialBreachConfirmed?: boolean;
+    confirmationType?: string | null;
     bias: string;
     biasStrength: string;
     regime: string;
@@ -78,6 +90,7 @@ type DashboardLayoutProps = {
     trap_level: "Low" | "Moderate" | "High";
     trap_type: string;
     trap_zone: number;
+    trap_direction?: "upside" | "downside" | "";
     suggested_action: string;
     trap_reason?: string | null;
     support_reason?: string | null;
@@ -117,6 +130,14 @@ export default function DashboardLayout({
           action={decision.action}
           direction={decision.direction}
           explanation={decision.explanation}
+          bias={decision.bias}
+          readinessScore={decision.readinessScore}
+          readinessState={decision.readinessState}
+          pressureState={decision.pressureState}
+          regime={decision.regime}
+          detailSummary={decision.detailSummary}
+          detailInsight={decision.detailInsight}
+          detailWalls={decision.detailWalls}
           support={decision.support}
           resistance={decision.resistance}
         />
@@ -157,6 +178,10 @@ export default function DashboardLayout({
           resistanceEnd={structure.resistanceEnd}
           target1={structure.target1}
           target2={structure.target2}
+          previousSupport={structure.previousSupport}
+          previousResistance={structure.previousResistance}
+          materialBreachConfirmed={structure.materialBreachConfirmed}
+          confirmationType={structure.confirmationType}
           bias={structure.bias}
           biasStrength={structure.biasStrength}
           regime={structure.regime}
@@ -185,6 +210,7 @@ export default function DashboardLayout({
             trap_level={trap.trap_level}
             trap_type={trap.trap_type}
             trap_zone={trap.trap_zone}
+            trap_direction={trap.trap_direction}
             suggested_action={trap.suggested_action}
             trap_reason={trap.trap_reason}
             support_reason={trap.support_reason}

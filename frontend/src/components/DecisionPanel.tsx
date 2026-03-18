@@ -96,7 +96,6 @@ export default function DecisionPanel(props: DecisionPanelProps) {
       </div>
 
       <div className="ia-decision-section">
-        <div className="ia-kpi-label ia-decision-side-label">Immediate Pressure</div>
         <MarketPressureBar score={props.pressureScore ?? 0} state={pressureText} />
       </div>
     </div>

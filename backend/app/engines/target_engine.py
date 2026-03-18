@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 PHASE_MULTIPLIER_MAP: dict[str, float] = {
     "Opening Drive": 1.0,
@@ -115,16 +118,37 @@ def run_target_engine(
     expected_move = max(1.0, atm_ce_ltp + atm_pe_ltp)
     multiplier = PHASE_MULTIPLIER_MAP.get(session_phase, 1.0)
     adjusted_move = expected_move * multiplier
+    band_width = max(1.0, resistance - support)
+
+    support_score = _clamp(_to_float(sr.get("support", {}).get("score"), 0.0), 0.0, 100.0) / 100.0
+    resistance_score = _clamp(_to_float(sr.get("resistance", {}).get("score"), 0.0), 0.0, 100.0) / 100.0
+    oi_power = max(support_score, resistance_score) * 0.5
+    vol_factor = 0.85 + (0.30 * multiplier)
+    base_move = max(1.0, band_width * (1.0 + oi_power) * vol_factor)
+    max_distance = band_width * 3.0
+
+    logger.debug(
+        "TargetEngine[expectedMove=%.2f adjustedMove=%.2f band=%.2f baseMove=%.2f]",
+        expected_move,
+        adjusted_move,
+        band_width,
+        base_move,
+    )
 
     if bias == "Bullish":
-        target1 = resistance + (adjusted_move * 0.6)
-        target2 = resistance + (adjusted_move * 1.0)
+        target1 = resistance + min(base_move * 0.8, max_distance)
+        target2 = resistance + min(base_move * 1.5, max_distance)
     elif bias == "Bearish":
-        target1 = support - (adjusted_move * 0.6)
-        target2 = support - (adjusted_move * 1.0)
+        target1 = support - min(base_move * 0.8, max_distance)
+        target2 = support - min(base_move * 1.5, max_distance)
     else:
-        target1 = spot + adjusted_move
-        target2 = spot - adjusted_move
+        midpoint = (support + resistance) / 2.0
+        if spot >= midpoint:
+            target1 = resistance + min(base_move * 0.8, max_distance)
+            target2 = resistance + min(base_move * 1.5, max_distance)
+        else:
+            target1 = support - min(base_move * 0.8, max_distance)
+            target2 = support - min(base_move * 1.5, max_distance)
 
     rows = sorted(features.get("rows", []) or [], key=lambda r: _to_float(r.get("strike"), 0.0))
     breakout_up = bool(breakout.get("breakout_up"))
@@ -171,6 +195,17 @@ def run_target_engine(
                 )
                 gap_strength = _clamp(1.0 - (avg_oi_between / max_cluster_oi), 0.0, 1.0)
 
+    if breakout_up:
+        if primary_target is None:
+            primary_target = resistance + min(base_move * 0.8, max_distance)
+        if extended_target is None:
+            extended_target = resistance + min(base_move * 2.5, max_distance)
+    elif breakout_down:
+        if primary_target is None:
+            primary_target = support - min(base_move * 0.8, max_distance)
+        if extended_target is None:
+            extended_target = support - min(base_move * 2.5, max_distance)
+
     breakout_strength = _to_number_or_none(breakout.get("breakout_strength"))
     if breakout_strength is None:
         breakout_strength = 1.0 if breakout_confirmed else 0.0
@@ -206,6 +241,8 @@ def run_target_engine(
         "target_1": round(target1, 2),
         "target_2": round(target2, 2),
         "expected_move": round(expected_move, 2),
+        "band_width": round(band_width, 2),
+        "base_move": round(base_move, 2),
         "upper": round(spot + adjusted_move, 2),
         "lower": round(spot - adjusted_move, 2),
         "session_phase": session_phase,

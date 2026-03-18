@@ -7,9 +7,11 @@ from typing import Any
 PHASE_MULTIPLIER_MAP: dict[str, float] = {
     "Opening Drive": 1.0,
     "Midday Compression": 0.7,
+    "Compression Phase": 0.85,
     "Positioning Phase": 0.9,
+    "Position Build Phase": 0.9,
     "Power Hour": 1.3,
-    "Transition": 1.0,
+    "Transition": 0.95,
 }
 
 
@@ -54,6 +56,7 @@ def run_expiry_adaptive_mode(
     adjusted_trap_risk = _to_float(trap_risk, 0.0)
     if expiry_mode:
         adjusted_trap_risk = min(adjusted_trap_risk * 1.25, 95.0)
+    adjusted_trap_risk = min(adjusted_trap_risk * PHASE_MULTIPLIER_MAP.get(session_phase or "", 1.0), 95.0)
 
     spot_val = _to_float(spot, 0.0)
     strongest = _to_float(strongest_oi_strike, 0.0)
@@ -83,4 +86,3 @@ def run_expiry_adaptive_mode(
         "target2": round(target2, 2),
         "phase_multiplier_reference": PHASE_MULTIPLIER_MAP.get(session_phase or "", 1.0),
     }
-

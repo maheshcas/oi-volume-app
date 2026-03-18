@@ -487,16 +487,21 @@ def run_trap_engine(
         trap_type = None
         trap_message = "No active trap setup."
 
+    resolved_trap_type = str(trap_type or trap_v2.get("trap_type") or "")
+    trap_direction = "upside" if direction == "up" else "downside"
+
     return {
         "is_trap": is_trap,
         "trap_probability_pct": int(trap_risk),
         "trap_risk": int(trap_risk),
         "trap_raw": round(trap_raw, 4),
         "trap_smoothed": round(trap_smoothed, 4),
-        "trap_type": trap_type or trap_v2.get("trap_type"),
+        "trap_type": resolved_trap_type,
+        "trap_direction": trap_direction,
         "trap_message": trap_message,
-        "show_affected_level": bool(trap_type is not None),
+        "show_affected_level": bool(resolved_trap_type),
         "trap_level": trap_v2.get("trap_level"),
+        "trap_affected_level": reference_level,
         "breakout_strength": round(float(breakout_strength), 4),
         "rejection_wick_score": round(float(wick_score), 4),
         "rejection_wick_status": "provisional" if warmup_active else "final",

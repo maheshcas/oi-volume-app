@@ -23,6 +23,10 @@ type StructuralChartCardProps = {
   resistanceEnd: number | null;
   target1: number | null;
   target2: number | null;
+  previousSupport?: number | null;
+  previousResistance?: number | null;
+  materialBreachConfirmed?: boolean;
+  confirmationType?: string | null;
   bias: string;
   biasStrength: string;
   regime: string;
@@ -47,6 +51,10 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         resistanceEnd={props.resistanceEnd}
         target1={props.target1}
         target2={props.target2}
+        previousSupport={props.previousSupport}
+        previousResistance={props.previousResistance}
+        materialBreachConfirmed={props.materialBreachConfirmed}
+        confirmationType={props.confirmationType}
         bias={props.bias}
         biasStrength={props.biasStrength}
         regime={props.regime}

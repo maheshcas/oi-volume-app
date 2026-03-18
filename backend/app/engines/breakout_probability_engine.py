@@ -33,6 +33,8 @@ def compute_breakout_probability(
 
     resistance_proximity = 1.0 - min(1.0, dist_to_resistance / range_size)
     support_proximity = 1.0 - min(1.0, dist_to_support / range_size)
+    proximity_weight_up = _clamp((spot_value - support_value) / range_size, 0.0, 1.0)
+    proximity_weight_down = _clamp(1.0 - proximity_weight_up, 0.0, 1.0)
 
     bull_force = _clamp(float((directional_force or {}).get("bull", 0.0) or 0.0) / 100.0, 0.0, 1.0)
     bear_force = _clamp(float((directional_force or {}).get("bear", 0.0) or 0.0) / 100.0, 0.0, 1.0)
@@ -64,6 +66,9 @@ def compute_breakout_probability(
         + (clarity_value * 0.05)
         + (bear_force * 0.05)
     )
+
+    up_prob_raw *= 0.6 + (0.4 * proximity_weight_up)
+    down_prob_raw *= 0.6 + (0.4 * proximity_weight_down)
 
     trap_factor = 1.0 - min(0.5, float(trap_probability or 0.0) / 200.0)
     up_breakout_probability = round(min(100.0, up_prob_raw * trap_factor * 100.0), 1)

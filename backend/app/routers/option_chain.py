@@ -133,7 +133,14 @@ async def option_chain_summary(
     _ = (use_sample, target_mode, confidence_score)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
-    payload = data["summary_data"].get("summaries", {}).get(key)
+    summaries = data["summary_data"].get("summaries", {}) or {}
+    payload = summaries.get(key)
+    if not payload and expiry is None:
+        prefix = f"{instrument_type.upper()}::{symbol.upper()}::"
+        for k, v in summaries.items():
+            if isinstance(k, str) and k.startswith(prefix):
+                payload = v
+                break
     if not payload:
         raise HTTPException(
             status_code=503,
@@ -157,7 +164,14 @@ async def option_chain_target_projection(
     _ = (use_sample, target_mode, confidence_score)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
-    payload = data["summary_data"].get("target_projections", {}).get(key)
+    target_projections = data["summary_data"].get("target_projections", {}) or {}
+    payload = target_projections.get(key)
+    if not payload and expiry is None:
+        prefix = f"{instrument_type.upper()}::{symbol.upper()}::"
+        for k, v in target_projections.items():
+            if isinstance(k, str) and k.startswith(prefix):
+                payload = v
+                break
     if not payload:
         raise HTTPException(
             status_code=503,
@@ -176,7 +190,14 @@ async def option_chain_interpretations(
     _ = use_sample
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
-    payload = data["summary_data"].get("interpretations", {}).get(key)
+    interpretations = data["summary_data"].get("interpretations", {}) or {}
+    payload = interpretations.get(key)
+    if not payload and expiry is None:
+        prefix = f"{instrument_type.upper()}::{symbol.upper()}::"
+        for k, v in interpretations.items():
+            if isinstance(k, str) and k.startswith(prefix):
+                payload = v
+                break
     if not payload:
         raise HTTPException(
             status_code=503,

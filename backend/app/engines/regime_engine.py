@@ -17,13 +17,13 @@ def classify_session_regime(oi: dict[str, Any], volume: dict[str, Any], breakout
 
 
 def _normalize_regime_type(regime: str) -> str:
-    if regime in ("Trend Day", "Breakdown", "Short Covering"):
+    if regime in ("Trend Day", "Breakdown", "Breakdown Day", "Short Covering"):
         return "trend"
     if regime == "Range Day":
         return "range"
     if regime == "Transition":
         return "transition"
-    if regime == "Trap Risk":
+    if regime in ("Trap Risk", "Trap Day"):
         return "trap"
     return "neutral"
 
@@ -77,6 +77,32 @@ def _refined_regime_type(
     return "transition"
 
 
+def _apply_regime_hysteresis(
+    *,
+    detected_regime: str,
+    current_committed_regime: str | None,
+    candidate_regime: str | None,
+    candidate_regime_count: int,
+) -> tuple[str, str | None, int]:
+    detected = str(detected_regime or "")
+    committed = str(current_committed_regime or "")
+    candidate = str(candidate_regime or "") or None
+    count = int(candidate_regime_count or 0)
+
+    if not committed:
+        return detected, None, 0
+    if detected == committed:
+        return committed, None, 0
+    if candidate and detected == candidate:
+        count += 1
+    else:
+        candidate = detected
+        count = 1
+    if count >= 3:
+        return detected, None, 0
+    return committed, candidate, count
+
+
 def run_regime_engine(
     oi: dict[str, Any],
     volume: dict[str, Any],
@@ -84,7 +110,8 @@ def run_regime_engine(
     trap: dict[str, Any],
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    regime = classify_session_regime(oi, volume, breakout, trap)
+    base_regime = classify_session_regime(oi, volume, breakout, trap)
+    regime = base_regime
     if context:
         regime_type = _refined_regime_type(
             atr_ratio=float(context.get("atr_ratio", 1.0) or 1.0),
@@ -92,13 +119,31 @@ def run_regime_engine(
             last_10_scores=[float(v) for v in (context.get("last_10_scores") or [])],
             breakout_confirmed=bool(context.get("breakout_confirmed", False)),
         )
-        regime = "Trend Day" if regime_type == "trend" else "Range Day" if regime_type == "range" else "Transition"
+        # Only override the base classification when the refined pass has a strong
+        # trend/range read. Otherwise keep the base regime so hysteresis can
+        # accumulate a real pending candidate across cycles.
+        if regime_type == "trend":
+            regime = "Trend Day"
+        elif regime_type == "range":
+            regime = "Range Day"
+        else:
+            regime = base_regime
     else:
         regime_type = _normalize_regime_type(regime)
-    adjusted_weights, adjusted_thresholds = _regime_adjustments(regime_type)
+    committed_regime, next_candidate_regime, next_candidate_regime_count = _apply_regime_hysteresis(
+        detected_regime=regime,
+        current_committed_regime=context.get("current_committed_regime") if context else None,
+        candidate_regime=context.get("candidate_regime") if context else None,
+        candidate_regime_count=int(context.get("candidate_regime_count", 0) or 0) if context else 0,
+    )
+    committed_regime_type = _normalize_regime_type(committed_regime)
+    adjusted_weights, adjusted_thresholds = _regime_adjustments(committed_regime_type)
     return {
-        "regime": regime,
-        "regime_type": regime_type,
+        "regime": committed_regime,
+        "regime_type": committed_regime_type,
+        "detected_regime": regime,
+        "candidate_regime": next_candidate_regime,
+        "candidate_regime_count": next_candidate_regime_count,
         "adjusted_weights": adjusted_weights,
         "adjusted_thresholds": adjusted_thresholds,
     }

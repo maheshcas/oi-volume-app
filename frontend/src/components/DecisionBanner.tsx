@@ -2,6 +2,14 @@ type DecisionBannerProps = {
   action: "WAIT" | "CAUTION" | "READY";
   direction: "Bullish" | "Bearish" | "Neutral" | "Conflict";
   explanation: string;
+  bias: string;
+  readinessScore: number;
+  readinessState: string;
+  pressureState: string;
+  regime: string;
+  detailSummary?: string;
+  detailInsight?: string;
+  detailWalls?: string | null;
   support: string;
   resistance: string;
 };
@@ -57,80 +65,102 @@ export default function DecisionBanner({
   action,
   direction,
   explanation,
+  bias,
+  readinessScore,
+  readinessState,
+  pressureState,
+  regime,
+  detailSummary,
+  detailInsight,
+  detailWalls,
   support: _support,
   resistance: _resistance,
 }: DecisionBannerProps) {
-  const actionLabel = action === "READY" ? "TRADE" : action;
   const displayExplanation = normalizeExplanation(action, direction, explanation);
-  const displayDirection = formatDirectionLabel(direction);
   const toneClass =
     action === "READY"
       ? "ia-decision-banner-ready"
       : action === "CAUTION"
         ? "ia-decision-banner-caution"
         : "ia-decision-banner-wait";
-
-  const directionClass =
-    direction === "Bullish"
+  const readinessPct = Math.max(0, Math.min(100, Number(readinessScore) || 0));
+  const biasLabel = bias || formatDirectionLabel(direction);
+  const readinessStateClass =
+    readinessState.toLowerCase().includes("high") || readinessState.toLowerCase().includes("active")
       ? "ia-text-bull"
-      : direction === "Bearish"
+      : readinessState.toLowerCase().includes("low")
         ? "ia-text-bear"
-        : direction === "Conflict"
-          ? "ia-text-warn"
-          : "ia-text-muted";
+        : "ia-text-warn";
+  const pressureLabel = pressureState.replace(/\s*Pressure$/i, "").trim() || pressureState;
 
   return (
-    <div
-      className={`ia-card ia-decision-banner ${toneClass}`}
-      style={{
-        padding: 20,
-        display: "grid",
-        gap: 16,
-        borderRadius: 18,
-      }}
-    >
-      <div
-        className="ia-decision-banner-header"
-        style={{
-          display: "grid",
-          gap: 6,
-        }}
-      >
-        <div
-          className="ia-decision-banner-action"
-          style={{
-            fontSize: 42,
-            lineHeight: 0.95,
-            fontWeight: 900,
-            letterSpacing: "0.06em",
-            color: "#f8fbff",
-            textTransform: "uppercase",
-          }}
-        >
-          {actionLabel}
-        </div>
-        <div
-          className={`ia-decision-banner-direction ${directionClass}`}
-          style={{
-            fontSize: 24,
-            lineHeight: 1.1,
-            fontWeight: 700,
-          }}
-        >
-          {displayDirection}
-        </div>
+    <div className={`ia-card ia-decision-banner ia-decision-banner-v2 ${toneClass}`}>
+      <div className="ia-decision-banner-v2-head">
+        <div className="ia-kpi-label ia-decision-banner-v2-title">Trade Signal</div>
+        <div className="ia-decision-banner-v2-badge">{action}</div>
       </div>
 
-      <div
-        className="ia-decision-banner-explanation"
-        style={{
-          fontSize: 15,
-          lineHeight: 1.5,
-          color: "#d7e3f2",
-          maxWidth: "54ch",
-        }}
-      >
-        {displayExplanation}
+      <div className="ia-decision-banner-v2-body">
+        <div className="ia-decision-banner-explanation">{displayExplanation}</div>
+
+        <div className="ia-readiness-wrap">
+          <div className="ia-readiness-row">
+            <span className="ia-readiness-label">Trade Readiness</span>
+            <span className="ia-readiness-value">{Math.round(readinessPct)}%</span>
+          </div>
+          <div className="ia-readiness-track">
+            <div className="ia-readiness-fill" style={{ width: `${readinessPct}%` }} />
+            <div className="ia-readiness-threshold-wrap" style={{ left: "57%" }}>
+              <span className="ia-readiness-entry">57 entry</span>
+              <div className="ia-readiness-threshold" />
+            </div>
+          </div>
+        </div>
+
+        <div className="ia-decision-grid">
+          <div className="ia-decision-grid-item">
+            <div className="ia-decision-grid-label">Bias</div>
+            <div className="ia-decision-grid-value ia-text-muted">{biasLabel}</div>
+          </div>
+          <div className="ia-decision-grid-item">
+            <div className="ia-decision-grid-label">Pressure</div>
+            <div className="ia-decision-grid-value ia-text-muted">{pressureLabel}</div>
+          </div>
+          <div className="ia-decision-grid-item">
+            <div className="ia-decision-grid-label">Regime</div>
+            <div className="ia-decision-grid-value">{regime || "-"}</div>
+          </div>
+          <div className="ia-decision-grid-item">
+            <div className="ia-decision-grid-label">Readiness State</div>
+            <div className={`ia-decision-grid-value ${readinessStateClass}`}>{readinessState || "-"}</div>
+          </div>
+        </div>
+
+        {(detailSummary || detailInsight || detailWalls) ? (
+          <details className="ia-decision-more">
+            <summary>More detail</summary>
+            <div className="ia-decision-more-body">
+              {detailSummary ? (
+                <div className="ia-decision-more-block">
+                  <div className="ia-decision-more-label">Key Range</div>
+                  <div className="ia-decision-more-text">{detailSummary}</div>
+                </div>
+              ) : null}
+              {detailWalls ? (
+                <div className="ia-decision-more-block">
+                  <div className="ia-decision-more-label">Institutional Levels</div>
+                  <div className="ia-decision-more-text">{detailWalls}</div>
+                </div>
+              ) : null}
+              {detailInsight ? (
+                <div className="ia-decision-more-block">
+                  <div className="ia-decision-more-label">Market Insight</div>
+                  <div className="ia-decision-more-text">{detailInsight}</div>
+                </div>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
       </div>
     </div>
   );

@@ -6,7 +6,17 @@ import StructuralDiagnostics from "./components/StructuralDiagnostics";
 import EngineHealthPanel, { type EngineHealthResponse } from "./components/EngineHealthPanel";
 import DashboardLayout from "./components/DashboardLayout";
 import AdvancedAnalysisCard from "./components/AdvancedAnalysisCard";
+import OptionLensMobileDashboard from "./components/mobile/OptionLensMobileDashboard";
 import { MARKETING_MODE } from "./config/uiMode";
+
+const TAB_LABELS = {
+  overview: "Overview",
+  charts: "Charts",
+  heatmap: "Heatmap",
+  writers: "Writers",
+  basis: "Basis",
+  "option-chain": "Option-Chain",
+} as const;
 
 type SummaryRow = {
   strike: number;
@@ -125,9 +135,12 @@ type IntelligenceResponse = {
     target1?: number;
     target2?: number;
     summary_line?: string;
+    decision_explanation?: string;
+    resolved_reason?: string;
     pressure_state?: string;
     trade_action?: string;
     state?: string;
+    regime?: string;
     primary_bias?: "Bullish" | "Bearish" | "Neutral";
     composite_score?: number;
     adaptive_mode?: "Active" | "Base" | string;
@@ -170,6 +183,7 @@ type IntelligenceResponse = {
     long_trend?: "Bullish" | "Bearish" | "Neutral";
     trade_readiness?: number;
     readiness_state?: "High" | "Moderate" | "Low" | string;
+    readiness_active?: boolean;
     session_phase?: string;
     session_phase_confidence?: number;
     breakout_probability?: {
@@ -181,6 +195,11 @@ type IntelligenceResponse = {
     absorption_detected?: boolean;
     absorption_level?: number | null;
     absorption_message?: string | null;
+    support_transition_active?: boolean;
+    previous_support?: number | null;
+    previous_resistance?: number | null;
+    current_support?: number | null;
+    current_resistance?: number | null;
   };
   levels?: {
     support?: {
@@ -222,15 +241,22 @@ type IntelligenceResponse = {
       type: "primary" | "counter";
     }>;
     trap?: {
+      trap_probability?: number;
       trap_probability_pct?: number;
       trap_risk?: number;
       trap_level?: "Low" | "Moderate" | "High";
       trap_type?: string;
+      trap_direction?: "upside" | "downside" | "";
+      trap_affected_level?: number | null;
       show_affected_level?: boolean;
       validity_score?: number;
       trap_raw?: number;
       trap_reason?: string | null;
       support_reason?: string | null;
+    };
+    material_breach?: {
+      material_breach_confirmed?: boolean;
+      confirmation_type?: string | null;
     };
     momentum_exhaustion?: {
       momentum_exhaustion?: boolean;
@@ -1713,16 +1739,49 @@ export default function App() {
     intelligence?.signals?.trap?.trap_level ??
     (displayTrapRiskPct > 65 ? "High" : displayTrapRiskPct > 45 ? "Moderate" : "Low");
   const rawTrapType = intelligence?.signals?.trap?.trap_type;
-  const displayTrapType = sanitizeTrapType(rawTrapType);
+  const trapDirection =
+    intelligence?.signals?.trap?.trap_direction === "upside" || intelligence?.signals?.trap?.trap_direction === "downside"
+      ? intelligence.signals.trap.trap_direction
+      : "";
+  const displayTrapType = sanitizeTrapType(
+    trapDirection === "downside" && String(rawTrapType ?? "").toLowerCase().includes("breakout failure")
+      ? "Breakdown Failure"
+      : rawTrapType
+  );
   const showTrapAffectedLevel = intelligence?.signals?.trap?.show_affected_level ?? (rawTrapType !== null && rawTrapType !== undefined);
-  const displaySupport =
+  const rawDisplaySupport =
     intelligence?.levels?.support?.strike ??
     intelligence?.market_state?.support ??
     supportStrike;
-  const displayResistance =
+  const rawDisplayResistance =
     intelligence?.levels?.resistance?.strike ??
     intelligence?.market_state?.resistance ??
     resistanceStrike;
+  const staleSupportThreshold =
+    typeof rawDisplaySupport === "number" ? Math.max(50, rawDisplaySupport * 0.002) : null;
+  const staleResistanceThreshold =
+    typeof rawDisplayResistance === "number" ? Math.max(50, rawDisplayResistance * 0.002) : null;
+  const displaySupport =
+    typeof spotValue === "number" &&
+    typeof rawDisplaySupport === "number" &&
+    staleSupportThreshold !== null &&
+    typeof supportStrike === "number" &&
+    supportStrike < rawDisplaySupport &&
+    spotValue < rawDisplaySupport - staleSupportThreshold
+      ? supportStrike
+      : rawDisplaySupport;
+  const displayResistance =
+    typeof spotValue === "number" &&
+    typeof rawDisplayResistance === "number" &&
+    staleResistanceThreshold !== null &&
+    typeof resistanceStrike === "number" &&
+    resistanceStrike > rawDisplayResistance &&
+    spotValue > rawDisplayResistance + staleResistanceThreshold
+      ? resistanceStrike
+      : rawDisplayResistance;
+  const trapAffectedLevel =
+    intelligence?.signals?.trap?.trap_affected_level ??
+    (trapDirection === "downside" ? displaySupport : trapDirection === "upside" ? displayResistance : undefined);
   const supportRangeRaw =
     intelligence?.signals?.sr?.support_range ??
     intelligence?.levels?.support?.range ??
@@ -1765,6 +1824,14 @@ export default function App() {
     );
   const displayTarget1 = intelligence?.market_state?.target1 ?? effectiveTargetProjection.target1;
   const displayTarget2 = intelligence?.market_state?.target2 ?? effectiveTargetProjection.target2;
+  const previousSupport =
+    typeof intelligence?.market_state?.previous_support === "number"
+      ? intelligence.market_state.previous_support
+      : null;
+  const previousResistance =
+    typeof intelligence?.market_state?.previous_resistance === "number"
+      ? intelligence.market_state.previous_resistance
+      : null;
   const biasStrengthLabel =
     displayConfidence >= 70 ? "Strong" : displayConfidence >= 50 ? "Moderate" : "Weak";
   const momentumExhaustion = intelligence?.signals?.momentum_exhaustion;
@@ -1873,10 +1940,34 @@ export default function App() {
   const readinessCandidate: "WAIT" | "CAUTION" | "READY" =
     readinessRaw < 40 ? "WAIT" : readinessRaw < 65 ? "CAUTION" : "READY";
   const playbookPlan = playbook?.strategy ?? displayTradePlan.strategy_type;
+  const bandWidthPts =
+    typeof displaySupport === "number" && typeof displayResistance === "number"
+      ? Math.max(50, Math.abs(displayResistance - displaySupport))
+      : 50;
+  const liveAbovePrimary =
+    typeof displayTarget1 === "number" && typeof displayResistance === "number" && displayTarget1 > displayResistance
+      ? displayTarget1
+      : null;
+  const liveAboveExtended =
+    typeof displayTarget2 === "number" && typeof displayResistance === "number" && displayTarget2 > displayResistance
+      ? displayTarget2
+      : null;
+  const liveBelowPrimary =
+    typeof displayTarget1 === "number" && typeof displaySupport === "number" && displayTarget1 < displaySupport
+      ? displayTarget1
+      : null;
+  const liveBelowExtended =
+    typeof displayTarget2 === "number" && typeof displaySupport === "number" && displayTarget2 < displaySupport
+      ? displayTarget2
+      : null;
   const projectedMovePts =
-    Number(apiTargetProjection?.projectedMove ?? 0) > 0
+    typeof liveAbovePrimary === "number" && typeof displayResistance === "number"
+      ? Math.abs(liveAbovePrimary - displayResistance)
+      : typeof liveBelowPrimary === "number" && typeof displaySupport === "number"
+        ? Math.abs(displaySupport - liveBelowPrimary)
+        : Number(apiTargetProjection?.projectedMove ?? 0) > 0
       ? Number(apiTargetProjection?.projectedMove)
-      : Math.max(50, Math.abs(Number(displayTarget1 ?? 0) - Number(displayResistance ?? 0)));
+      : bandWidthPts * 0.8;
   const derivedBreakAbovePrimary = Number(displayResistance ?? 0) + projectedMovePts * 0.6;
   const derivedBreakAboveExtended = Number(displayResistance ?? 0) + projectedMovePts * 1.0;
   const derivedBreakBelowPrimary = Number(displaySupport ?? 0) - projectedMovePts * 0.6;
@@ -1898,18 +1989,22 @@ export default function App() {
     typeof displayResistance === "number" ? displayResistance + strikeStep : null;
 
   const canonicalBreakAbovePrimary =
-    displayPrimaryBias === "Bullish" && typeof displayTarget1 === "number" ? displayTarget1 : derivedBreakAbovePrimary;
+    typeof liveAbovePrimary === "number" ? liveAbovePrimary : derivedBreakAbovePrimary;
   const canonicalBreakAboveExtended =
-    displayPrimaryBias === "Bullish" && typeof displayTarget2 === "number" ? displayTarget2 : derivedBreakAboveExtended;
+    typeof liveAboveExtended === "number" ? liveAboveExtended : derivedBreakAboveExtended;
   const canonicalBreakBelowPrimary =
-    displayPrimaryBias === "Bearish" && typeof displayTarget1 === "number" ? displayTarget1 : derivedBreakBelowPrimary;
+    typeof liveBelowPrimary === "number" ? liveBelowPrimary : derivedBreakBelowPrimary;
   const canonicalBreakBelowExtended =
-    displayPrimaryBias === "Bearish" && typeof displayTarget2 === "number" ? displayTarget2 : derivedBreakBelowExtended;
+    typeof liveBelowExtended === "number" ? liveBelowExtended : derivedBreakBelowExtended;
   const trapSuggestedAction =
     displayTrapLevel === "High"
-      ? "Avoid fresh breakout entries. Wait for re-test confirmation with stronger ATM participation."
+      ? trapDirection === "downside"
+        ? `Avoid fresh breakdown entries${typeof trapAffectedLevel === "number" ? ` below ${formatNumber(trapAffectedLevel)}` : ""}. Wait for re-test confirmation with stronger ATM participation.`
+        : `Avoid fresh breakout entries${typeof trapAffectedLevel === "number" ? ` above ${formatNumber(trapAffectedLevel)}` : ""}. Wait for re-test confirmation with stronger ATM participation.`
       : displayTrapLevel === "Moderate"
-        ? "Reduce size and wait for one more confirmation candle."
+        ? trapDirection === "downside"
+          ? "Reduce size on downside continuation and wait for one more confirmation candle."
+          : "Reduce size on upside continuation and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
   const dailyPerformancePreview = dailyPerformance
     ? `${Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/${dailyPerformance.total_signals_logged} setups valid today, trap risk ${String(displayTrapLevel).toLowerCase()}.`
@@ -1974,13 +2069,13 @@ export default function App() {
                 />
               </div>
               <div className="bar-meta">
-                <span>{formatNumber(ceOi)}</span>
-                <span className={row.CE_DeltaOI >= 0 ? "up" : "down"}>
+                <span className="ladder-oi oi-value">{formatNumber(ceOi)}</span>
+                <span className={`oi-value ${row.CE_DeltaOI >= 0 ? "up" : "down"}`}>
                   {row.CE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.CE_DeltaOI))}
                 </span>
               </div>
               <div className="bar-sub">
-                {formatNumber(ceVol)}{" "}
+                <span className="oi-value">{formatNumber(ceVol)}</span>{" "}
                 <span className={normalizeDirection(row.CE_VolDir) === "up" ? "up" : normalizeDirection(row.CE_VolDir) === "down" ? "down" : ""}>
                   {directionArrow(row.CE_VolDir)}
                 </span>
@@ -2001,13 +2096,13 @@ export default function App() {
                 />
               </div>
               <div className="bar-meta">
-                <span>{formatNumber(peOi)}</span>
-                <span className={row.PE_DeltaOI >= 0 ? "up" : "down"}>
+                <span className="ladder-oi oi-value">{formatNumber(peOi)}</span>
+                <span className={`oi-value ${row.PE_DeltaOI >= 0 ? "up" : "down"}`}>
                   {row.PE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.PE_DeltaOI))}
                 </span>
               </div>
               <div className="bar-sub">
-                {formatNumber(peVol)}{" "}
+                <span className="oi-value">{formatNumber(peVol)}</span>{" "}
                 <span className={normalizeDirection(row.PE_VolDir) === "up" ? "up" : normalizeDirection(row.PE_VolDir) === "down" ? "down" : ""}>
                   {directionArrow(row.PE_VolDir)}
                 </span>
@@ -2054,6 +2149,14 @@ export default function App() {
       marketInsight={marketInsights}
     />
   );
+  const decisionLayerInsight =
+    marketInsights.find((item) => item && item.trim().length > 0) ?? "No fresh structural insight.";
+  const decisionLayerWalls = [
+    institutionalStructure?.put_wall ? `Put Wall ${Number(institutionalStructure.put_wall).toLocaleString("en-IN")}` : null,
+    institutionalStructure?.call_wall ? `Call Wall ${Number(institutionalStructure.call_wall).toLocaleString("en-IN")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
   const advancedAnalysisContent = (
     <>
       {!MARKETING_MODE ? (
@@ -2284,11 +2387,51 @@ export default function App() {
     ? ["overview", "charts", "option-chain"]
     : ["overview", "charts", "heatmap", "writers", "basis", "option-chain"];
 
+  const [isCompactTabViewport, setIsCompactTabViewport] = useState(false);
+  const [showMoreTabs, setShowMoreTabs] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const media = window.matchMedia("(max-width: 600px)");
+    const syncViewport = () => {
+      const compact = media.matches;
+      setIsCompactTabViewport(compact);
+      if (!compact) {
+        setShowMoreTabs(false);
+      }
+    };
+
+    syncViewport();
+    media.addEventListener("change", syncViewport);
+    return () => media.removeEventListener("change", syncViewport);
+  }, []);
+
   useEffect(() => {
     if (!visibleTabs.includes(activeTab)) {
       setActiveTab("overview");
     }
   }, [activeTab, visibleTabs]);
+
+  const compactPrimaryTabs: Array<
+    "overview" | "charts" | "heatmap" | "option-chain"
+  > = ["overview", "charts", "heatmap", "option-chain"];
+
+  const compactOverflowTabs = visibleTabs.filter(
+    (tab): tab is "writers" | "basis" =>
+      tab === "writers" || tab === "basis",
+  );
+
+  const tabsInBar = isCompactTabViewport
+    ? visibleTabs.filter((tab) => compactPrimaryTabs.includes(tab as (typeof compactPrimaryTabs)[number]))
+    : visibleTabs;
+
+  const isMoreTabActive = compactOverflowTabs.includes(activeTab as "writers" | "basis");
+
+  useEffect(() => {
+    if (!isCompactTabViewport) return;
+    setShowMoreTabs(isMoreTabActive);
+  }, [isCompactTabViewport, isMoreTabActive]);
 
   const topWriters = useMemo(() => {
     if (!displayRows.length) {
@@ -2533,12 +2676,144 @@ export default function App() {
     };
   }, [history, displayRows, nearestSpotStrike]);
 
+  const mobileStrikeRows = useMemo(() => {
+    const sorted = [...displayRows]
+      .map((row) => ({
+        strike: Number(row.strike),
+        ceOI: Number(row.CE_OI) || 0,
+        peOI: Number(row.PE_OI) || 0,
+        interpretation: row.PE_Interpretation ?? row.CE_Interpretation ?? row.signal ?? "Mixed",
+      }))
+      .filter((row) => !Number.isNaN(row.strike))
+      .sort((a, b) => a.strike - b.strike);
+
+    if (!sorted.length) return [];
+
+    const centerIndex = nearestSpotStrike !== null
+      ? Math.max(0, sorted.findIndex((row) => row.strike === Number(nearestSpotStrike)))
+      : Math.floor(sorted.length / 2);
+    const sliceStart = Math.max(0, centerIndex - 2);
+    const sliceEnd = Math.min(sorted.length, centerIndex + 3);
+
+    return sorted.slice(sliceStart, sliceEnd).map((row) => ({
+      ...row,
+      isSpot: nearestSpotStrike !== null && row.strike === Number(nearestSpotStrike),
+      isSupport: typeof displaySupport === "number" && row.strike === Number(displaySupport),
+      isResistance: typeof displayResistance === "number" && row.strike === Number(displayResistance),
+    }));
+  }, [displayRows, nearestSpotStrike, displaySupport, displayResistance]);
+
+  const mobileTrapExplanation =
+    intelligence?.signals?.trap?.trap_reason ??
+    intelligence?.signals?.trap?.support_reason ??
+    (displayTrapLevel === "High"
+      ? "Trap probability is elevated. Wait for cleaner confirmation before chasing expansion."
+      : "Trap pressure is present but controlled.");
+
+  const mobileExpiryOptions = (expiries.length ? expiries : [expiry].filter(Boolean)).map((item) => ({
+    label: item,
+    value: item,
+  }));
+
+  const mobileTradeAction =
+    intelligence?.market_state?.trade_action ??
+    intelligence?.decision_engine?.trade_action ??
+    "WAIT";
+
+  const mobileResolvedReason =
+    intelligence?.market_state?.resolved_reason ??
+    intelligence?.market_state?.decision_explanation ??
+    decisionExplanation;
+
+  const mobileDashboardData = {
+    symbol,
+    instrumentType,
+    expiry: expiry || null,
+    updatedAt: lastUpdated || meta?.timestamp || "-",
+    liveStatus: bannerLiveStatus,
+    spot: typeof spotValue === "number" ? spotValue : null,
+    spotChange:
+      indexRow?.last !== undefined && indexRow?.previousClose !== undefined
+        ? `${indexRow.last >= indexRow.previousClose ? "+" : "-"}${Math.abs(indexRow.last - indexRow.previousClose).toFixed(1)}`
+        : "-",
+    openChange:
+      typeof spotValue === "number" && typeof dayOpenValue === "number"
+        ? `${spotValue >= dayOpenValue ? "+" : "-"}${Math.abs(spotValue - dayOpenValue).toFixed(1)}`
+        : "-",
+    pctChange: indexRow?.percChange !== undefined ? `${formatSigned(indexRow.percChange, 2)}%` : "-",
+    maxPain: "-",
+    pcr: typeof apiTargetProjection?.confirmation?.pcr === "number" ? apiTargetProjection.confirmation.pcr.toFixed(2) : "-",
+    tradeAction: mobileTradeAction,
+    resolvedReason: mobileResolvedReason,
+    bias: displayPrimaryBias,
+    readinessScore: intelligence?.market_state?.trade_readiness ?? null,
+    readinessState: intelligence?.market_state?.readiness_state ?? "Unknown",
+    readinessActive: intelligence?.market_state?.readiness_active ?? null,
+    pressureState: intelligence?.market_state?.pressure_state ?? pressureStateLabel ?? "-",
+    regime: intelligence?.market_state?.regime ?? displayRegime,
+    sessionPhase: displaySessionPhase,
+    absorptionDetected: Boolean(intelligence?.market_state?.absorption_detected),
+    absorptionLevel: intelligence?.market_state?.absorption_level ?? null,
+    absorptionMessage: intelligence?.market_state?.absorption_message ?? null,
+    supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
+    trapProbability: displayTrapRiskPct,
+    trapType: displayTrapType ?? "No active trap",
+    trapExplanation: mobileTrapExplanation,
+    trapSeverity:
+      (displayTrapRiskPct >= 70 ? "high" : displayTrapRiskPct >= 40 ? "moderate" : "low") as
+        | "high"
+        | "moderate"
+        | "low",
+    support: typeof displaySupport === "number" ? displaySupport : null,
+    resistance: typeof displayResistance === "number" ? displayResistance : null,
+    bullishTrigger:
+      typeof displayResistance === "number"
+        ? `Above ${formatNumber(displayResistance)}`
+        : null,
+    bearishTrigger:
+      typeof displaySupport === "number"
+        ? `Below ${formatNumber(displaySupport)}`
+        : null,
+    breakoutUp: intelligence?.market_state?.breakout_probability?.upside ?? null,
+    breakoutDown: intelligence?.market_state?.breakout_probability?.downside ?? null,
+    materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
+    confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
+    putWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
+    callWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+    topWriters: {
+      ce: topWriters.ce.map((item) => ({ strike: item.strike, doi: item.doi, volume: item.volume })),
+      pe: topWriters.pe.map((item) => ({ strike: item.strike, doi: item.doi, volume: item.volume })),
+    },
+    futuresBasis: {
+      syntheticFuture: futuresBasis.syntheticFuture,
+      basis: futuresBasis.basis,
+      basisPct: futuresBasis.basisPct,
+      basisType: futuresBasis.basisType,
+      direction: futuresBasis.direction,
+    },
+    alerts: displayAlerts.map((item) => ({ message: item.message, severity: item.severity })),
+    ladderRows: mobileStrikeRows,
+  };
+
   return (
-    <div className="page">
+    <>
+      <div className="hidden">
+        <OptionLensMobileDashboard
+          data={mobileDashboardData}
+          symbolOptions={SYMBOLS.map((item) => ({ label: item, value: item }))}
+          expiryOptions={mobileExpiryOptions}
+          onSelectSymbol={setSymbol}
+          onSelectExpiry={setExpiry}
+        />
+      </div>
+      <div className="page block">
       <header className="hero">
         <div>
           <p className="eyebrow">Intraday Dashboard</p>
-          <img src="/optionlens-logo.svg" alt="OptionLens" className="brand-logo" />
+          <div className="brand-logo" aria-label="OptionLens">
+            <span className="brand-logo-option">Option</span>
+            <span className="brand-logo-lens">Lens</span>
+          </div>
           <p className="subhead">
             Live CE/PE open interest and volume across strikes. Auto refreshes every 15s.
           </p>
@@ -2547,12 +2822,17 @@ export default function App() {
           <button type="button" className="upgrade-disabled" disabled>
             Upgrade to Pro (Soon)
           </button>
-          <span className="pill">React</span>
-          <span className="pill">ECharts</span>
-          <span className="pill">FastAPI</span>
-          <span className={`pill status-pill ${nseStatus}`}>
-            NSE {nseStatus === "checking" ? "checking" : nseStatus}
-          </span>
+          <label className="hero-refresh-toggle" title="Toggle auto refresh">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+            />
+            <span className="hero-refresh-toggle-track" aria-hidden="true">
+              <span className="hero-refresh-toggle-thumb" />
+            </span>
+            <span className="hero-refresh-toggle-label">Auto Refresh</span>
+          </label>
         </div>
       </header>
 
@@ -2619,14 +2899,13 @@ export default function App() {
             />
             <span>Auto refresh</span>
           </label>
-          <button type="button" onClick={handleManualRefresh}>
+          <button type="button" className="refresh-pill-button" onClick={handleManualRefresh}>
             Refresh now
           </button>
-        </div>
-
-        <div className="status">
-          {status}
-          {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
+          <div className="status status-inline">
+            {status}
+            {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
+          </div>
         </div>
 
         <MarketBanner
@@ -2660,6 +2939,14 @@ export default function App() {
             action: decisionActionState,
             direction: decisionDirection,
             explanation: decisionExplanation,
+            bias: String(displayPrimaryBias ?? displayBias ?? "Neutral"),
+            readinessScore: displayReadinessScore,
+            readinessState: displayReadinessState,
+            pressureState: directionalPressureLabel,
+            regime: displayRegime,
+            detailSummary: displayDecisionText,
+            detailInsight: decisionLayerInsight,
+            detailWalls: decisionLayerWalls || null,
             support: formatNumber(displaySupport),
             resistance: formatNumber(displayResistance),
           }}
@@ -2691,6 +2978,10 @@ export default function App() {
             resistanceEnd: activeResistanceEnd,
             target1: typeof displayTarget1 === "number" ? displayTarget1 : null,
             target2: typeof displayTarget2 === "number" ? displayTarget2 : null,
+            previousSupport,
+            previousResistance,
+            materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
+            confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
             bias: String(displayPrimaryBias ?? displayBias),
             biasStrength: biasStrengthLabel,
             regime: displayRegime,
@@ -2720,7 +3011,8 @@ export default function App() {
             trap_probability: displayTrapRiskPct,
             trap_level: displayTrapLevel,
             trap_type: displayTrapType ?? "-",
-            trap_zone: Number(displayResistance ?? displaySupport ?? nearestSpotStrike ?? 0),
+            trap_zone: Number(trapAffectedLevel ?? displayResistance ?? displaySupport ?? nearestSpotStrike ?? 0),
+            trap_direction: trapDirection,
             suggested_action: trapSuggestedAction,
             trap_reason: intelligence?.signals?.trap?.trap_reason ?? null,
             support_reason: intelligence?.signals?.trap?.support_reason ?? null,
@@ -2812,7 +3104,7 @@ export default function App() {
 
         <div className="ia-tabs-wrap">
           <div className="ia-tabs">
-            {visibleTabs.map((tab) => (
+            {tabsInBar.map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2823,10 +3115,35 @@ export default function App() {
                     : ""
                 }`}
               >
-                {tab}
+                {TAB_LABELS[tab]}
               </button>
             ))}
+            {isCompactTabViewport && compactOverflowTabs.length ? (
+              <button
+                type="button"
+                onClick={() => setShowMoreTabs((current) => !current)}
+                className={`ia-tab-btn ${showMoreTabs || isMoreTabActive ? "ia-tab-btn-active" : ""}`}
+                aria-expanded={showMoreTabs}
+              >
+                More
+              </button>
+            ) : null}
           </div>
+
+          {isCompactTabViewport && showMoreTabs && compactOverflowTabs.length ? (
+            <div className="ia-tabs ia-tabs-overflow">
+              {compactOverflowTabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  className={`ia-tab-btn ${activeTab === tab ? "ia-tab-btn-active" : ""}`}
+                >
+                  {TAB_LABELS[tab]}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           {activeTab === "overview" ? (
             <div className="ia-tab-pane dashboard-grid">
@@ -3003,15 +3320,8 @@ export default function App() {
           No buy/sell recommendation. Market data may be delayed. Contact: <a href="mailto:contact@optionlense.com">contact@optionlense.com</a>
         </div>
       </section>
-      <button
-        type="button"
-        className={`ia-refresh-toggle ${autoRefresh ? "ia-refresh-toggle-on" : "ia-refresh-toggle-off"}`}
-        onClick={() => setAutoRefresh((prev) => !prev)}
-        title="Toggle auto refresh"
-      >
-        {autoRefresh ? "Auto Refresh: ON" : "Auto Refresh: OFF"}
-      </button>
-    </div>
+      </div>
+    </>
   );
 }
 

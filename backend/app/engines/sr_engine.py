@@ -171,6 +171,62 @@ def _pick_immediate(scored: list[_ScoredStrike], spot: float | None, side: Optio
     return chosen
 
 
+def _apply_level_hysteresis(
+    *,
+    side: OptionType,
+    immediate: _ScoredStrike | None,
+    scored: list[_ScoredStrike],
+    previous_state: dict[str, Any] | None,
+    spot: float | None,
+    score_margin: float = 0.18,
+    oi_margin: float = 0.15,
+) -> _ScoredStrike | None:
+    if immediate is None:
+        return None
+
+    prev_levels = (previous_state or {}).get("levels", {})
+    side_key = "resistance" if side == "CE" else "support"
+    prev_obj = prev_levels.get(side_key, {}) if isinstance(prev_levels, dict) else {}
+    prev_immediate = _to_float((prev_obj.get("immediate") if isinstance(prev_obj, dict) else None), 0.0)
+    prev_score = _to_float((prev_obj.get("immediate_score") if isinstance(prev_obj, dict) else None), 0.0)
+
+    if prev_immediate <= 0:
+        return immediate
+    if abs(immediate.strike - prev_immediate) < 1e-6:
+        return immediate
+
+    prev_candidate = next((item for item in scored if abs(item.strike - prev_immediate) < 1e-6), None)
+    if prev_candidate is None:
+        return immediate
+
+    if spot is not None:
+        prev_is_directional = prev_candidate.strike > spot if side == "CE" else prev_candidate.strike < spot
+        if not prev_is_directional:
+            return immediate
+
+    baseline_score = max(prev_score, prev_candidate.score)
+    current_score_gain = (immediate.score / max(1e-9, baseline_score)) - 1.0
+    current_oi_gain = (immediate.oi / max(1.0, prev_candidate.oi)) - 1.0
+
+    if side in {"CE", "PE"}:
+        if current_oi_gain >= oi_margin:
+            return immediate
+    elif current_score_gain >= score_margin or current_oi_gain >= oi_margin:
+        return immediate
+
+    logger.debug(
+        "SRTrace[%s][hysteresis_hold] prev=%s prev_score=%.6f current=%s current_score=%.6f score_gain=%.4f oi_gain=%.4f",
+        side,
+        prev_candidate.strike,
+        baseline_score,
+        immediate.strike,
+        immediate.score,
+        current_score_gain,
+        current_oi_gain,
+    )
+    return prev_candidate
+
+
 def _compute_cluster_zone(
     rows: list[dict[str, Any]],
     *,
@@ -461,6 +517,20 @@ def run_sr_engine(
     logger.debug("SRTrace[CE][major_resistance] chosen=%s score=%.6f", major_res.strike if major_res else None, major_res.score if major_res else 0.0)
     immediate_res = _pick_immediate(ce_scored, spot_num, "CE")
     immediate_sup = _pick_immediate(pe_scored, spot_num, "PE")
+    immediate_res = _apply_level_hysteresis(
+        side="CE",
+        immediate=immediate_res,
+        scored=ce_scored,
+        previous_state=previous_state,
+        spot=spot_num,
+    )
+    immediate_sup = _apply_level_hysteresis(
+        side="PE",
+        immediate=immediate_sup,
+        scored=pe_scored,
+        previous_state=previous_state,
+        spot=spot_num,
+    )
 
     ce_avg_vol = sum(s.vol for s in ce_scored) / max(1, len(ce_scored))
     pe_avg_vol = sum(s.vol for s in pe_scored) / max(1, len(pe_scored))

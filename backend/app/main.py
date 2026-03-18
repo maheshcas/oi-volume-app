@@ -10,6 +10,7 @@ from app.core.cache import cache
 from app.dependencies import get_current_user
 from app.routers import option_chain
 from app.services.background_updater import background_update_loop
+from app.services.stability_logger import StabilityLoggerService
 
 logger = logging.getLogger("optionlens.main")
 
@@ -19,6 +20,9 @@ app.add_middleware(SupabaseAuthMiddleware)
 
 _updater_stop_event: asyncio.Event | None = None
 _updater_task: asyncio.Task | None = None
+_stability_stop_event: asyncio.Event | None = None
+_stability_task: asyncio.Task | None = None
+_stability_logger = StabilityLoggerService()
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +34,8 @@ app.add_middleware(
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
 
 @app.get("/")
 def root():
@@ -65,19 +71,26 @@ def protected_analysis(current_user: dict = Depends(get_current_user)):
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global _updater_stop_event, _updater_task
+    global _updater_stop_event, _updater_task, _stability_stop_event, _stability_task
     if _updater_task and not _updater_task.done():
         logger.info("Background updater already running")
     else:
         _updater_stop_event = asyncio.Event()
         _updater_task = asyncio.create_task(background_update_loop(_updater_stop_event))
         logger.info("Background updater task started")
+    if _stability_logger.enabled:
+        if _stability_task and not _stability_task.done():
+            logger.info("Stability logger already running")
+        else:
+            _stability_stop_event = asyncio.Event()
+            _stability_task = asyncio.create_task(_stability_logger.run(_stability_stop_event))
+            logger.info("Stability logger task started")
 
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    global _updater_stop_event, _updater_task
+    global _updater_stop_event, _updater_task, _stability_stop_event, _stability_task
     if _updater_stop_event:
         _updater_stop_event.set()
     if _updater_task:
@@ -85,8 +98,17 @@ async def on_shutdown() -> None:
             await asyncio.wait_for(_updater_task, timeout=10)
         except TimeoutError:
             _updater_task.cancel()
+    if _stability_stop_event:
+        _stability_stop_event.set()
+    if _stability_task:
+        try:
+            await asyncio.wait_for(_stability_task, timeout=10)
+        except TimeoutError:
+            _stability_task.cancel()
     _updater_task = None
     _updater_stop_event = None
+    _stability_task = None
+    _stability_stop_event = None
     logger.info("Background updater task stopped")
 
 # Only run Uvicorn if this script is executed directly

@@ -1,0 +1,937 @@
+OptionLens Validation Logic Overview
+
+Maintenance rule:
+- Update this file whenever backend or frontend logic changes affect signal computation, decision state, field mapping, UI interpretation, or validation behavior.
+
+Current Backend Corrections
+
+Target Engine / Breakout Probability
+backend/app/engines/target_engine.py
+backend/app/engines/breakout_probability_engine.py
+- Target distance is now anchored to the live S/R band, not just expectedMove / adjustedMove.
+- Core calculation:
+  - band_width = resistance - support
+  - base_move = band_width * (1 + oi_power) * vol_factor
+- Target scaling:
+  - target_1 uses 0.8x base_move
+  - target_2 uses 1.5x base_move
+  - extended_target uses 2.5x base_move
+- Sanity clamp:
+  - target distance is capped at 3x band from the broken level
+- Debug trace added:
+  - TargetEngine[expectedMove=... adjustedMove=... band=... baseMove=...]
+- Breakout probability now includes final proximity weighting:
+  - closer to resistance -> upside probability boosted
+  - closer to support -> downside probability boosted
+
+SR Engine Hysteresis
+backend/app/engines/sr_engine.py
+- Immediate support/resistance selection now includes a hold-previous hysteresis layer.
+- A new immediate level only replaces the previous active level when it is meaningfully stronger:
+  - roughly 18 percent score improvement
+  - or roughly 15 percent OI improvement
+- Purpose:
+  - stop 23,800 <-> 24,000 resistance ping-pong
+  - stabilize detected regime input
+  - allow candidate_regime_count to accumulate instead of resetting on every minor SR flip
+
+Session Phase Timestamp Fix
+backend/app/services/background_updater.py
+- _parse_timestamp_utc() now treats NSE-style timestamps:
+  - %d-%b-%Y %H:%M:%S
+  - %d-%b-%Y %H:%M
+  as IST first, then converts to UTC.
+- This prevents session_phase from being stuck on Transition because of naive timestamp timezone drift.
+- Session phase should now be able to advance into:
+  - Structure Formation
+  - Compression Phase
+  - Position Build Phase
+  - Expansion Window
+
+Stability Logger Lock Fix
+backend/app/services/stability_logger.py
+- Process lock file now writes the real PID in fixed-width hex:
+  - f\"{os.getpid():08x}\"
+- On release the lock file resets to:
+  - 00000000
+- Purpose:
+  - remove PID=0 ambiguity
+  - make logger-owner tracing reliable
+  - reduce false duplicate-start ambiguity during session restarts
+
+Frontend Mobile Validation State
+
+frontend/src/App.tsx
+- Desktop dashboard remains the default layout at md and above.
+- Mobile dashboard is rendered only below md using:
+  - frontend/src/components/mobile/OptionLensMobileDashboard.tsx
+- Mobile layout is view-only:
+  - no backend changes
+  - no separate API contract
+  - uses the same live OptionLens response already powering desktop
+
+Mobile Layout Order
+- Header
+- Symbol selector
+- Expiry selector
+- Spot hero
+- Session phase banner
+- Primary signal card
+- Absorption alert card when active
+- Trap card
+- Key levels card
+- Decision layer grid
+- Strike ladder
+- Top writers
+- Futures basis
+- Alerts
+- Disclaimer
+- Bottom nav
+
+Mobile Component Set
+- frontend/src/components/mobile/MobileHeader.tsx
+- frontend/src/components/mobile/SpotHeroCard.tsx
+- frontend/src/components/mobile/PrimarySignalCard.tsx
+- frontend/src/components/mobile/AbsorptionAlertCard.tsx
+- frontend/src/components/mobile/TrapCardMobile.tsx
+- frontend/src/components/mobile/KeyLevelsCard.tsx
+- frontend/src/components/mobile/SessionPhaseCard.tsx
+- frontend/src/components/mobile/DecisionGridMobile.tsx
+- frontend/src/components/mobile/StrikeLadderMobile.tsx
+- frontend/src/components/mobile/TopWritersMobile.tsx
+- frontend/src/components/mobile/FuturesBasisCardMobile.tsx
+- frontend/src/components/mobile/AlertsCardMobile.tsx
+- frontend/src/components/mobile/BottomNavMobile.tsx
+
+Mobile Data Mapping
+- trade signal card:
+  - market_state.trade_action
+  - market_state.resolved_reason
+  - market_state.decision_explanation fallback
+  - market_state.trade_readiness
+  - market_state.readiness_state
+  - market_state.bias
+  - market_state.pressure_state
+  - market_state.regime
+- phase banner:
+  - market_state.session_phase
+  - market_state.regime
+  - market_state.readiness_active
+  - market_state.pressure_state
+- absorption card:
+  - market_state.absorption_detected
+  - market_state.absorption_message
+  - market_state.absorption_level
+  - market_state.support_transition_active
+- trap card:
+  - signals.trap.trap_probability
+  - signals.trap.trap_type
+  - frontend-derived trap explanation
+- key levels:
+  - levels.support.strike
+  - levels.resistance.strike
+  - market_state.breakout_probability.upside
+  - market_state.breakout_probability.downside
+- decision grid:
+  - institutional_structure.put_wall
+  - institutional_structure.call_wall
+  - frontend-derived bullish trigger
+  - frontend-derived bearish trigger
+- strike ladder:
+  - compact subset of displayRows around ATM
+  - support / resistance / ATM rows highlighted
+- top writers:
+  - frontend-derived ranking from DeltaOI + volume over current displayRows
+- futures basis:
+  - frontend-derived synthetic future, basis, basis type, direction
+- alerts:
+  - frontend displayAlerts list
+
+Mobile Validation Notes
+- Mobile UI must degrade safely when fields are absent:
+  - nulls render as "-"
+  - empty sections render placeholders or hide conditionally
+- Absorption card only renders when:
+  - absorption_detected is true
+  - or absorption_message is present
+- Desktop behavior must remain unchanged.
+- Build validation for current mobile implementation:
+  - npm run build in frontend passes
+
+Backend Logic Implemented
+
+backend/app/services/background_updater.py
+- Orchestrates the live pipeline and final response packaging.
+- Current effective flow:
+  1. Parse / normalize option-chain rows
+  2. OI engine
+  3. SR engine
+  4. Volume engine
+  5. Breakout engine
+  6. Trap engine
+  7. Material breach detection
+  8. Regime engine
+  9. Conflict resolver
+  10. Decision engine
+  11. MSS / DPS / readiness / stability / narrative layers
+  12. Response + logs
+
+Latest Stability / Validation State
+
+Stability Logger
+backend/app/services/stability_logger.py
+- Minimal JSONL snapshot logger runs as its own background service.
+- Poll cadence:
+  - every 5 seconds
+- Source:
+  - reads the cached v2 payload from backend cache
+- Default stream selection:
+  - symbol = NIFTY
+  - expiry = configured expiry if provided, otherwise first available cached expiry
+- Writes:
+  - backend/logs/stability/stability_YYYYMMDD.jsonl
+  - backend/logs/stability/transitions_YYYYMMDD.jsonl
+- Logger is non-blocking:
+  - failures should never break the backend
+  - failures warn through optionlens.stability_logger
+- Logger can be disabled with:
+  - OPTIONLENS_ENABLE_STABILITY_LOGGER=false
+- Snapshot contract now includes:
+  - _ts
+  - _epoch
+  - snapshot_index
+  - stream_key
+  - symbol
+  - expiry
+  - has_market_state
+  - has_signals
+  - has_levels
+  - missing_fields
+  - is_complete
+  - spot_price
+  - trade_action
+  - regime
+  - trade_readiness
+  - readiness_state
+  - bias
+  - session_phase
+  - absorption_detected
+  - absorption_level
+  - support_transition_active
+  - support_shift_cycle
+  - absorption_reference_level
+  - support_strike
+  - resistance_strike
+  - breach_confirmed
+  - trap_probability
+  - trap_type
+  - committed_regime
+  - detected_regime
+  - candidate_regime
+  - candidate_regime_count
+  - readiness_active
+  - previous_support
+  - confirmation_type
+- Field mapping notes:
+  - regime comes from market_state.regime or market_state.state
+  - committed_regime / detected_regime / candidate_regime / candidate_regime_count come from payload._state
+  - trap_probability comes from signals.trap.trap_probability
+  - trap_type comes from signals.trap.trap_type
+  - breach_confirmed comes from signals.material_breach.material_breach_confirmed
+  - confirmation_type comes from signals.material_breach.confirmation_type
+  - spot_price falls back through:
+    - market_state.spot
+    - payload.spot
+    - payload.spot_price
+    - payload.meta.spot
+  - support_transition_active is derived from support_shift_cycle == 1 if the flag is absent
+  - completeness logic treats confirmation_type as conditionally required only when breach_confirmed is true
+  - trap_type should serialize as an empty string rather than null when no trap label is active
+
+Transitions Logging
+backend/app/services/stability_logger.py
+- Tracks watched-field changes using instance-owned stream state.
+- Watched fields:
+  - trade_action
+  - regime
+  - trade_readiness
+  - session_phase
+  - readiness_state
+  - bias
+  - absorption_level
+  - support_transition_active
+  - support_shift_cycle
+  - absorption_reference_level
+  - support_strike
+  - resistance_strike
+  - trap_probability
+  - trap_type
+  - breach_confirmed
+  - confirmation_type
+  - absorption_detected
+- Transition line format:
+  - timestamp
+  - field
+  - from
+  - to
+  - held_for_seconds
+  - snapshot_index
+  - stream_key
+  - symbol
+  - expiry
+- Validation note:
+  - transitions file only appears when at least one watched field changes
+  - trade_action may remain flat at WAIT during range sessions even when readiness or support fields move
+
+Support / Resistance
+backend/app/engines/sr_engine.py
+- Weighted strike strength instead of raw max OI.
+- Immediate SR no longer uses the old 0.5%–1% minimum-distance gate.
+- Immediate level now prefers strongest candidate within <= 1% of spot.
+- Major level remains the strongest structural score.
+- Returns:
+  - levels.support.strike
+  - levels.support.immediate
+  - levels.support.major
+  - levels.support.range
+  - same for resistance
+  - zone pressure + zone state
+
+Strike Dominance / Interpretation
+backend/app/services/parser.py
+- PE% = PE_OI / (PE_OI + CE_OI) * 100
+- Labels:
+  - PE Dominant if PE% >= 60
+  - CE Dominant if PE% <= 40
+  - Mixed otherwise
+  - Low Interest only when total OI below threshold
+- Per-strike interpretation text:
+  - PE dominant near support -> support forming
+  - CE dominant above resistance -> call writers defending higher strikes
+  - Mixed -> market indecision
+  - Low Interest -> low participation
+
+Trap Engine
+backend/app/engines/trap_engine.py
+- Trap probability
+- Rejection wick score
+- Hold-time ratio
+- Continuation failure
+- Structural failure
+- Liquidity absorption
+- Warm-up-aware validation support in updater/logging
+
+Additional Trap Layers
+In background_updater.py
+- OI imbalance trap:
+  - CE OI change near resistance > 15 and PE OI change < 5 -> trap reason
+  - PE OI change near support > 15 and CE OI change < 5 -> support strengthening reason
+- Adds:
+  - trap_reason
+  - support_reason
+
+Material Breach
+backend/app/engines/material_breach_engine.py
+- Detects:
+  - support_broken
+  - resistance_broken
+- Thresholds:
+  - max(50, level * 0.002)
+- Exposed in:
+  - market_state.material_breach
+  - signals.material_breach
+- In background_updater.py:
+  - material breach now overrides projection immediately
+  - projection becomes:
+    - Resistance Broken - Monitoring
+    - Support Broken - Monitoring
+  - regime hint is attached:
+    - Trend Day Candidate
+    - Breakdown Candidate
+  - broken boundaries also invert SR contribution using:
+    - sr_score = -abs(sr_score)
+
+Conflict Resolver
+backend/app/engines/conflict_resolution_engine.py
+- Suppresses breakout under:
+  - low confidence
+  - range regime
+  - high trap risk
+  - weak alignment
+  - compression
+- Material breach relaxes suppression:
+  - trap suppression softened
+  - range suppression relaxed
+  - breakout strength can be boosted when zone pressure is high
+
+Breakout Candidate
+In background_updater.py
+- If breakout is suppressed but raw breakout strength is still strong:
+  - breakout_candidate = True
+  - breakout score reduced, not erased
+  - projection becomes Potential Breakout Watch
+- breakout_candidate also disables trap deduction inside readiness
+
+Regime
+backend/app/engines/regime_engine.py
+- Produces regime/session state such as:
+  - Range Day
+  - Trend Day
+  - Breakdown Day
+  - Trap Day
+  - Breakdown
+  - Trap Risk
+  - etc.
+
+Regime Hysteresis / Zone Mapping
+backend/app/services/background_updater.py
+- Committed regime used by validation/logging is now owned by the final decision-state layer, not only the coarse pre-decision regime engine.
+- Explicit hysteresis state:
+  - current_committed_regime
+  - candidate_regime
+  - candidate_regime_count
+- Effective regime switch requires 3 consecutive detection cycles before adopting the candidate for normal structural shifts.
+- Decision-state mapping used for the accumulator:
+  - Range Play / Standby -> Range Day
+  - Balanced / Wait / Balanced Structure -> Balanced Structure
+  - Transition Phase -> Transition
+  - trend / aggressive trend / cautious trend -> Trend Day
+  - breakdown states -> Breakdown Day
+- background_updater persists:
+  - committed_regime
+  - detected_regime
+  - candidate_regime
+  - candidate_regime_count
+  - regime_zone
+- Validation sequence to expect during a normal regime promotion:
+  - cycle N+0: candidate_regime != "" and candidate_regime_count = 1 while committed_regime is unchanged
+  - cycle N+1: same candidate_regime and count = 2
+  - cycle N+2: same candidate_regime and count = 3
+  - cycle N+3: committed_regime flips, candidate_regime clears, count resets to 0
+- Failure signatures:
+  - count stuck at 1 -> accumulator reset/persistence bug
+  - candidate changes mid-ladder -> detected regime unstable inside the 3-cycle window
+  - committed flips before count reaches 3 -> bypass path exists
+  - candidate clears without committed flip -> wrong state key written
+- Zone mapping used for action stability:
+  - WAIT_ZONE
+    - Standby
+    - Range Play
+    - Range Day
+  - WATCH_ZONE
+    - Balanced/Wait
+    - Balanced Structure
+  - TREND_ZONE
+    - Transition Phase
+    - Trend Day
+    - Breakdown Day
+- Trade action should only materially change when zone changes, not on every candidate regime flip.
+
+Immediate Breach Regime Override
+backend/app/services/background_updater.py
+- Confirmed material breaches bypass the slow 3-cycle accumulator.
+- Override rules:
+  - confirmed resistance breach -> Trend Day
+  - confirmed support breach -> Breakdown Day
+  - confirmed breach + absorption_detected -> Trap Day
+- When the override fires:
+  - committed_regime is promoted immediately
+  - detected_regime is set to the override regime
+  - candidate_regime is cleared
+  - candidate_regime_count resets to 0
+- Validation note:
+  - a confirmed material breach is already the confirmation event; no additional hysteresis should delay regime promotion
+
+Decision Engine
+backend/app/engines/decision_engine.py
+- Uses weighted force model:
+  - OI
+  - volume
+  - breakout
+  - SR
+- Produces:
+  - directional_force
+  - clarity
+  - execution_risk
+  - bias
+  - state
+  - primary_bias
+  - micro_bias
+  - drift
+
+MSS / Structural Conflict
+In background_updater.py
+- Market Structure Score computed separately.
+- MSS vs bias conflict:
+  - low MSS + bullish bias -> Transition Phase
+  - high MSS + bearish bias -> Transition Phase
+  - middle MSS -> Balanced Structure
+
+Day Trend / Long Trend
+In background_updater.py
+- day_trend
+  - weighted composite:
+    - 0.6 * pct_vs_prev_close + 0.4 * pct_from_open
+  - bullish if >= 0.007
+  - bearish if <= -0.007
+- long_trend
+  - uses spot, previous close, and normalized structure_bias
+  - structure_bias matching uses:
+    - strip()
+    - lower()
+    - startswith("bullish")
+    - startswith("bearish")
+
+Momentum / DPS / Readiness
+In background_updater.py
+- Intraday displacement momentum:
+  - affects directional force lightly
+- Directional Pressure Score (DPS):
+  - additive only
+  - returns:
+    - directional_pressure_score
+    - dps_adjusted
+    - pressure_state
+    - trade_action
+    - pressure_explanation
+- Trade readiness:
+  - based on:
+    - clarity
+    - alignment magnitude
+    - trap penalty
+    - execution risk
+  - trap deduction skipped when breakout is suppressed or breakout_candidate is true
+  - breakout probability is added lightly into readiness
+  - returns:
+    - trade_readiness
+    - readiness_state
+- Backend readiness reconciliation gate:
+  - Aggressive Trend -> readiness floor 55
+  - Cautious Trend -> readiness floor 40
+  - Standby -> readiness cap 38
+  - BREAKOUT WATCH / BREAKDOWN WATCH -> readiness floor 55
+- Readiness hysteresis:
+  - uses persisted readiness_active from previous cycle
+  - enters ready state at >= 57
+  - exits ready state below < 53
+  - values between 53 and 57 keep the prior readiness state
+  - if watch action is proposed while readiness_active is false, trade_action is forced back to WAIT
+  - absorption win forces readiness_active = false
+
+Momentum Override Layer
+In background_updater.py
+- If trade action is WAIT but momentum is strong:
+  - can promote to:
+    - BREAKOUT WATCH
+- Requires at least 2 structural confirmations:
+  - breakout_candidate
+  - volume_expansion_score > 0.5
+  - alignment_score > 0.6
+  - material breach detected
+
+Breakout Probability Engine
+backend/app/engines/breakout_probability_engine.py
+- Additive explainer only
+- Computes:
+  - upside
+  - downside
+  - upside_state
+  - downside_state
+- Returned in:
+  - market_state.breakout_probability
+
+Insight / Wall Break / Liquidity Map
+- backend/app/engines/insight_engine.py
+  - institutional structure + market insight sentences
+- backend/app/engines/wall_break_engine.py
+  - wall weakening / breakout anticipation
+- backend/app/engines/liquidity_map_engine.py
+  - put wall / call wall / battle zone / liquidity void
+- Wired into updater and response
+
+Validation / Warnings
+In background_updater.py
+- Response warnings if:
+  - support dominance inconsistent
+  - resistance dominance inconsistent
+  - bias and MSS conflict
+- Validation warnings also track:
+  - trap variance
+  - wick stuck at zero
+  - OI normalization stuck near 1
+  - volume normalization stuck near 1
+
+Frontend Logic Implemented
+
+frontend/src/App.tsx
+- Main selector / mapping layer.
+- Canonical mappings:
+  - Key Levels:
+    - support = levels.support.strike
+    - resistance = levels.resistance.strike
+  - Structural zones:
+    - signals.sr.support_range
+    - signals.sr.resistance_range
+  - Decision summary:
+    - market_state.summary_line
+    - market_state.decision_explanation
+  - Institutional walls:
+    - institutional_structure.put_wall
+    - institutional_structure.call_wall
+
+Header / Market Banner
+frontend/src/components/MarketBanner.tsx
+- Shows:
+  - spot
+  - vs previous close
+  - from open
+  - regime
+  - projection
+  - day_trend
+  - long_trend
+- Neutral trend display nuance:
+  - Neutral Up
+  - Neutral Down
+  - Neutral
+- Spacing fix applied for labels like Neutral Up
+
+Decision Layer
+frontend/src/components/DecisionPanel.tsx
+- Compact visible content only:
+  - Structure Bias
+  - Trade Action
+  - Key Range
+  - Market Insight
+  - Market Pressure
+- Removed visible clutter such as:
+  - trap/pressure chips in main area
+  - confidence/debug metrics
+- Trade readiness display:
+  - 42% — Low
+  - uses backend readiness if present
+- Pressure chip uses DPS pressure label
+- Market Insight shows:
+  - Put Wall
+  - Call Wall
+  - one-line insight
+- If absorption is detected:
+  - Key Range summary appends: absorption active at [absorption_level]
+
+Key Levels
+frontend/src/components/KeyLevelsCard.tsx
+- Shows:
+  - Active Support
+  - Active Resistance
+  - Breakout Trigger
+  - Major Resistance
+  - Major Support if applicable
+- Breakout Trigger:
+  - from backend if present, otherwise derived as active resistance + strike step
+- Breakout Targets:
+  - rounded zones, not raw decimals
+- Breakout Probability:
+  - shown below key levels
+  - order:
+    - Down
+    - Up
+
+Trade Plan
+frontend/src/components/TradePlanCard.tsx
+- Compact 4-line card:
+  - Primary Plan
+  - Bullish Trigger
+  - Bearish Trigger
+  - Invalidation
+
+Trap Card
+frontend/src/components/TrapCard.tsx
+- Existing trap display retained
+- Also shows:
+  - trap_reason
+  - support_reason when available
+  - Absorption Alert row when absorption_detected is true
+    - uses absorption_message
+    - amber warning styling
+
+Structural Price Context
+- You asked to revert SPC changes.
+- Current SPC frontend custom changes were reverted in commit:
+  - 01aa581
+- So validate current structural chart section against the post-revert state, not the removed SVG SPC implementation.
+
+Strike Ladder
+In App.tsx row rendering + styles
+- Bar widths normalized against visible max, not total OI
+- Highlights:
+  - active support row
+  - active resistance row
+- Dominance coloring:
+  - PE dominant -> green
+  - CE dominant -> red
+  - mixed -> neutral
+
+Alerts
+- Top noisy alert wrapper removed
+- Alerts shown below Trap
+- Alert rows standardized with alert-item class
+- Priority ordering:
+  1. breakout
+  2. trap
+  3. volume
+  4. structural
+
+Market State Panel
+- There were layout/render fixes for MarketStatePanel
+- But the dashboard layout refactor that inserted it into the main grid was reverted
+- Validate it only if it is still rendered in the current UI path
+
+Current Backend Response Fields Worth Validating
+
+market_state
+- bias
+- state
+- regime_candidate
+- regime_hold_count
+- regime_zone
+- projection
+- conflict_market_state
+- summary_line
+- decision_explanation
+- day_trend
+- long_trend
+- session_phase
+- session_phase_confidence
+- trade_action
+- trade_readiness
+- readiness_state
+- readiness_active
+- pressure_state
+- breakout_probability
+- material_breach
+- support_absorption
+- absorption_detected
+- absorption_level
+- absorption_message
+- previous_support
+- current_support
+- absorption_reference_level
+- support_shift_cycle
+- support_transition_active
+- sr_breach_state
+- breakout_candidate
+- regime_hint
+- support
+- resistance
+
+levels
+- support.strike
+- support.immediate
+- support.major
+- support.range
+- resistance.strike
+- resistance.immediate
+- resistance.major
+- resistance.range
+
+signals
+- sr
+- breakout
+- trap
+  - trap_type
+  - trap_direction
+  - trap_affected_level
+  - show_affected_level
+- material_breach
+  - material_breach_confirmed
+  - confirmation_type
+  - support_pe_oi_change_pct
+  - support_ce_oi_change_pct
+  - absorption_conflict
+  - absorption_wins
+- support_absorption
+- oi_imbalance_trap
+- conflict_resolver
+- validation_warnings
+
+Top-level
+- institutional_structure
+- market_insight
+- wall_break
+- liquidity_map
+- intraday_playbook
+- support_absorption
+- previous_support
+- current_support
+- absorption_reference_level
+- is_complete
+- warnings
+
+_state
+- committed_regime
+- candidate_regime
+- candidate_regime_count
+- readiness_active
+- regime_zone
+- previous_support
+- current_support
+- absorption_reference_level
+- support_shift_cycle
+
+Main Contradiction Areas To Validate
+1. Active resistance vs breakout trigger vs major resistance
+2. Support/resistance strike vs structural range
+3. Backend trade_action vs frontend readiness wording
+4. day_trend / long_trend vs displayed move
+5. Breakout suppressed but breakout candidate present
+6. Material breach present but projection still cautious
+7. Support/resistance selected by SR engine but failing dominance validation
+8. Aggressive/Cautious/Standby backend state vs reconciled trade_readiness
+9. Bias flip sessions where DPS should reset to near zero
+10. session_phase vs regime conflict
+11. confirmation_type present but frontend projection string not matching
+12. absorption_detected vs material_breach_confirmed both true simultaneously
+15. trap_affected_level must equal active resistance on upside traps or active support on downside traps
+16. trap_direction must align with trap_affected_level
+    - resistance_strike -> upside
+    - support_strike -> downside
+17. support_transition_active should be true only when support_shift_cycle = 1, not for all nonzero cycles
+13. Absorption offset validation (instrument-aware)
+    - if absorption_detected = true:
+      - expected_offset = strike_gap * 0.4
+      - actual_offset = support - spot
+      - if actual_offset < expected_offset:
+        - flag: absorption fired too early for this instrument
+    - instrument reference:
+      - NIFTY strike_gap = 50 -> min offset = 20
+      - BANKNIFTY strike_gap = 100 -> min offset = 40
+      - FINNIFTY strike_gap = 50 -> min offset = 20
+14. confirmation_type = bearish_positioning + absorption_detected = true + trap_probability <= 70 should favor material breach, not absorption
+
+Session Phase Logic
+- Engine file:
+  - app/engines/session_phase_engine.py
+- Response fields:
+  - market_state.session_phase
+  - market_state.session_phase_confidence
+- Banner mapping:
+  - frontend MarketBanner phase uses backend market_state.session_phase first
+  - falls back to prior frontend time-based phase only if backend field is missing
+- Phases:
+  - Opening Drive
+    - 09:15-09:45
+    - confidence increases when volatility ratio is high or active structure range is expanding
+  - Structure Formation
+    - 09:45-11:30
+    - confidence increases when active support/resistance exist and structure is intact
+  - Compression Phase
+    - 11:30-13:30
+    - requires active structure range < 0.5 percent of spot and repeated Range compression events
+  - Position Build Phase
+    - 13:30-14:45
+    - requires OI spike frequency >= 3 in 5 minutes while support/resistance remain intact
+  - Expansion Window
+    - 14:45-15:15
+    - requires material breach plus volume expansion or OI shift
+- Validation targets:
+  - repeated Range compression events should escalate Compression Phase confidence
+  - repeated OI spike events should escalate Position Build Phase confidence
+  - structural breach should favor Expansion Window during the closing expansion window
+
+Event Log Aggregation
+- Files:
+  - backend/logs/optionlens_market_events.txt
+  - backend/logs/optionlens_market_events.jsonl
+- API:
+  - GET /api/event-log
+- Aggregation rules:
+  - OI spike >= 3 in 3 minutes -> Position Building
+  - OI spike >= 6 in 5 minutes -> Institutional Positioning
+  - Range compression >= 10 in 5 minutes -> Volatility Squeeze
+- Deduplication:
+  - same event family should not emit more than once in 60 seconds unless severity increases
+- Structured event fields:
+  - time
+  - symbol
+  - expiry
+  - event_type
+  - confidence
+  - supporting_events
+
+Material Breach Confirmation
+- Engine file:
+  - app/engines/material_breach_engine.py
+- Support breach can now be confirmed in two bearish ways:
+  - support_abandonment
+    - spot materially below support
+    - PE OI change near support decreases rapidly
+  - bearish_positioning
+    - spot materially below support
+    - PE OI change near support increases rapidly
+    - CE OI change near broken support also increases
+- Response fields added under material_breach:
+  - material_breach_confirmed
+  - confirmation_type
+  - support_pe_oi_change_pct
+  - support_ce_oi_change_pct
+- Projection override behavior:
+  - Support Broken - Support Abandonment Confirmed
+  - Support Broken - Bearish Positioning Confirmed
+
+Support Absorption Detector
+- Implemented in:
+  - app/services/background_updater.py
+- Conditions:
+  - spot < absorption_reference_level - (strike_gap * 0.4)
+  - PE OI change near absorption_reference_level > 10
+  - volume_expansion_score > 0.6
+  - breakout_strength < 0.35
+  - trap_probability > 55
+- Support-shift stabilization:
+  - tracks previous_support, current_support, absorption_reference_level, support_shift_cycle
+  - when support shifts, absorption_reference_level locks to previous_support for 2 cycles
+  - after 2 cycles, it switches to current_support only if price is accepted below previous_support and the new support is active
+- Output:
+  - absorption_detected
+  - level
+  - message
+- Expected interpretation:
+  - support is absorbing the breakdown
+  - breakdown is likely fake unless follow-through improves
+- Conflict resolution:
+  - if absorption_detected and material_breach_confirmed both fire:
+    - support_abandonment:
+      - material breach wins always
+    - bearish_positioning:
+      - material breach wins when trap_probability <= 70
+      - absorption wins only when trap_probability > 70
+    - no confirmation_type:
+      - absorption wins
+- when absorption wins:
+  - projection stays Support Broken - Monitoring
+  - trade_action remains WAIT
+  - readiness is capped at 45
+  - readiness_state becomes Absorption Active
+  - watch-mode floor is not applied
+
+Stability Viewer Validation Targets
+- Viewer expects the JSONL field names exactly as logged in stability_logger.py.
+- Required for charts/rendering:
+  - _ts
+  - snapshot_index
+  - trade_action
+  - regime
+  - support_strike
+  - trade_readiness
+  - trap_probability
+  - spot_price
+  - is_complete
+- Expected behavior:
+  - support_strike should often remain structurally stable during range periods
+  - trade_readiness should remain numeric, not stringified
+  - spot_price must not be null or the structural chart collapses
+  - is_complete should be true when market_state, signals, and levels are present and all required non-conditional fields are mapped
+- Operational validation:
+  - stability log should grow every 5 seconds while backend is healthy
+  - transitions log should record watched-field changes only
+  - null fields in missing_fields should be treated as mapping defects unless they are conditionally absent, such as confirmation_type when breach_confirmed is false
+  - for clean validation, use a fresh date file or clear old stability logs before session start so older transition formats do not mix with the current schema
