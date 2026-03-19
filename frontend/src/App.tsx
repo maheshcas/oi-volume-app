@@ -1779,9 +1779,25 @@ export default function App() {
     spotValue > rawDisplayResistance + staleResistanceThreshold
       ? resistanceStrike
       : rawDisplayResistance;
+  const rawTrapAffectedLevel = intelligence?.signals?.trap?.trap_affected_level;
   const trapAffectedLevel =
-    intelligence?.signals?.trap?.trap_affected_level ??
-    (trapDirection === "downside" ? displaySupport : trapDirection === "upside" ? displayResistance : undefined);
+    trapDirection === "downside"
+      ? (
+          typeof rawTrapAffectedLevel === "number" &&
+          typeof displayResistance === "number" &&
+          rawTrapAffectedLevel <= displayResistance
+            ? rawTrapAffectedLevel
+            : displaySupport
+        )
+      : trapDirection === "upside"
+        ? (
+            typeof rawTrapAffectedLevel === "number" &&
+            typeof displaySupport === "number" &&
+            rawTrapAffectedLevel >= displaySupport
+              ? rawTrapAffectedLevel
+              : displayResistance
+          )
+        : rawTrapAffectedLevel;
   const supportRangeRaw =
     intelligence?.signals?.sr?.support_range ??
     intelligence?.levels?.support?.range ??

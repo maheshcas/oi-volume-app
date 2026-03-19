@@ -3,205 +3,218 @@ OptionLens Frontend Validation Logic Overview
 Maintenance rule
 - Update this file whenever frontend rendering, field mapping, responsive behavior, or UI interpretation changes.
 
-Current Frontend Corrections
+Current Frontend Runtime State
 
-Current Mobile State
+App shell
 frontend/src/App.tsx
-- Mobile components still exist and are maintained.
-- Current runtime state:
-  - mobile dashboard is mounted inside a hidden wrapper
-  - desktop/web dashboard renders on all screen sizes for now
-- Validation implication:
-  - mobile component code can still be reviewed and built
-  - but live UI validation currently targets the desktop/web path unless the hidden wrapper is re-enabled
+- Desktop dashboard renders at `md` and above.
+- Mobile dashboard renders below `md`.
+- Both use the same backend response and App.tsx state.
 
-Structural Price Context
-frontend/src/components/StructuralPriceContextCard.tsx
-- Structural Price Context has been redesigned into a compact-first card.
-- Current compact content:
-  - Bias chip
-  - Regime chip
-  - optional volume/status chip
-  - Support / Spot / Resistance row
-  - spot position inside the band
-  - distance to support / resistance
-  - band width
-  - directional target cards
-- Chart behavior:
-  - full chart is behind a Show Chart / Hide Chart toggle
-  - chart is no longer the default dominant visual
-- Target labels are now directional:
-  - Upside Target
-  - Downside Target
-  - fallback generic labels only when target sits inside the band
+Current validation split
+- Web / desktop validation:
+  - main trading dashboard
+  - key levels
+  - trap card
+  - structural price context
+- Mobile validation:
+  - dedicated compact component stack in `frontend/src/components/mobile`
 
-Decision Banner
+Web Dashboard Validation
+
+Market banner
+frontend/src/components/MarketBanner.tsx
+- Spot banner remains the primary top summary for web.
+- Spot layout is two-row:
+  - row 1: spot price + change badge
+  - row 2: vs prev close, from open, updated time
+- Spot number uses split formatting:
+  - integer portion emphasized
+  - decimal portion smaller and lower opacity
+- Numeric values should use JetBrains Mono where applied.
+
+Web controls
+frontend/src/styles.css
+- Under `600px`, controls wrap into two rows:
+  - Symbol + Instrument
+  - Expiry + Range
+- Each control fills its grid cell width.
+
+Decision / Key Levels / Trap layout
+frontend/src/styles.css
+- Under smaller web breakpoints:
+  - cards stack vertically
+  - Decision Layer hides below `768px`
+  - compact detail remains in the signal card path where wired
+
+Decision card
 frontend/src/components/DecisionBanner.tsx
 frontend/src/styles.css
-- Decision banner typography has been aligned with the rest of the dashboard:
-  - section title uses the same uppercase muted title treatment as other cards
-  - semantic values like Bullish / Balanced / Range Day no longer use monospace
-  - numeric readiness values remain monospace
-- Spacing was tightened:
-  - smaller body gaps
-  - more compact readiness area
-  - more even vertical rhythm against Trap and Key Levels
+- Title typography is aligned with other cards.
+- Semantic labels such as Bullish / Balanced / Range Day are not monospace.
+- Numeric values like readiness remain monospace.
+- Spacing across Decision, Trap, and Key Levels should feel visually consistent.
 
-Trap Card
+Trap card
 frontend/src/components/TrapCard.tsx
-- Trap card now supports:
+- Trap card supports:
   - trap_direction
   - trap_affected_level
   - direction-aware suggested action
 - Direction pill semantics:
-  - upside uses danger accent
-  - downside uses amber warning accent
-- Trap type text remains neutral rather than directional color.
+  - upside = danger family
+  - downside = amber warning family
+- Trap type text is neutral, not direction-colored.
+- Affected level guard:
+  - downside must not resolve to an invalid level above resistance; it falls back to support
+  - upside must not resolve to an invalid level below support; it falls back to resistance
 
-Key Levels / Target Display
+Key levels card
+frontend/src/components/KeyLevelsCard.tsx
+- Current labels:
+  - Support
+  - Resistance
+  - Confirm Above
+  - Next Resistance
+  - Next Support
+- Guard rules:
+  - Next Resistance only renders if strictly above active resistance
+  - Next Support only renders if strictly below active support
+  - invalid structural values should be suppressed rather than mislabeled
+
+Structural Price Context
+frontend/src/components/StructuralPriceContextCard.tsx
+- SPC is compact-first.
+- Current compact content:
+  - Bias chip
+  - Regime chip
+  - support / spot / resistance
+  - spot position in band
+  - distance-to-boundary hints
+  - band width
+  - directional targets
+- Chart is behind a Show Chart / Hide Chart toggle.
+- Target cards should read directionally:
+  - Upside Target
+  - Downside Target
+- Range track supports preserved previous-level breach markers when backend data exists.
+- Validation note:
+  - if no mark appears, first check whether backend actually provides a distinct previous level and confirmed breach state
+
+Web field mapping
 frontend/src/App.tsx
-- Breakout target cards now prefer live market_state target values by actual side of structure:
-  - target above resistance -> upside target
-  - target below support -> downside target
-- Frontend no longer ignores live target values just because bias is neutral.
-- Old projectedMove fallback remains only as a lower-priority fallback path.
+- Spot:
+  - index-data quote still updates faster than option-chain fallback
+- Key levels:
+  - support = intelligence.levels.support.strike
+  - resistance = intelligence.levels.resistance.strike
+- Trap:
+  - trap_direction and trap_affected_level are normalized again at the frontend display layer to avoid impossible values leaking to UI
+- Targets:
+  - live market-state targets are preferred by structural side, not just by bias label
 
-Current Frontend State
-- Framework:
-  - React + Vite + Tailwind
-- Desktop:
-  - existing dashboard remains unchanged
-- Mobile:
-  - separate mobile-first layout rendered below md
-  - entry point:
-    - frontend/src/components/mobile/OptionLensMobileDashboard.tsx
+Mobile Dashboard Validation
 
-Mobile Render Switch
-frontend/src/App.tsx
-- Mobile render:
-  - wrapped in md:hidden
-- Desktop render:
-  - wrapped in hidden md:block
-- This keeps desktop untouched while allowing a dedicated mobile UI.
+Entry point
+frontend/src/components/mobile/OptionLensMobileDashboard.tsx
+- Mobile is now enabled again and should render live below `md`.
 
-Mobile Components
+Mobile components
 - frontend/src/components/mobile/MobileHeader.tsx
 - frontend/src/components/mobile/SpotHeroCard.tsx
-- frontend/src/components/mobile/SessionPhaseCard.tsx
 - frontend/src/components/mobile/PrimarySignalCard.tsx
-- frontend/src/components/mobile/AbsorptionAlertCard.tsx
 - frontend/src/components/mobile/TrapCardMobile.tsx
 - frontend/src/components/mobile/KeyLevelsCard.tsx
-- frontend/src/components/mobile/DecisionGridMobile.tsx
-- frontend/src/components/mobile/StrikeLadderMobile.tsx
-- frontend/src/components/mobile/TopWritersMobile.tsx
-- frontend/src/components/mobile/FuturesBasisCardMobile.tsx
+- frontend/src/components/mobile/StructuralRangeTrackMobile.tsx
+- frontend/src/components/mobile/TradePlanMobile.tsx
 - frontend/src/components/mobile/AlertsCardMobile.tsx
 - frontend/src/components/mobile/BottomNavMobile.tsx
 
-Mobile Layout Order
-- Header
-- Symbol selector
-- Expiry selector
-- Spot hero
-- Session phase banner
-- Primary signal card
-- Absorption alert card
-- Trap card
-- Key levels card
-- Decision layer
-- Strike ladder
-- Top writers activity
-- Futures basis
-- Alerts
-- Disclaimer
-- Bottom navigation
+Mobile layout order
+- status/header
+- spot header
+- primary signal
+- structural range track
+- trap card
+- key levels
+- trade plan
+- alerts
+- bottom nav
 
-Frontend Data Contract
-- The mobile layout uses the same response already fetched in App.tsx.
-- No backend API changes are required.
-- Primary mappings:
-  - tradeAction:
-    - market_state.trade_action
-  - resolvedReason:
-    - market_state.resolved_reason
-    - fallback: market_state.decision_explanation
-  - readiness:
-    - market_state.trade_readiness
-    - market_state.readiness_state
-    - market_state.readiness_active
-  - structure:
-    - levels.support.strike
-    - levels.resistance.strike
-  - trap:
-    - signals.trap.trap_probability
-    - signals.trap.trap_type
-  - absorption:
-    - market_state.absorption_detected
-    - market_state.absorption_message
-    - market_state.absorption_level
-    - market_state.support_transition_active
-  - session:
-    - market_state.session_phase
-    - market_state.regime
-    - market_state.pressure_state
-  - decision layer:
-    - institutional_structure.put_wall
-    - institutional_structure.call_wall
-    - frontend-derived bullish / bearish triggers
-  - ladder:
-    - compact slice of displayRows near ATM
-  - writers:
-    - frontend-derived top CE / PE writers from DeltaOI and volume
-  - basis:
-    - frontend-derived synthetic future and basis
-  - alerts:
-    - displayAlerts
+Mobile visual rules
+- dark compact trading layout
+- narrow vertical spacing
+- signal-first hierarchy
+- bottom nav should be dark and flat, not inheriting global button styling
 
-Defensive Rendering Rules
-- Missing numeric values display as "-".
-- Empty ladder data shows a placeholder card.
-- Empty writers data shows a placeholder state.
-- Absorption card hides when there is no absorption signal/message.
-- Alerts card hides when there are no alerts.
-- Bottom nav is static UI only and does not change app routing.
+Mobile bottom nav
+frontend/src/components/mobile/BottomNavMobile.tsx
+frontend/src/styles.css
+- Dedicated mobile nav button class now resets inherited global button styles.
+- Validation target:
+  - no orange rounded-button appearance from desktop/global button CSS
 
-Visual Intent
-- Dark mobile trading layout
-- Compact, vertical, signal-first blocks
-- Primary signal card is the dominant decision surface
-- Strike ladder is simplified for small screens
-- Wide desktop tables are not reused directly on mobile
+Mobile signal card
+frontend/src/components/mobile/PrimarySignalCard.tsx
+- Signal reason is larger and more prominent.
+- Decision-layer duplication was removed from the mobile path.
+- Bias / pressure / regime / readiness remain inside the primary card.
 
-Validation Checklist
-- Open app below md width and confirm mobile layout renders instead of desktop.
-- Open app at md and above and confirm desktop layout is unchanged.
-- Symbol pills switch symbol using existing App state.
-- Expiry pills switch expiry using existing App state.
-- Spot hero shows spot, change, PCR, updated time without layout overflow.
-- Primary signal card shows:
-  - trade action
-  - reason
-  - readiness bar
-  - bias
-  - pressure
-  - regime
-  - readiness state
-- Absorption card appears only when absorption is active or a message exists.
-- Trap card shows probability, type, and explanation.
-- Key levels card shows support, resistance, and breakout probabilities.
-- Decision layer shows put wall, call wall, bull trigger, bear trigger.
-- Strike ladder highlights ATM / support / resistance rows when present.
-- Top writers tab switch works between CE and PE.
-- Futures basis card renders basis state correctly.
-- Alerts card renders up to four alert messages cleanly.
-- Bottom nav remains fixed and does not hide content behind it.
+Mobile data contract
+- trade action:
+  - market_state.trade_action
+- reason:
+  - market_state.resolved_reason
+  - fallback market_state.decision_explanation
+- readiness:
+  - market_state.trade_readiness
+  - market_state.readiness_state
+  - market_state.readiness_active
+- trap:
+  - signals.trap.trap_probability
+  - signals.trap.trap_type
+  - signals.trap.trap_direction
+  - signals.trap.trap_affected_level
+- structure:
+  - levels.support.strike
+  - levels.resistance.strike
+- session:
+  - market_state.session_phase
+  - market_state.regime
+  - market_state.pressure_state
+- alerts:
+  - displayAlerts
 
-Build Validation
-- Current mobile implementation builds successfully with:
-  - npm run build
+Defensive rendering rules
+- Missing numbers render as `-`.
+- Empty cards should either hide or show placeholders safely.
+- Trap and key-level cards must guard against structurally invalid backend values before display.
 
-Known Scope
-- Mobile layout is a presentation layer only.
-- No backend fields were added for this UI.
-- No desktop redesign was performed.
+Frontend-specific fixes worth validating
+
+Expiry dropdown
+frontend/src/styles.css
+- Web select / option text now has explicit dark-theme colors.
+- Validation target:
+  - expiry letters should remain visible when dropdown opens.
+
+SPA refresh behavior
+frontend/netlify.toml
+frontend/public/_redirects
+- Netlify rewrites all routes to `index.html`.
+- Validation target:
+  - refreshing `/app` should not return 404 on deployed builds.
+
+Validation checklist
+- Below `md`, mobile layout renders instead of desktop.
+- At `md` and above, desktop layout renders unchanged.
+- Web key levels do not show a lower support value as Next Resistance.
+- Trap affected level always aligns with trap direction.
+- SPC directional targets do not look ambiguous.
+- Bottom nav on mobile no longer inherits orange button styling.
+- Expiry dropdown text remains visible.
+- Netlify refresh on `/app` works after deploy.
+
+Build validation
+- Current frontend changes build successfully with:
+  - `npm run build`

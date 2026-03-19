@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -345,11 +346,13 @@ def _resolve_absorption_reference_level(
         support_shift_cycle = prev_shift_cycle
 
         if previous_support is not None and current_support_value is not None and previous_support != current_support_value:
-            if prev_shift_cycle < 2:
-                support_shift_cycle = prev_shift_cycle + 1
+            if prev_shift_cycle == 1:
+                support_shift_cycle = 2
             else:
+                previous_support = None
                 support_shift_cycle = 0
         else:
+            previous_support = None
             support_shift_cycle = 0
 
     return {
@@ -376,6 +379,7 @@ def _canonicalize_trap_reference(
     breakout_down: bool,
 ) -> tuple[float | None, str]:
     raw_affected_level = _safe_float(trap.get("trap_affected_level"))
+    raw_type = str(trap.get("trap_type") or "").strip().lower()
 
     if (
         raw_affected_level is not None
@@ -399,6 +403,10 @@ def _canonicalize_trap_reference(
         return float(resistance_level), "upside"
     if raw_direction == "downside" and support_level is not None:
         return float(support_level), "downside"
+    if ("breakdown" in raw_type or "support" in raw_type) and support_level is not None:
+        return float(support_level), "downside"
+    if ("breakout" in raw_type or "resistance" in raw_type) and resistance_level is not None:
+        return float(resistance_level), "upside"
 
     return None, ""
 
@@ -579,6 +587,7 @@ def _compute_trade_readiness(
     breakout_suppressed: bool,
     breakout_candidate: bool,
     breakout_probability: float = 0.0,
+    skip_trap_deduction: bool = False,
 ) -> dict[str, Any]:
     clarity_value = max(0.0, min(100.0, float(clarity or 0.0)))
     alignment_component = max(0.0, min(100.0, abs(float(alignment_score or 0.0)) * 100.0))
@@ -590,7 +599,11 @@ def _compute_trade_readiness(
     )
     trap_value = max(0.0, min(100.0, float(trap_probability or 0.0)))
     # Keep trap impact light around the neutral 55 baseline and scale only the excess risk.
-    trap_deduction = 0.0 if (breakout_suppressed or breakout_candidate) else min(10.0, max(0.0, trap_value - 55.0) * 0.25)
+    trap_deduction = (
+        0.0
+        if (skip_trap_deduction or breakout_suppressed or breakout_candidate)
+        else min(10.0, max(0.0, trap_value - 55.0) * 0.25)
+    )
     readiness = base_score - trap_deduction
     readiness += max(0.0, min(100.0, float(breakout_probability or 0.0))) * 0.10
     readiness = max(0.0, min(100.0, readiness))
@@ -1008,6 +1021,8 @@ def _run_ordered_pipeline(
         support=sr.get("support", {}).get("strike"),
         resistance=sr.get("resistance", {}).get("strike"),
         rows=features.get("rows") or [],
+        prev_support=_safe_float((previous_state or {}).get("support_level")),
+        prev_resistance=_safe_float((previous_state or {}).get("resistance_level")),
     )
 
     # Stage 2: Regime from base features
@@ -1778,6 +1793,7 @@ def _build_v2_intelligence(
         trap["trap_risk"] = int(trap_probability)
         trap["trap_level"] = _trap_level_from_probability(trap_probability)
 
+    absorption_wait_override = bool(absorption_detected and str(decision.get("trade_action") or "") == "WAIT")
     trade_readiness = _compute_trade_readiness(
         clarity=float(decision.get("clarity", 0.0) or 0.0),
         alignment_score=alignment_score,
@@ -1789,6 +1805,7 @@ def _build_v2_intelligence(
             float(breakout_probability.get("upside", 0.0) or 0.0),
             float(breakout_probability.get("downside", 0.0) or 0.0),
         ),
+        skip_trap_deduction=absorption_wait_override,
     )
     decision["trade_readiness"] = trade_readiness["trade_readiness"]
     decision["readiness_state"] = trade_readiness["readiness_state"]
@@ -1865,10 +1882,29 @@ def _build_v2_intelligence(
     # Trade action changes only when regime zone changes.
     prev_regime_zone = str((previous_state or {}).get("regime_zone") or "")
     current_regime_zone = str(decision.get("regime_zone") or "")
-    if prev_regime_zone and current_regime_zone and prev_regime_zone == current_regime_zone:
+    if (
+        prev_regime_zone
+        and current_regime_zone
+        and prev_regime_zone == current_regime_zone
+        and not (
+            bool(decision.get("readiness_active", False))
+            and str(decision.get("trade_action", "")) in {"LONG BIAS", "SHORT BIAS"}
+        )
+    ):
         prev_trade_action = str((previous_state or {}).get("trade_action") or "")
         if prev_trade_action:
             decision["trade_action"] = prev_trade_action
+
+    if (
+        bool(decision.get("readiness_active", False))
+        and str(decision.get("trade_action", "WAIT")) == "WAIT"
+        and not absorption_wins
+    ):
+        dps_adjusted_value = float(decision.get("dps_adjusted", 0.0) or 0.0)
+        if dps_adjusted_value > 0.35:
+            decision["trade_action"] = "LONG BIAS"
+        elif dps_adjusted_value < -0.35:
+            decision["trade_action"] = "SHORT BIAS"
 
     current_bias = str(decision.get("bias", "Neutral"))
     current_projection = str(decision.get("projection", "No Confirmed Breakout"))
@@ -1944,14 +1980,17 @@ def _build_v2_intelligence(
         previous_close=previous_close,
         structure_bias=str(decision.get("structure_bias", stable_bias)),
     )
-    trap_conf_adj = adjust_trap_by_confidence(
-        base_trap=float(trap.get("trap_probability_pct", 0) or 0),
-        smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
-        confidence_percent=float(decision.get("confidence", 0) or 0),
-    )
-    trap["trap_probability_pct"] = int(trap_conf_adj["trap_probability"])
-    trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
-    trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
+    if committed_regime in {"Trend Day", "Breakdown Day"}:
+        trap_conf_adj = adjust_trap_by_confidence(
+            base_trap=float(trap.get("trap_probability_pct", 0) or 0),
+            smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
+            confidence_percent=float(decision.get("confidence", 0) or 0),
+        )
+        trap["trap_probability_pct"] = int(trap_conf_adj["trap_probability"])
+        trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
+        trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
+    else:
+        trap["confidence_factor"] = 1.0
     trap["is_trap"] = bool(trap["trap_probability_pct"] >= 60)
     high_zone_pressure = support_zone_pressure > 60.0 or resistance_zone_pressure > 60.0
     if high_zone_pressure and int(trap["trap_probability_pct"]) >= 60:
@@ -2028,12 +2067,26 @@ def _build_v2_intelligence(
         message = str(sr_alert.get("message", "")).strip()
         if not message:
             continue
+        digits = re.findall(r"\d[\d,]*", message)
+        alert_level = None
+        if digits:
+            try:
+                alert_level = float(digits[0].replace(",", ""))
+            except ValueError:
+                alert_level = None
         lower = message.lower()
         direction = "neutral"
         if "resistance" in lower or "breakdown" in lower:
             direction = "down"
         elif "support" in lower or "breakout" in lower:
             direction = "up"
+        if material_breach_confirmed and alert_level is not None:
+            if direction == "up" and resistance_strike is not None and abs(alert_level - float(resistance_strike)) > 1e-6:
+                suppression_reason_map[f"alert:{message}"] = "stale_resistance_alert_after_breach"
+                continue
+            if direction == "down" and support_strike is not None and abs(alert_level - float(support_strike)) > 1e-6:
+                suppression_reason_map[f"alert:{message}"] = "stale_support_alert_after_breach"
+                continue
         alerts.append(
             {
                 "message": message,

@@ -33,26 +33,42 @@ function formatRoundedZone(value: string) {
 }
 
 export default function KeyLevelsCard(props: KeyLevelsCardProps) {
+  const supportNum = parseNumeric(props.support);
+  const resistanceNum = parseNumeric(props.resistance);
+  const majorSupportNum = parseNumeric(props.majorSupport ?? "");
+  const majorResistanceNum = parseNumeric(props.majorResistance ?? "");
+  const breakoutTriggerNum = parseNumeric(props.breakoutTrigger ?? "");
+
+  const showMajorSupport =
+    majorSupportNum !== null && supportNum !== null && majorSupportNum < supportNum;
+  const showBreakoutTrigger =
+    breakoutTriggerNum !== null && resistanceNum !== null && breakoutTriggerNum > resistanceNum;
+  const showMajorResistance =
+    majorResistanceNum !== null &&
+    resistanceNum !== null &&
+    majorResistanceNum > resistanceNum &&
+    (supportNum === null || majorResistanceNum > supportNum);
+
   return (
     <div className="ia-card ia-key-levels-card">
       <h3 className="ia-card-title">Key Levels</h3>
       <div className="ia-key-levels-stack">
         <div className="ia-levels-top-grid">
           <div className="ia-key-level-block">
-            <div className="ia-kpi-label">Active Support</div>
+            <div className="ia-kpi-label">Support</div>
             <div className="ia-level-support ia-emphasis-high">{props.support}</div>
-            {props.majorSupport && props.majorSupport !== props.support ? (
-              <div className="ia-kpi-label ia-key-major-label">Major Support: {props.majorSupport}</div>
+            {showMajorSupport ? (
+              <div className="ia-kpi-label ia-key-major-label">Next Support: {props.majorSupport}</div>
             ) : null}
           </div>
           <div className="ia-key-level-block">
-            <div className="ia-kpi-label">Active Resistance</div>
+            <div className="ia-kpi-label">Resistance</div>
             <div className="ia-level-resistance ia-emphasis-high">{props.resistance}</div>
-            {props.breakoutTrigger && props.breakoutTrigger !== props.resistance ? (
-              <div className="ia-kpi-label ia-key-major-label">Breakout Trigger: {props.breakoutTrigger}</div>
+            {showBreakoutTrigger ? (
+              <div className="ia-kpi-label ia-key-major-label">Confirm Above: {props.breakoutTrigger}</div>
             ) : null}
-            {props.majorResistance && props.majorResistance !== props.resistance ? (
-              <div className="ia-kpi-label ia-key-major-label">Major Resistance: {props.majorResistance}</div>
+            {showMajorResistance ? (
+              <div className="ia-kpi-label ia-key-major-label">Next Resistance: {props.majorResistance}</div>
             ) : null}
           </div>
         </div>

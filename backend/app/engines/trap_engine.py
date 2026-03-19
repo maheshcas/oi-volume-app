@@ -177,12 +177,15 @@ def trap_engine_v2(
     else:
         trap_level = "Low"
 
-    if rejection_wick_score > 0.7 and time_above_level_ratio < 0.3:
-        trap_type = "Liquidity Sweep"
-    elif validity_score < 0.45 and time_above_level_ratio < 0.5:
-        trap_type = "Breakout Failure"
-    elif volume_expansion_score > 0.7 and time_above_level_ratio < 0.4:
-        trap_type = "Exhaustion"
+    if trap_raw > 0.45:
+        if rejection_wick_score > 0.7 and time_above_level_ratio < 0.3:
+            trap_type = "Liquidity Sweep"
+        elif validity_score < 0.45 and time_above_level_ratio < 0.5:
+            trap_type = "Breakout Failure"
+        elif volume_expansion_score > 0.7 and time_above_level_ratio < 0.4:
+            trap_type = "Exhaustion"
+        else:
+            trap_type = None
     else:
         trap_type = None
 
@@ -471,8 +474,8 @@ def run_trap_engine(
         prev_trap_raw = float(previous_state.get("trap_raw_prev", trap_raw) or trap_raw)
     trap_smoothed = _clamp01((0.7 * prev_trap_raw) + (0.3 * trap_raw))
 
-    trap_risk_base = 75 if is_trap else (40 if breakout_trigger and (weak_atm_oi or weak_volume) else 20)
-    trap_risk = int(round((0.45 * trap_risk_base) + (0.55 * (trap_smoothed * 100.0))))
+    trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
+    trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
 
     if in_open_window:
         trap_type = None

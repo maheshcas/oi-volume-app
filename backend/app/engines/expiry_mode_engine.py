@@ -54,9 +54,10 @@ def run_expiry_adaptive_mode(
     adjusted_move = _to_float(expected_move, 0.0) * expiry_multiplier
 
     adjusted_trap_risk = _to_float(trap_risk, 0.0)
-    if expiry_mode:
-        adjusted_trap_risk = min(adjusted_trap_risk * 1.25, 95.0)
-    adjusted_trap_risk = min(adjusted_trap_risk * PHASE_MULTIPLIER_MAP.get(session_phase or "", 1.0), 95.0)
+    phase_multiplier = PHASE_MULTIPLIER_MAP.get(session_phase or "", 1.0)
+    expiry_trap_multiplier = 1.25 if expiry_mode else 1.0
+    combined_trap_multiplier = min(1.5, expiry_trap_multiplier * phase_multiplier)
+    adjusted_trap_risk = min(adjusted_trap_risk * combined_trap_multiplier, 95.0)
 
     spot_val = _to_float(spot, 0.0)
     strongest = _to_float(strongest_oi_strike, 0.0)
@@ -65,15 +66,20 @@ def run_expiry_adaptive_mode(
 
     support_val = _to_float(support, spot_val)
     resistance_val = _to_float(resistance, spot_val)
+    band_width = max(1.0, resistance_val - support_val)
+    vol_factor = max(0.6, min(1.4, expiry_multiplier))
+    oi_power = 0.15 if pinning_risk else 0.0
+    base_move = max(1.0, band_width * (1.0 + oi_power) * vol_factor)
+    max_distance = band_width * 3.0
     if bias == "Bullish":
-        target1 = resistance_val + (adjusted_move * 0.6)
-        target2 = resistance_val + (adjusted_move * 1.0)
+        target1 = resistance_val + min(base_move * 0.8, max_distance)
+        target2 = resistance_val + min(base_move * 1.5, max_distance)
     elif bias == "Bearish":
-        target1 = support_val - (adjusted_move * 0.6)
-        target2 = support_val - (adjusted_move * 1.0)
+        target1 = support_val - min(base_move * 0.8, max_distance)
+        target2 = support_val - min(base_move * 1.5, max_distance)
     else:
-        target1 = spot_val + adjusted_move
-        target2 = spot_val - adjusted_move
+        target1 = resistance_val + min(base_move * 0.8, max_distance)
+        target2 = support_val - min(base_move * 0.8, max_distance)
 
     return {
         "days_to_expiry": days_to_expiry,
@@ -82,7 +88,10 @@ def run_expiry_adaptive_mode(
         "trap_risk": round(adjusted_trap_risk, 2),
         "pinning_risk": bool(pinning_risk),
         "adjustedMove": round(adjusted_move, 2),
+        "baseMove": round(base_move, 2),
+        "bandWidth": round(band_width, 2),
         "target1": round(target1, 2),
         "target2": round(target2, 2),
-        "phase_multiplier_reference": PHASE_MULTIPLIER_MAP.get(session_phase or "", 1.0),
+        "phase_multiplier_reference": phase_multiplier,
+        "combined_trap_multiplier": round(combined_trap_multiplier, 4),
     }

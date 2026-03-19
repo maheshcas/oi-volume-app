@@ -222,6 +222,16 @@ select {
   font-size: 14px;
 }
 
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background: #0f1d2e;
+  color: #f7f2e8;
+}
+
 button {
   background: var(--accent);
   border: none;
