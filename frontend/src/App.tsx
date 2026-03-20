@@ -206,6 +206,7 @@ type IntelligenceResponse = {
       strike?: number;
       score?: number;
       major?: number | null;
+      defense_score?: number | null;
       range?: [number | null, number | null] | null;
       zone_pressure?: number;
       zone_state?: string;
@@ -214,6 +215,7 @@ type IntelligenceResponse = {
       strike?: number;
       score?: number;
       major?: number | null;
+      defense_score?: number | null;
       range?: [number | null, number | null] | null;
       zone_pressure?: number;
       zone_state?: string;
@@ -370,6 +372,37 @@ function alertPriority(item: UiAlert): number {
   if (text.includes("trap")) return 2;
   if (text.includes("volume") || text.includes("spike")) return 3;
   return 4;
+}
+
+function explainRegime(regime: string | null | undefined): string {
+  const text = String(regime || "").trim().toLowerCase();
+  if (!text) return "";
+  if (text.includes("range")) {
+    return "Spot holding between S/R. Needs 3x Balanced Structure to advance.";
+  }
+  if (text.includes("balanced")) {
+    return "Balanced Structure needs repeated follow-through before committing into a stronger trend regime.";
+  }
+  if (text.includes("trend")) {
+    return "Confirmed directional expansion above resistance.";
+  }
+  if (text.includes("breakdown")) {
+    return "Confirmed directional expansion below support.";
+  }
+  if (text.includes("trap")) {
+    return "Breach detected but absorption active - likely fake move.";
+  }
+  if (text.includes("transition")) {
+    return "Transition remains until structure and flow align for a stable range or trend regime.";
+  }
+  return "";
+}
+
+function extractAlertLevel(message: string): number | null {
+  const match = String(message || "").match(/\d[\d,]*/);
+  if (!match) return null;
+  const parsed = Number(match[0].replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 type IndexRow = {
@@ -1779,6 +1812,40 @@ export default function App() {
     spotValue > rawDisplayResistance + staleResistanceThreshold
       ? resistanceStrike
       : rawDisplayResistance;
+  const activeSupportRow = useMemo(
+    () =>
+      typeof displaySupport === "number"
+        ? displayRows.find((row) => Number(row.strike) === Number(displaySupport)) ?? null
+        : null,
+    [displayRows, displaySupport]
+  );
+  const activeResistanceRow = useMemo(
+    () =>
+      typeof displayResistance === "number"
+        ? displayRows.find((row) => Number(row.strike) === Number(displayResistance)) ?? null
+        : null,
+    [displayRows, displayResistance]
+  );
+  const supportDefenseRatio = useMemo(() => {
+    const backendDefense = intelligence?.levels?.support?.defense_score;
+    if (typeof backendDefense === "number" && Number.isFinite(backendDefense)) {
+      return backendDefense;
+    }
+    if (!activeSupportRow) return null;
+    const putOi = Number(activeSupportRow.PE_OI) || 0;
+    const callOi = Number(activeSupportRow.CE_OI) || 0;
+    return putOi / Math.max(callOi, 1);
+  }, [activeSupportRow, intelligence?.levels?.support?.defense_score]);
+  const resistanceDefenseRatio = useMemo(() => {
+    const backendDefense = intelligence?.levels?.resistance?.defense_score;
+    if (typeof backendDefense === "number" && Number.isFinite(backendDefense)) {
+      return backendDefense;
+    }
+    if (!activeResistanceRow) return null;
+    const callOi = Number(activeResistanceRow.CE_OI) || 0;
+    const putOi = Number(activeResistanceRow.PE_OI) || 0;
+    return callOi / Math.max(putOi, 1);
+  }, [activeResistanceRow, intelligence?.levels?.resistance?.defense_score]);
   const rawTrapAffectedLevel = intelligence?.signals?.trap?.trap_affected_level;
   const trapAffectedLevel =
     trapDirection === "downside"
@@ -1879,6 +1946,7 @@ export default function App() {
   const dayTrendDisplay = normalizeTrendDisplay(displayDayTrend, typeof spotValue === "number" && typeof dayOpenValue === "number" ? spotValue - dayOpenValue : null);
   const longTrendDisplay = normalizeTrendDisplay(displayLongTrend, typeof spotValue === "number" && typeof indexRow?.previousClose === "number" ? spotValue - indexRow.previousClose : null);
   const displaySessionPhase = intelligence?.market_state?.session_phase ?? intradayEngine.sessionPhase;
+  const regimeExplanation = explainRegime(displayRegime);
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
   const structureState = intelligence?.market_state?.structure_state ?? "-";
   const driftState = intelligence?.market_state?.drift ?? "Stable";
@@ -2275,13 +2343,44 @@ export default function App() {
     const filtered = combinedAlerts.filter((item) => {
       if (item.severity === "info") return false;
       const lower = item.message.toLowerCase();
+      const alertLevel = extractAlertLevel(item.message);
+      const isUpperStructureAlert =
+        lower.includes("breakout") ||
+        lower.includes("resistance") ||
+        lower.includes("call ") ||
+        lower.includes("ce oi unwinding");
+      const isLowerStructureAlert =
+        lower.includes("breakdown") ||
+        lower.includes("support") ||
+        lower.includes("put ") ||
+        lower.includes("pe oi unwinding");
       if (suppressBreakout && (lower.includes("breakout") || lower.includes("breakdown"))) {
+        return false;
+      }
+      if (
+        alertLevel !== null &&
+        typeof strikeStep === "number" &&
+        strikeStep > 0 &&
+        typeof displayResistance === "number" &&
+        isUpperStructureAlert &&
+        alertLevel < displayResistance - strikeStep
+      ) {
+        return false;
+      }
+      if (
+        alertLevel !== null &&
+        typeof strikeStep === "number" &&
+        strikeStep > 0 &&
+        typeof displaySupport === "number" &&
+        isLowerStructureAlert &&
+        alertLevel > displaySupport + strikeStep
+      ) {
         return false;
       }
       return true;
     });
     return filtered;
-  }, [combinedAlerts, displayVolatilityState, projectionState]);
+  }, [combinedAlerts, displayVolatilityState, projectionState, strikeStep, displayResistance, displaySupport]);
 
   const prioritizedAlerts = useMemo(() => {
     return [...filteredAlerts].sort((a, b) => {
@@ -2296,8 +2395,8 @@ export default function App() {
   const conflictFlags = intelligence?.market_state?.conflict_flags ?? [];
   const breakoutSuppressed = !!intelligence?.signals?.alignment_filter?.breakout_suppressed;
   const displayAlerts = useMemo(
-    () =>
-      prioritizedAlerts.map((item) => ({
+    () => {
+      const normalized = prioritizedAlerts.map((item) => ({
         ...item,
         message: normalizeResistanceAlertLabel(
           item.message,
@@ -2305,8 +2404,38 @@ export default function App() {
           typeof intelligence?.levels?.resistance?.major === 'number' ? intelligence.levels.resistance.major : null,
           typeof intelligence?.institutional_structure?.call_wall === 'number' ? intelligence.institutional_structure.call_wall : null
         ),
-      })),
-    [prioritizedAlerts, displayResistance, intelligence?.levels?.resistance?.major, intelligence?.institutional_structure?.call_wall]
+      }));
+      const freshAlerts = normalized.filter((item) => {
+        const alertLevel = extractAlertLevel(item.message);
+        if (alertLevel === null) return true;
+        if (typeof strikeStep !== "number" || strikeStep <= 0) return true;
+        if (typeof displaySupport !== "number" || typeof displayResistance !== "number") return true;
+        const nearSupport = Math.abs(alertLevel - displaySupport) <= strikeStep * 2;
+        const nearResistance = Math.abs(alertLevel - displayResistance) <= strikeStep * 2;
+        return nearSupport || nearResistance;
+      });
+      if (
+        typeof supportDefenseRatio === "number" &&
+        supportDefenseRatio < 1.0 &&
+        typeof displaySupport === "number"
+      ) {
+        freshAlerts.unshift({
+          message: `Support defense weakening at ${formatNumber(displaySupport)}`,
+          type: "primary",
+          severity: "watch",
+        });
+      }
+      return freshAlerts;
+    },
+    [
+      prioritizedAlerts,
+      displayResistance,
+      displaySupport,
+      strikeStep,
+      supportDefenseRatio,
+      intelligence?.levels?.resistance?.major,
+      intelligence?.institutional_structure?.call_wall,
+    ]
   );
   const primaryAlert = displayAlerts[0]?.message ?? "";
   const hasMaterialBoundaryBreak = boundaryDisplayState !== "None";
@@ -2943,6 +3072,7 @@ export default function App() {
           pctChange={indexRow?.percChange !== undefined ? `${indexRow.percChange.toFixed(2)}%` : "-"}
           volatilityState={displayVolatilityState}
           regime={displayRegime}
+          regimeExplanation={regimeExplanation}
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
           expiryMode={isExpiryMode}
@@ -2972,6 +3102,8 @@ export default function App() {
           keyLevels={{
             support: formatNumber(displaySupport),
             resistance: formatNumber(displayResistance),
+            supportDefenseRatio,
+            resistanceDefenseRatio,
             majorSupport: formatNumber(intelligence?.levels?.support?.major ?? null),
             majorResistance: formatNumber(intelligence?.levels?.resistance?.major ?? null),
             breakoutTrigger: formatNumber(breakoutTrigger),
@@ -2991,6 +3123,8 @@ export default function App() {
             dayLow: dayLowValue,
             supportLevel: typeof displaySupport === "number" ? displaySupport : null,
             resistanceLevel: typeof displayResistance === "number" ? displayResistance : null,
+            supportDefenseRatio,
+            resistanceDefenseRatio,
             supportStart: activeSupportStart,
             supportEnd: activeSupportEnd,
             resistanceStart: activeResistanceStart,

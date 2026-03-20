@@ -17,6 +17,8 @@ type StructuralChartCardProps = {
   dayLow?: number | null;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  supportDefenseRatio?: number | null;
+  resistanceDefenseRatio?: number | null;
   supportStart: number | null;
   supportEnd: number | null;
   resistanceStart: number | null;
@@ -45,6 +47,8 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         dayLow={props.dayLow}
         supportLevel={props.supportLevel}
         resistanceLevel={props.resistanceLevel}
+        supportDefenseRatio={props.supportDefenseRatio}
+        resistanceDefenseRatio={props.resistanceDefenseRatio}
         supportStart={props.supportStart}
         supportEnd={props.supportEnd}
         resistanceStart={props.resistanceStart}

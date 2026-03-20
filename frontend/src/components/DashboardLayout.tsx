@@ -36,6 +36,8 @@ type DashboardLayoutProps = {
   keyLevels: {
     support: string;
     resistance: string;
+    supportDefenseRatio?: number | null;
+    resistanceDefenseRatio?: number | null;
     majorSupport?: string;
     majorResistance?: string;
     breakoutTrigger?: string;
@@ -60,6 +62,8 @@ type DashboardLayoutProps = {
     dayLow?: number | null;
     supportLevel?: number | null;
     resistanceLevel?: number | null;
+    supportDefenseRatio?: number | null;
+    resistanceDefenseRatio?: number | null;
     supportStart: number | null;
     supportEnd: number | null;
     resistanceStart: number | null;
@@ -149,6 +153,8 @@ export default function DashboardLayout({
         <KeyLevelsCard
           support={keyLevels.support}
           resistance={keyLevels.resistance}
+          supportDefenseRatio={keyLevels.supportDefenseRatio}
+          resistanceDefenseRatio={keyLevels.resistanceDefenseRatio}
           majorSupport={keyLevels.majorSupport}
           majorResistance={keyLevels.majorResistance}
           breakoutTrigger={keyLevels.breakoutTrigger}
@@ -172,6 +178,8 @@ export default function DashboardLayout({
           dayLow={structure.dayLow}
           supportLevel={structure.supportLevel}
           resistanceLevel={structure.resistanceLevel}
+          supportDefenseRatio={structure.supportDefenseRatio}
+          resistanceDefenseRatio={structure.resistanceDefenseRatio}
           supportStart={structure.supportStart}
           supportEnd={structure.supportEnd}
           resistanceStart={structure.resistanceStart}

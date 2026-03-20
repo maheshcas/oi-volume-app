@@ -3,6 +3,8 @@ type KeyLevelsCardProps = {
   majorResistance?: string;
   support: string;
   resistance: string;
+  supportDefenseRatio?: number | null;
+  resistanceDefenseRatio?: number | null;
   breakoutTrigger?: string;
   breakAbovePrimary: string;
   breakAboveExtended: string;
@@ -32,6 +34,16 @@ function formatRoundedZone(value: string) {
   return `${lower.toLocaleString('en-IN')}-${upper.toLocaleString('en-IN')}`;
 }
 
+function defenseCopy(value: number) {
+  if (value >= 1.5) {
+    return { label: "Strongly defended", className: "ia-defense-strong" };
+  }
+  if (value < 1.0) {
+    return { label: "Exposed", className: "ia-defense-exposed" };
+  }
+  return { label: "Defended", className: "ia-defense-neutral" };
+}
+
 export default function KeyLevelsCard(props: KeyLevelsCardProps) {
   const supportNum = parseNumeric(props.support);
   const resistanceNum = parseNumeric(props.resistance);
@@ -48,6 +60,10 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
     resistanceNum !== null &&
     majorResistanceNum > resistanceNum &&
     (supportNum === null || majorResistanceNum > supportNum);
+  const supportDefenseMeta =
+    typeof props.supportDefenseRatio === "number" ? defenseCopy(props.supportDefenseRatio) : null;
+  const resistanceDefenseMeta =
+    typeof props.resistanceDefenseRatio === "number" ? defenseCopy(props.resistanceDefenseRatio) : null;
 
   return (
     <div className="ia-card ia-key-levels-card">
@@ -57,6 +73,11 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
           <div className="ia-key-level-block">
             <div className="ia-kpi-label">Support</div>
             <div className="ia-level-support ia-emphasis-high">{props.support}</div>
+            {supportDefenseMeta ? (
+              <div className={`ia-key-defense-copy ${supportDefenseMeta.className}`}>
+                {supportDefenseMeta.label} ({props.supportDefenseRatio?.toFixed(2)}x)
+              </div>
+            ) : null}
             {showMajorSupport ? (
               <div className="ia-kpi-label ia-key-major-label">Next Support: {props.majorSupport}</div>
             ) : null}
@@ -64,6 +85,11 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
           <div className="ia-key-level-block">
             <div className="ia-kpi-label">Resistance</div>
             <div className="ia-level-resistance ia-emphasis-high">{props.resistance}</div>
+            {resistanceDefenseMeta ? (
+              <div className={`ia-key-defense-copy ${resistanceDefenseMeta.className}`}>
+                {resistanceDefenseMeta.label} ({props.resistanceDefenseRatio?.toFixed(2)}x)
+              </div>
+            ) : null}
             {showBreakoutTrigger ? (
               <div className="ia-kpi-label ia-key-major-label">Confirm Above: {props.breakoutTrigger}</div>
             ) : null}

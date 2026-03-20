@@ -6,6 +6,7 @@ type MarketBannerProps = {
   pctChange: string;
   volatilityState: "Expanding" | "Contracting" | "Stable";
   regime?: string;
+  regimeExplanation?: string;
   updatedAt: string;
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
   expiryMode?: boolean;
@@ -141,6 +142,9 @@ export default function MarketBanner(props: MarketBannerProps) {
         </span>
         <span className={`ia-pill ia-pill-active ${phaseTone}`}>Phase: {phaseLabel}</span>
       </div>
+      {props.regimeExplanation ? (
+        <div className="ia-banner-regime-note">{props.regimeExplanation}</div>
+      ) : null}
     </div>
   );
 }

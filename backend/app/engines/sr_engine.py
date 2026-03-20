@@ -32,6 +32,16 @@ def _to_float(value: Any, fallback: float = 0.0) -> float:
     return out
 
 
+def _find_strike_row(rows: list[dict[str, Any]], strike: float | None) -> dict[str, Any] | None:
+    if strike is None:
+        return None
+    for row in rows:
+        row_strike = _to_float(row.get("strike"), 0.0)
+        if abs(row_strike - float(strike)) < 1e-6:
+            return row
+    return None
+
+
 def _compute_raw_score(row: dict[str, Any], side: OptionType) -> tuple[float, float, float, float]:
     if side == "CE":
         oi = _to_float(row.get("CE_OI"), 0.0)
@@ -572,6 +582,20 @@ def run_sr_engine(
 
     resistance_immediate = immediate_res.strike if immediate_res is not None else (major_res.strike if major_res else None)
     support_immediate = immediate_sup.strike if immediate_sup is not None else (major_sup.strike if major_sup else None)
+    support_row = _find_strike_row(rows, support_immediate)
+    resistance_row = _find_strike_row(rows, resistance_immediate)
+    support_defense_score = None
+    resistance_defense_score = None
+    if support_row is not None:
+        support_defense_score = round(
+            _to_float(support_row.get("PE_OI"), 0.0) / max(_to_float(support_row.get("CE_OI"), 0.0), 1.0),
+            2,
+        )
+    if resistance_row is not None:
+        resistance_defense_score = round(
+            _to_float(resistance_row.get("CE_OI"), 0.0) / max(_to_float(resistance_row.get("PE_OI"), 0.0), 1.0),
+            2,
+        )
     support_zone = _compute_cluster_zone(rows, side="PE", spot=spot_num, step_window=2)
     resistance_zone = _compute_cluster_zone(rows, side="CE", spot=spot_num, step_window=2)
     sorted_strikes = sorted({_to_float(r.get("strike"), 0.0) for r in rows})
@@ -622,6 +646,7 @@ def run_sr_engine(
             "score": round((immediate_res.score if immediate_res else (major_res.score if major_res else 0.0)) * 100, 2),
             "immediate": resistance_immediate,
             "major": major_res.strike if major_res else None,
+            "defense_score": resistance_defense_score,
             "immediate_score": round(immediate_res.score if immediate_res else 0.0, 6),
             "major_score": round(major_res.score if major_res else 0.0, 6),
             "levels": _top_levels(ce_scored),
@@ -631,6 +656,7 @@ def run_sr_engine(
             "score": round((immediate_sup.score if immediate_sup else (major_sup.score if major_sup else 0.0)) * 100, 2),
             "immediate": support_immediate,
             "major": major_sup.strike if major_sup else None,
+            "defense_score": support_defense_score,
             "immediate_score": round(immediate_sup.score if immediate_sup else 0.0, 6),
             "major_score": round(major_sup.score if major_sup else 0.0, 6),
             "levels": _top_levels(pe_scored),

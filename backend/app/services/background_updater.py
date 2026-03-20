@@ -111,6 +111,55 @@ def _parse_timestamp_utc(text: str | None) -> datetime:
     return datetime.now(timezone.utc)
 
 
+_SESSION_PHASE_ORDER: dict[str, int] = {
+    "Transition": 0,
+    "Opening Drive": 1,
+    "Structure Formation": 2,
+    "Compression Phase": 3,
+    "Position Build Phase": 4,
+    "Expansion Window": 5,
+}
+
+
+def _session_phase_session_key(timestamp: datetime | None) -> str | None:
+    if timestamp is None:
+        return None
+    return timestamp.astimezone(IST).date().isoformat()
+
+
+def _stabilize_session_phase(
+    *,
+    current_phase: str | None,
+    current_confidence: float | int | None,
+    timestamp: datetime | None,
+    previous_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    phase = str(current_phase or "Transition")
+    confidence = max(0.0, min(0.99, float(current_confidence or 0.0)))
+    session_key = _session_phase_session_key(timestamp)
+
+    prev = previous_state or {}
+    prev_phase = str(prev.get("session_phase") or "").strip()
+    prev_confidence = max(0.0, min(0.99, float(prev.get("session_phase_confidence", 0.0) or 0.0)))
+    prev_session_key = str(prev.get("session_phase_session_key") or "").strip() or None
+
+    if session_key and prev_phase and prev_session_key == session_key:
+        current_rank = _SESSION_PHASE_ORDER.get(phase, 0)
+        prev_rank = _SESSION_PHASE_ORDER.get(prev_phase, 0)
+        if prev_rank > current_rank:
+            return {
+                "session_phase": prev_phase,
+                "confidence": round(max(prev_confidence, confidence), 2),
+                "session_key": session_key,
+            }
+
+    return {
+        "session_phase": phase,
+        "confidence": round(confidence, 2),
+        "session_key": session_key,
+    }
+
+
 def _append_cycle_log(entry: dict[str, Any]) -> None:
     if not ENABLE_CYCLE_LOG:
         return
@@ -765,15 +814,19 @@ def _apply_committed_regime_hysteresis(
     current_committed_regime: str | None,
     candidate_regime: str | None,
     candidate_regime_count: int,
+    last_detected_regime: str | None,
 ) -> tuple[str, str, int]:
     detected = str(detected_regime or "")
     committed = str(current_committed_regime or "")
     candidate = str(candidate_regime or "")
     count = int(candidate_regime_count or 0)
+    last_detected = str(last_detected_regime or "")
 
     if not committed:
         return detected, "", 0
     if detected == committed:
+        return committed, "", 0
+    if detected != last_detected:
         return committed, "", 0
     if candidate and detected == candidate:
         count += 1
@@ -1582,6 +1635,7 @@ def _build_v2_intelligence(
         current_committed_regime=(previous_state or {}).get("committed_regime"),
         candidate_regime=(previous_state or {}).get("candidate_regime"),
         candidate_regime_count=int((previous_state or {}).get("candidate_regime_count", 0) or 0),
+        last_detected_regime=(previous_state or {}).get("last_detected_regime"),
     )
 
     target = run_target_engine(features, sr, breakout, oi, trap, volume, decision=decision, regime=regime)
@@ -2484,6 +2538,12 @@ def _build_v2_intelligence(
         volume_expansion_score=volume_expansion_score,
         oi_shift_score=float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
     )
+    session_phase_payload = _stabilize_session_phase(
+        current_phase=session_phase_payload.get("session_phase"),
+        current_confidence=session_phase_payload.get("confidence"),
+        timestamp=event_timestamp,
+        previous_state=previous_state,
+    )
 
     cycle_log_entry = {
         "timestamp": features.get("meta", {}).get("timestamp"),
@@ -2672,6 +2732,7 @@ def _build_v2_intelligence(
             "readiness_active": bool(decision.get("readiness_active", False)),
             "committed_regime": committed_regime,
             "detected_regime": detected_committed_regime,
+            "last_detected_regime": detected_committed_regime,
             "candidate_regime": next_candidate_regime,
             "candidate_regime_count": int(next_candidate_regime_count),
             "momentum_override_score": decision.get("momentum_override_score"),
@@ -2816,6 +2877,9 @@ def _build_v2_intelligence(
             "oi_near_one_streak": int(oi_near_one_streak),
             "volume_near_one_streak": int(volume_near_one_streak),
             "trap_probability_history": [round(float(x), 4) for x in trap_history],
+            "session_phase": session_phase_payload.get("session_phase"),
+            "session_phase_confidence": session_phase_payload.get("confidence"),
+            "session_phase_session_key": session_phase_payload.get("session_key"),
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),

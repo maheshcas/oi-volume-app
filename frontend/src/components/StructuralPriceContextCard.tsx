@@ -18,6 +18,8 @@ type StructuralPriceContextCardProps = {
   dayLow?: number | null;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  supportDefenseRatio?: number | null;
+  resistanceDefenseRatio?: number | null;
   supportStart: number | null;
   supportEnd: number | null;
   resistanceStart: number | null;
@@ -242,6 +244,12 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
               <div className="spc-compact-metric">
                 <span>Support</span>
                 <strong>{rangeSummary.support.toLocaleString("en-IN")}</strong>
+                {typeof props.supportDefenseRatio === "number" ? (
+                  <em className="spc-compact-defense">
+                    <span className={`spc-defense-dot ${props.supportDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
+                    PE/CE {props.supportDefenseRatio.toFixed(2)}x
+                  </em>
+                ) : null}
               </div>
               <div className="spc-compact-metric spc-compact-metric-spot">
                 <span>Spot</span>
@@ -250,6 +258,12 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
               <div className="spc-compact-metric">
                 <span>Resistance</span>
                 <strong>{rangeSummary.resistance.toLocaleString("en-IN")}</strong>
+                {typeof props.resistanceDefenseRatio === "number" ? (
+                  <em className="spc-compact-defense">
+                    <span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
+                    CE/PE {props.resistanceDefenseRatio.toFixed(2)}x
+                  </em>
+                ) : null}
               </div>
             </div>
             <div className="spc-range-meta">
