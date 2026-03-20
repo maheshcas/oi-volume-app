@@ -190,6 +190,7 @@ def _apply_level_hysteresis(
     spot: float | None,
     score_margin: float = 0.18,
     oi_margin: float = 0.15,
+    resistance_upward_buffer: float = 25.0,
 ) -> _ScoredStrike | None:
     if immediate is None:
         return None
@@ -212,6 +213,25 @@ def _apply_level_hysteresis(
     if spot is not None:
         prev_is_directional = prev_candidate.strike > spot if side == "CE" else prev_candidate.strike < spot
         if not prev_is_directional:
+            return immediate
+        if side == "CE" and immediate.strike > prev_candidate.strike and spot < (prev_candidate.strike + resistance_upward_buffer):
+            logger.debug(
+                "SRTrace[%s][buffer_hold] prev=%s current=%s spot=%.2f required_spot=%.2f",
+                side,
+                prev_candidate.strike,
+                immediate.strike,
+                spot,
+                prev_candidate.strike + resistance_upward_buffer,
+            )
+            return prev_candidate
+        if side == "PE" and immediate.strike > prev_candidate.strike:
+            logger.debug(
+                "SRTrace[%s][free_upward_support] prev=%s current=%s spot=%.2f",
+                side,
+                prev_candidate.strike,
+                immediate.strike,
+                spot,
+            )
             return immediate
 
     baseline_score = max(prev_score, prev_candidate.score)

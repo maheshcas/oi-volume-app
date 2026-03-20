@@ -15,10 +15,20 @@ function severityTone(severity: TrapCardMobileProps["severity"]) {
 
 function directionPill(direction: TrapCardMobileProps["trapDirection"]) {
   if (direction === "upside") {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-medium text-emerald-300">↑ Upside</span>;
+    return (
+      <span className="dir-pill dp-absorption">
+        <span className="dir-arrow">↓</span>
+        <span>Support absorption</span>
+      </span>
+    );
   }
   if (direction === "downside") {
-    return <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[11px] font-medium text-amber-200">↓ Downside</span>;
+    return (
+      <span className="dir-pill dp-rejection">
+        <span className="dir-arrow">↑</span>
+        <span>Resistance rejection</span>
+      </span>
+    );
   }
   return <span className="text-slate-500">-</span>;
 }

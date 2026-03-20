@@ -178,8 +178,12 @@ backend/app/engines/sr_engine.py
 - Immediate support/resistance selection holds the previous active level unless the new level is meaningfully stronger.
 - Current intended hysteresis:
   - roughly 15 percent OI improvement required to flip immediate support/resistance
+- Additional upward resistance promotion buffer:
+  - CE resistance cannot promote upward unless spot is at least 25 points above the previous resistance
+  - downward reverts remain free
 - Purpose:
   - stop 23800 <-> 24000 or equivalent support ping-pong
+  - stop premature upward resistance jumps such as 23300 -> 23500 while spot is still below the active resistance
   - allow candidate_regime_count to reach 3
 
 Target / Breakout Probability
@@ -213,11 +217,15 @@ backend/app/services/background_updater.py
   - committed_regime
   - candidate_regime
   - candidate_regime_count
+  - last_detected_regime
 - Normal structural shift acceptance pattern:
   - N+0 -> candidate count 1
   - N+1 -> count 2
   - N+2 -> count 3
   - N+3 -> committed flips, candidate clears
+- Minimum hold is now required before the candidate ladder starts:
+  - detected regime must match previous cycle last_detected_regime
+  - one-cycle flickers should not increment candidate_regime_count
 - Confirmed material breaches bypass the 3-cycle gate:
   - resistance breach -> Trend Day
   - support breach -> Breakdown Day
@@ -228,6 +236,25 @@ backend/app/services/background_updater.py
 - support_transition_active should only represent the fresh shift window
 - previous_support should clear after the shift is consumed so the same old shift is not rediscovered all session
 - absorption_reference_level should stay aligned with active support logic rather than lagging one level behind
+- Validation status:
+  - if support_transition_active stays at 0 across a calm session, the stale carryover fix is behaving correctly
+  - exact support_shift_cycle == 0 gating was not added because pulsing disappeared after the carryover reset fix
+
+Session Phase Persistence
+backend/app/services/background_updater.py
+- session_phase is now persisted into _state with:
+  - session_phase
+  - session_phase_confidence
+  - session_phase_session_key
+- Forward-only stabilizer:
+  - Transition=0
+  - Opening Drive=1
+  - Structure Formation=2
+  - Compression Phase=3
+  - Position Build Phase=4
+  - Expansion Window=5
+- Within the same session date, phase cannot move backward across feed gaps or restarts.
+- New-session reset is day-scoped and can start fresh from Transition.
 
 Logger / Stability Validation
 backend/app/services/stability_logger.py
@@ -270,3 +297,16 @@ Primary contradiction areas to watch next session
 3. readiness_active = true and action = WAIT with trap < 60 -> LONG BIAS guard still blocking
 4. large single-cycle breach still unconfirmed -> breach override or previous-state feed still wrong
 5. SR flipping repeatedly within the same band -> hysteresis still insufficient
+
+Current deployment status
+- Confirmed fixed in code:
+  - trap stack inflation fixes
+  - previous-level breach refactor + debug logging
+  - session_phase persistence
+  - accumulator minimum hold
+  - stale previous_support carryover reset
+  - 25-point upward resistance promotion buffer
+- Waiting on live session confirmation:
+  - breach_confirmed firing end to end
+  - committed_regime candidate ladder reaching count 3 and flipping
+  - forward-only phase persistence across a true mid-session feed gap after phase has advanced

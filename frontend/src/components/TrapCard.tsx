@@ -66,11 +66,13 @@ export default function TrapCard({
 }: TrapCardProps) {
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
   const style = levelStyles[trap_level];
-  const directionLabel = trap_direction === "upside" ? "Upside" : trap_direction === "downside" ? "Downside" : "-";
-  const directionSymbol = trap_direction === "upside" ? "\u2191" : trap_direction === "downside" ? "\u2193" : "\u2014";
-  const directionAccent = trap_direction === "downside" ? "#f59e0b" : style.accent;
-  const directionSurface = trap_direction === "downside" ? "rgba(245, 158, 11, 0.10)" : style.surface;
-  const directionBorder = trap_direction === "downside" ? "rgba(245, 158, 11, 0.24)" : style.border;
+  const isRejection = trap_direction === "downside";
+  const directionSymbol =
+    trap_direction === "downside"
+      ? "\u2191"
+      : trap_direction === "upside"
+        ? "\u2193"
+        : "\u2014";
   const trapTypeLabel =
     trap_direction === "downside" && trap_type.toLowerCase().includes("breakout failure")
       ? "Breakdown Failure"
@@ -78,85 +80,49 @@ export default function TrapCard({
 
   return (
     <section className={`trap-card ${style.glow}`}>
-      <div className="trap-card-head">
-        <h3 className="trap-card-title">Trap Risk</h3>
-        <span
-          className={`trap-chip ${style.chip}`}
-          style={{
-            background: style.surface,
-            borderColor: trap_level === "High" ? "rgba(255, 68, 68, 0.30)" : style.border,
-            color: style.accent,
-          }}
-        >
-          {trap_level}
-        </span>
-      </div>
-
-      <div className="trap-metric">
-        <div className="trap-metric-head">
-          <span className="trap-metric-label" style={{ color: style.accent }}>Trap Risk %</span>
-          <span className="trap-metric-value" style={{ color: style.accent }}>{probability}%</span>
+      <div className="trap-header">
+        <div className="trap-title-row">
+          <span className="trap-lbl">Trap Risk</span>
+          {trap_direction ? (
+            <span className={`dir-pill ${isRejection ? "dp-rejection" : "dp-absorption"}`}>
+              <span className="dir-arrow">{directionSymbol}</span>
+              <span>{isRejection ? "Resistance" : "Support"}</span>
+            </span>
+          ) : null}
         </div>
-        <div className="trap-progress">
+
+        <div className="trap-pct-row">
+          <span className="trap-pct">{probability}%</span>
+          <span
+            className={`trap-badge lvl-${trap_level.toLowerCase()}`}
+            style={{
+              background: style.surface,
+              borderColor: trap_level === "High" ? "rgba(255, 68, 68, 0.30)" : style.border,
+              color: style.accent,
+            }}
+          >
+            {trap_level}
+          </span>
+        </div>
+
+        <div className="trap-bar-outer">
           <div
-            className={`trap-progress-fill ${style.bar}`}
+            className={`trap-bar-fill ${style.bar}`}
             style={{ width: `${probability}%`, background: trap_level === "High" ? "#ff4444" : style.accent, opacity: trap_level === "High" ? 0.8 : 1 }}
           />
+        </div>
+
+        <div className="trap-meta-row">
+          <span className="trap-type">{trapTypeLabel}</span>
+          {show_affected_level ? (
+            <span className="trap-affected">
+              {isRejection ? "Reject at" : "Absorb at"} {trap_zone.toLocaleString("en-IN")}
+            </span>
+          ) : null}
         </div>
       </div>
 
       <div className="trap-details" style={{ display: "grid", gap: 10 }}>
-        <div
-          className="trap-row"
-          style={{
-            padding: "8px 12px",
-            borderRadius: 12,
-            border: `1px solid ${style.border}`,
-            background: style.surface,
-          }}
-        >
-          <div className="trap-key" style={{ marginBottom: 4 }}>Trap Risk Level</div>
-          <div className="trap-value" style={{ color: style.accent, fontWeight: 800, fontSize: 18 }}>
-            {trap_level}
-          </div>
-        </div>
-
-        <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-          <div className="trap-key" style={{ marginBottom: 4 }}>Trap Type</div>
-          <div className="trap-value" style={{ fontWeight: 500 }}>{trapTypeLabel}</div>
-        </div>
-
-        {show_affected_level ? (
-          <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-            <div className="trap-key" style={{ marginBottom: 4 }}>Direction</div>
-            <div className="trap-value">
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "4px 10px",
-                  borderRadius: 999,
-                  background: directionSurface,
-                  border: `1px solid ${directionBorder}`,
-                  color: directionAccent,
-                  fontWeight: 700,
-                }}
-              >
-                <span>{directionSymbol}</span>
-                <span>{directionLabel}</span>
-              </span>
-            </div>
-          </div>
-        ) : null}
-
-        {show_affected_level ? (
-          <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-            <div className="trap-key" style={{ marginBottom: 4 }}>Affected Level</div>
-            <div className="trap-value">{trap_zone}</div>
-          </div>
-        ) : null}
-
         {trap_reason ? (
           <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
             <div className="trap-key" style={{ marginBottom: 4 }}>OI Imbalance Trap</div>

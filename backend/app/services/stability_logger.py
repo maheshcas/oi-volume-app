@@ -192,7 +192,13 @@ class StabilityLoggerService:
             "cache_last_update": internal_state.get("last_update") or internal_state.get("updated_at"),
             "support_strike": levels.get("support", {}).get("strike"),
             "resistance_strike": levels.get("resistance", {}).get("strike"),
-            "trap_probability": trap.get("trap_probability"),
+            "trap_probability": (
+                trap.get("trap_probability_pct")
+                if trap.get("trap_probability_pct") is not None
+                else trap.get("trap_risk")
+                if trap.get("trap_risk") is not None
+                else trap.get("trap_probability")
+            ),
             "trap_type": trap.get("trap_type"),
             "breach_confirmed": breach.get("material_breach_confirmed"),
             "confirmation_type": breach.get("confirmation_type"),

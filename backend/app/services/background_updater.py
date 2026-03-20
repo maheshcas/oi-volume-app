@@ -127,6 +127,32 @@ def _session_phase_session_key(timestamp: datetime | None) -> str | None:
     return timestamp.astimezone(IST).date().isoformat()
 
 
+def _reset_state_for_new_session(
+    previous_state: dict[str, Any] | None,
+    *,
+    timestamp: datetime | None,
+) -> dict[str, Any] | None:
+    if not isinstance(previous_state, dict):
+        return previous_state
+    session_key = _session_phase_session_key(timestamp)
+    prev_session_key = str(previous_state.get("session_date") or "").strip() or None
+    if not session_key or prev_session_key == session_key:
+        return previous_state
+
+    reset_state = dict(previous_state)
+    reset_state["previous_support"] = None
+    reset_state["previous_resistance"] = None
+    reset_state["current_support"] = None
+    reset_state["current_resistance"] = None
+    reset_state["absorption_reference_level"] = None
+    reset_state["support_shift_cycle"] = 0
+    reset_state["session_phase"] = "Transition"
+    reset_state["session_phase_confidence"] = 0.45
+    reset_state["session_phase_session_key"] = session_key
+    reset_state["session_date"] = session_key
+    return reset_state
+
+
 def _stabilize_session_phase(
     *,
     current_phase: str | None,
@@ -1260,6 +1286,11 @@ def _build_v2_intelligence(
     engine_stats: dict[str, float] | None = None,
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
+    session_eval_time = evaluation_time or _parse_timestamp_utc(timestamp)
+    previous_state = _reset_state_for_new_session(
+        previous_state,
+        timestamp=session_eval_time,
+    )
     normalized = normalize_chain(rows)
     features = build_feature_frame(
         normalized,
@@ -2041,6 +2072,7 @@ def _build_v2_intelligence(
             confidence_percent=float(decision.get("confidence", 0) or 0),
         )
         trap["trap_probability_pct"] = int(trap_conf_adj["trap_probability"])
+        trap["trap_probability"] = int(trap_conf_adj["trap_probability"])
         trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
         trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
     else:
@@ -2221,6 +2253,7 @@ def _build_v2_intelligence(
     if committed_regime == "Range Day" and not material_breach_confirmed:
         expiry_trap_risk = min(expiry_trap_risk, 72.0)
     trap["trap_probability_pct"] = int(expiry_trap_risk)
+    trap["trap_probability"] = int(expiry_trap_risk)
     trap["trap_risk"] = int(expiry_trap_risk)
     expiry_adaptive["trap_risk"] = round(expiry_trap_risk, 2)
     reversal_prob = compute_early_reversal_probability(
@@ -2880,6 +2913,7 @@ def _build_v2_intelligence(
             "session_phase": session_phase_payload.get("session_phase"),
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "session_phase_session_key": session_phase_payload.get("session_key"),
+            "session_date": session_phase_payload.get("session_key"),
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),

@@ -105,6 +105,7 @@ Web field mapping
 frontend/src/App.tsx
 - Spot:
   - index-data quote still updates faster than option-chain fallback
+  - local browser runtime must not cache `/api` responses through the service worker
 - Key levels:
   - support = intelligence.levels.support.strike
   - resistance = intelligence.levels.resistance.strike
@@ -205,6 +206,15 @@ frontend/public/_redirects
 - Validation target:
   - refreshing `/app` should not return 404 on deployed builds.
 
+PWA / Service Worker
+frontend/public/sw.js
+frontend/public/manifest.json
+frontend/src/main.tsx
+- PWA manifest and service worker are enabled.
+- Service worker must not cache live `/api/` requests.
+- Validation target:
+  - spot and other live values should continue updating after refresh instead of freezing on stale cached API responses.
+
 Validation checklist
 - Below `md`, mobile layout renders instead of desktop.
 - At `md` and above, desktop layout renders unchanged.
@@ -214,6 +224,7 @@ Validation checklist
 - Bottom nav on mobile no longer inherits orange button styling.
 - Expiry dropdown text remains visible.
 - Netlify refresh on `/app` works after deploy.
+- Live spot still updates after service worker install / refresh.
 
 Build validation
 - Current frontend changes build successfully with:

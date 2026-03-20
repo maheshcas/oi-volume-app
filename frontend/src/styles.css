@@ -2038,6 +2038,84 @@ tbody tr:hover {
   font-weight: 500;
 }
 
+.trap-header {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.trap-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.trap-lbl {
+  color: #94a3b8;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+}
+
+.trap-pct-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.trap-pct {
+  font-size: 32px;
+  line-height: 1;
+  font-weight: 800;
+  color: #f8fafc;
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.trap-badge {
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trap-bar-outer {
+  height: 8px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.95);
+}
+
+.trap-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 220ms ease;
+}
+
+.trap-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trap-type {
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.trap-affected {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+}
+
 .trap-chip {
   border: 1px solid;
   border-radius: 999px;
@@ -2152,6 +2230,35 @@ tbody tr:hover {
   font-size: 11px;
   color: #94a3b8;
   letter-spacing: 0.04em;
+}
+
+.dir-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 0.5px solid;
+  white-space: nowrap;
+}
+
+.dp-rejection {
+  color: #f8fafc;
+  background: transparent;
+  border-color: #e24b4a;
+}
+
+.dp-absorption {
+  color: #27500a;
+  background: transparent;
+  border-color: #639922;
+}
+
+.dir-arrow {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .trap-action-value {
