@@ -30,6 +30,8 @@ WATCH_FIELDS = [
     "resistance_strike",
     "trap_probability",
     "trap_type",
+    "trap_direction",
+    "trap_affected_level",
     "breach_confirmed",
     "confirmation_type",
 ]
@@ -50,6 +52,8 @@ REQUIRED_FIELDS = [
     "resistance_strike",
     "trap_probability",
     "trap_type",
+    "trap_direction",
+    "trap_affected_level",
     "breach_confirmed",
 ]
 
@@ -69,7 +73,7 @@ class _StreamState:
 class StabilityLoggerService:
     def __init__(self) -> None:
         self.logger = logging.getLogger(LOGGER_NAME)
-        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "false").strip().lower() in {
+        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "true").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -200,6 +204,8 @@ class StabilityLoggerService:
                 else trap.get("trap_probability")
             ),
             "trap_type": trap.get("trap_type"),
+            "trap_direction": trap.get("trap_direction"),
+            "trap_affected_level": trap.get("trap_affected_level"),
             "breach_confirmed": breach.get("material_breach_confirmed"),
             "confirmation_type": breach.get("confirmation_type"),
         }

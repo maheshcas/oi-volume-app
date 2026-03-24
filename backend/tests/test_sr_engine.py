@@ -66,3 +66,22 @@ def test_response_shape_includes_tiers_and_alerts() -> None:
     assert "cluster_zones" in out
     assert 0.0 <= float(out.get("support_strength", 0.0) or 0.0) <= 1.0
     assert 0.0 <= float(out.get("resistance_strength", 0.0) or 0.0) <= 1.0
+
+
+def test_support_demotion_is_buffered_until_spot_breaks_25_points_below_previous_support() -> None:
+    rows = [
+        {"strike": 22400, "CE_OI": 10000, "CE_DeltaOI": 300, "CE_Volume": 4000, "PE_OI": 125000, "PE_DeltaOI": 22000, "PE_Volume": 52000},
+        {"strike": 22500, "CE_OI": 12000, "CE_DeltaOI": 400, "CE_Volume": 4500, "PE_OI": 115000, "PE_DeltaOI": 18000, "PE_Volume": 48000},
+        {"strike": 22700, "CE_OI": 140000, "CE_DeltaOI": 12000, "CE_Volume": 62000, "PE_OI": 8000, "PE_DeltaOI": 200, "PE_Volume": 2500},
+    ]
+    previous_state = {
+        "levels": {
+            "support": {"immediate": 22500, "immediate_score": 0.95},
+            "resistance": {"immediate": 22700, "immediate_score": 0.75},
+        }
+    }
+
+    out = run_sr_engine(_features(rows, spot=22490.95), previous_state=previous_state)
+
+    assert out["support"]["immediate"] == 22500
+    assert out["support"]["strike"] == 22500

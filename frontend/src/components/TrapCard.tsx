@@ -116,7 +116,7 @@ export default function TrapCard({
           <span className="trap-type">{trapTypeLabel}</span>
           {show_affected_level ? (
             <span className="trap-affected">
-              {isRejection ? "Reject at" : "Absorb at"} {trap_zone.toLocaleString("en-IN")}
+              Affected {trap_zone.toLocaleString("en-IN")}
             </span>
           ) : null}
         </div>

@@ -133,58 +133,106 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
     };
   }, [props.previousResistance, props.previousSupport, props.resistanceLevel, props.spotPrice, props.supportLevel]);
 
-  const breachMarkers = useMemo(() => {
-    if (!rangeSummary || !props.materialBreachConfirmed) return [] as Array<{
-      key: string;
-      position: number;
-      label: string;
-      tone: "amber" | "green" | "red";
-    }>;
+  const trackSummary = useMemo(() => {
+    if (!rangeSummary) return null;
 
-    const bandWidth = rangeSummary.resistance - rangeSummary.support;
-    if (bandWidth <= 0) {
-      return [];
+    const hasBrokenSupport =
+      typeof rangeSummary.previousSupport === "number" &&
+      rangeSummary.previousSupport > rangeSummary.support &&
+      rangeSummary.spot < rangeSummary.previousSupport;
+    const hasBrokenResistance =
+      typeof rangeSummary.previousResistance === "number" &&
+      rangeSummary.previousResistance < rangeSummary.resistance &&
+      rangeSummary.spot > rangeSummary.previousResistance;
+
+    const baseSupport =
+      hasBrokenSupport && typeof rangeSummary.previousSupport === "number"
+        ? rangeSummary.previousSupport
+        : rangeSummary.support;
+    const baseResistance =
+      hasBrokenResistance && typeof rangeSummary.previousResistance === "number"
+        ? rangeSummary.previousResistance
+        : rangeSummary.resistance;
+    const baseBandWidth = Math.max(1, baseResistance - baseSupport);
+    const maxExtension = baseBandWidth * 0.5;
+
+    const leftExtension = Math.min(
+      hasBrokenSupport && typeof rangeSummary.previousSupport === "number"
+        ? Math.max(0, rangeSummary.previousSupport - rangeSummary.support)
+        : 0,
+      maxExtension,
+    );
+    const rightExtension = Math.min(
+      hasBrokenResistance && typeof rangeSummary.previousResistance === "number"
+        ? Math.max(0, rangeSummary.resistance - rangeSummary.previousResistance)
+        : 0,
+      maxExtension,
+    );
+    const totalWidth = leftExtension + baseBandWidth + rightExtension;
+
+    let spotOffset = leftExtension + (rangeSummary.spot - baseSupport);
+    if (hasBrokenSupport && typeof rangeSummary.previousSupport === "number") {
+      const extensionSpan = Math.max(1, rangeSummary.previousSupport - rangeSummary.support);
+      const ratio = (rangeSummary.spot - rangeSummary.support) / extensionSpan;
+      spotOffset = leftExtension * Math.max(0, Math.min(1, ratio));
+    } else if (hasBrokenResistance && typeof rangeSummary.previousResistance === "number") {
+      const extensionSpan = Math.max(1, rangeSummary.resistance - rangeSummary.previousResistance);
+      const ratio = (rangeSummary.spot - rangeSummary.previousResistance) / extensionSpan;
+      spotOffset = leftExtension + baseBandWidth + (rightExtension * Math.max(0, Math.min(1, ratio)));
+    }
+    spotOffset = Math.max(0, Math.min(totalWidth, spotOffset));
+
+    const spotPct = (spotOffset / totalWidth) * 100;
+    const leftExtensionPct = (leftExtension / totalWidth) * 100;
+    const rightExtensionPct = (rightExtension / totalWidth) * 100;
+    const bandStartPct = leftExtensionPct;
+    const bandWidthPct = (baseBandWidth / totalWidth) * 100;
+
+    let positionText = `${Math.round(((rangeSummary.spot - baseSupport) / baseBandWidth) * 100)}% in band`;
+    let metaText = `${Math.round(rangeSummary.distToSupport)} pts above support`;
+    let footCenterText = `${Math.round(rangeSummary.distToSupport)} pts above S`;
+    let footRightText = `${Math.round(rangeSummary.distToResistance)} pts below R`;
+
+    if (hasBrokenSupport && typeof rangeSummary.previousSupport === "number") {
+      positionText = `${Math.round(((rangeSummary.spot - rangeSummary.previousSupport) / baseBandWidth) * 100)}% (breach zone)`;
+      metaText = `${Math.round(rangeSummary.previousSupport - rangeSummary.spot)} pts below support`;
+      footCenterText = `${Math.round(rangeSummary.previousSupport - rangeSummary.spot)} pts below old S`;
+      footRightText = `${Math.round(rangeSummary.resistance - rangeSummary.spot)} pts below R`;
+    } else if (hasBrokenResistance && typeof rangeSummary.previousResistance === "number") {
+      positionText = `${Math.round(((rangeSummary.spot - rangeSummary.support) / baseBandWidth) * 100)}% (above R)`;
+      metaText = `${Math.round(rangeSummary.spot - rangeSummary.previousResistance)} pts above resistance`;
+      footCenterText = `${Math.round(rangeSummary.spot - rangeSummary.previousResistance)} pts above old R`;
+      footRightText = `${Math.round(rangeSummary.resistance - rangeSummary.spot)} pts below new R`;
     }
 
-    const confirmationType = String(props.confirmationType ?? "").toLowerCase();
-    const computePosition = (value: number) =>
-      ((value - rangeSummary.support) / bandWidth) * 100;
-
-    const markers = [] as Array<{
-      key: string;
-      position: number;
-      label: string;
-      tone: "amber" | "green" | "red";
-    }>;
-
-    if (rangeSummary.previousSupport !== null) {
-      const supportTone =
-        confirmationType.includes("support") || confirmationType.includes("down")
-          ? "red"
-          : "amber";
-      markers.push({
-        key: "previous-support",
-        position: Math.max(0, Math.min(100, computePosition(rangeSummary.previousSupport))),
-        label: `${rangeSummary.previousSupport.toLocaleString("en-IN")} ${supportTone === "red" ? "↓" : ""}`.trim(),
-        tone: supportTone,
-      });
-    }
-
-    if (rangeSummary.previousResistance !== null) {
-      const resistanceTone =
-        confirmationType.includes("resistance") || confirmationType.includes("breakout")
-          ? "green"
-          : "amber";
-      markers.push({
-        key: "previous-resistance",
-        position: Math.max(0, Math.min(100, computePosition(rangeSummary.previousResistance))),
-        label: `${rangeSummary.previousResistance.toLocaleString("en-IN")} ${resistanceTone === "green" ? "↑" : ""}`.trim(),
-        tone: resistanceTone,
-      });
-    }
-
-    return markers;
-  }, [props.confirmationType, props.materialBreachConfirmed, rangeSummary]);
+    return {
+      ...rangeSummary,
+      hasBrokenSupport,
+      hasBrokenResistance,
+      baseBandWidth,
+      spotPct,
+      leftExtensionPct,
+      rightExtensionPct,
+      bandStartPct,
+      bandWidthPct,
+      positionText,
+      metaText,
+      footCenterText,
+      footRightText,
+      markerPosition:
+        hasBrokenSupport
+          ? bandStartPct
+          : hasBrokenResistance
+            ? bandStartPct + bandWidthPct
+            : null,
+      markerLabel:
+        hasBrokenSupport && typeof rangeSummary.previousSupport === "number"
+          ? `old S ${rangeSummary.previousSupport.toLocaleString("en-IN")}`
+          : hasBrokenResistance && typeof rangeSummary.previousResistance === "number"
+            ? `old R ${rangeSummary.previousResistance.toLocaleString("en-IN")}`
+            : null,
+    };
+  }, [rangeSummary]);
 
   const compactTargets = useMemo(() => {
     const targets = [
@@ -238,12 +286,12 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
         </button>
       </div>
       <div className="spc-compact-panel">
-        {rangeSummary ? (
+        {trackSummary ? (
           <>
             <div className="spc-compact-head">
               <div className="spc-compact-metric">
                 <span>Support</span>
-                <strong>{rangeSummary.support.toLocaleString("en-IN")}</strong>
+                <strong>{trackSummary.support.toLocaleString("en-IN")}</strong>
                 {typeof props.supportDefenseRatio === "number" ? (
                   <em className="spc-compact-defense">
                     <span className={`spc-defense-dot ${props.supportDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
@@ -253,11 +301,11 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
               </div>
               <div className="spc-compact-metric spc-compact-metric-spot">
                 <span>Spot</span>
-                <strong>{rangeSummary.spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</strong>
+                <strong>{trackSummary.spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</strong>
               </div>
               <div className="spc-compact-metric">
                 <span>Resistance</span>
-                <strong>{rangeSummary.resistance.toLocaleString("en-IN")}</strong>
+                <strong>{trackSummary.resistance.toLocaleString("en-IN")}</strong>
                 {typeof props.resistanceDefenseRatio === "number" ? (
                   <em className="spc-compact-defense">
                     <span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
@@ -267,29 +315,55 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
               </div>
             </div>
             <div className="spc-range-meta">
-              <span>{Math.round(rangeSummary.position)}% in band</span>
-              <span>{Math.round(rangeSummary.distToSupport)} pts above support</span>
-              <span>{Math.round(rangeSummary.distToResistance)} pts below resistance</span>
+              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-meta-alert" : undefined}>
+                {trackSummary.positionText}
+              </span>
+              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-meta-alert" : undefined}>
+                {trackSummary.metaText}
+              </span>
+              <span>{trackSummary.footRightText}</span>
             </div>
             <div className="spc-range-track">
-              <div className="spc-range-line" />
-              <div className="spc-range-zone spc-range-zone-support" />
-              <div className="spc-range-zone spc-range-zone-resistance" />
-              {breachMarkers.map((marker) => (
-                <div
-                  className={`spc-range-marker spc-range-marker-${marker.tone}`}
-                  key={marker.key}
-                  style={{ left: `${marker.position}%` }}
-                >
-                  <span>{marker.label}</span>
+              <div
+                className={`spc-range-extension spc-range-extension-left ${trackSummary.hasBrokenSupport ? "spc-range-extension-active" : ""}`}
+                style={{ width: `${trackSummary.leftExtensionPct}%` }}
+              />
+              <div
+                className="spc-range-band"
+                style={{
+                  left: `${trackSummary.bandStartPct}%`,
+                  width: `${trackSummary.bandWidthPct}%`,
+                }}
+              />
+              <div
+                className={`spc-range-extension spc-range-extension-right ${trackSummary.hasBrokenResistance ? "spc-range-extension-active" : ""}`}
+                style={{ width: `${trackSummary.rightExtensionPct}%` }}
+              />
+              {trackSummary.markerPosition !== null && trackSummary.markerLabel ? (
+                <div className="spc-range-anchor" style={{ left: `${trackSummary.markerPosition}%` }}>
+                  <span>{trackSummary.markerLabel}</span>
                 </div>
-              ))}
-              <div className="spc-range-spot" style={{ left: `${rangeSummary.position}%` }} />
+              ) : null}
+              <div
+                className={`spc-range-spot ${trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-spot-breach" : ""}`}
+                style={{ left: `${trackSummary.spotPct}%` }}
+              />
+            </div>
+            <div className="spc-range-foot">
+              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
+                {trackSummary.positionText}
+              </span>
+              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
+                {trackSummary.footCenterText}
+              </span>
+              <span className={trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
+                {trackSummary.footRightText}
+              </span>
             </div>
             <div className="spc-mini-grid">
               <div className="spc-mini-card">
                 <span>Band</span>
-                <strong>{Math.round(rangeSummary.bandWidth)} pts</strong>
+                <strong>{Math.round(trackSummary.baseBandWidth)} pts</strong>
               </div>
               {compactTargets.map((target) => (
                 <div className="spc-mini-card" key={target.key}>

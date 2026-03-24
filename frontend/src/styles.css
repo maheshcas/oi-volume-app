@@ -2099,7 +2099,8 @@ tbody tr:hover {
 .trap-meta-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -2109,11 +2110,16 @@ tbody tr:hover {
   font-weight: 500;
 }
 
+.trap-type::after {
+  content: "·";
+  margin-left: 12px;
+  color: #64748b;
+}
+
 .trap-affected {
   color: #94a3b8;
   font-size: 12px;
   font-weight: 500;
-  text-align: right;
 }
 
 .trap-chip {
@@ -2636,45 +2642,50 @@ tbody tr:hover {
   letter-spacing: 0.03em;
 }
 
+.spc-range-meta-alert {
+  color: #f2a3a3;
+}
+
 .spc-range-track {
   position: relative;
-  height: 44px;
+  height: 52px;
 }
 
-.spc-range-line {
+.spc-range-band {
   position: absolute;
-  top: 6px;
-  left: 0;
-  right: 0;
+  top: 10px;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(38, 168, 105, 0.75), rgba(224, 92, 106, 0.75));
+  background: linear-gradient(90deg, rgba(94, 167, 23, 0.95), rgba(244, 162, 30, 0.95), rgba(225, 88, 77, 0.95));
 }
 
-.spc-range-zone {
+.spc-range-extension {
   position: absolute;
-  top: 3px;
-  width: 14px;
-  height: 10px;
+  top: 10px;
+  height: 4px;
   border-radius: 999px;
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
-.spc-range-zone-support {
+.spc-range-extension-left {
   left: 0;
-  background: rgba(38, 168, 105, 0.95);
+  background: rgba(240, 112, 112, 0.22);
 }
 
-.spc-range-zone-resistance {
+.spc-range-extension-right {
   right: 0;
-  background: rgba(224, 92, 106, 0.95);
+  background: rgba(240, 112, 112, 0.22);
+}
+
+.spc-range-extension-active {
+  background: rgba(240, 112, 112, 0.32);
 }
 
 .spc-range-spot {
   position: absolute;
-  top: -1px;
-  width: 12px;
-  height: 12px;
+  top: 4px;
+  width: 14px;
+  height: 14px;
   transform: translateX(-50%);
   border-radius: 999px;
   background: #00c8ff;
@@ -2682,61 +2693,57 @@ tbody tr:hover {
   box-shadow: 0 0 0 2px rgba(0, 200, 255, 0.2);
 }
 
-.spc-range-marker {
+.spc-range-spot-breach {
+  background: #eb5757;
+  border-color: #fff0f0;
+  box-shadow: 0 0 0 2px rgba(235, 87, 87, 0.18);
+}
+
+.spc-range-anchor {
   position: absolute;
   top: 0;
   width: 0;
-  height: 30px;
+  height: 42px;
   transform: translateX(-50%);
   pointer-events: none;
 }
 
-.spc-range-marker::before {
+.spc-range-anchor::before {
   content: "";
   position: absolute;
-  top: 1px;
+  top: 4px;
   left: 50%;
-  width: 4px;
-  height: 18px;
+  width: 2px;
+  height: 28px;
   transform: translateX(-50%);
-  border-radius: 999px;
-  background: rgba(201, 161, 58, 0.88);
+  background: rgba(158, 163, 173, 0.78);
 }
 
-.spc-range-marker span {
+.spc-range-anchor span {
   position: absolute;
-  top: 24px;
+  top: 0;
   left: 50%;
   transform: translateX(-50%);
-  color: #c9a13a;
+  color: #9ea3ad;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
   white-space: nowrap;
 }
 
-.spc-range-marker-amber::before {
-  background: rgba(201, 161, 58, 0.88);
+.spc-range-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: #a9b9cc;
+  font-size: 11px;
+  letter-spacing: 0.03em;
 }
 
-.spc-range-marker-amber span {
-  color: #c9a13a;
-}
-
-.spc-range-marker-green::before {
-  background: rgba(46, 122, 50, 0.92);
-}
-
-.spc-range-marker-green span {
-  color: #2e7a32;
-}
-
-.spc-range-marker-red::before {
-  background: rgba(151, 55, 55, 0.92);
-}
-
-.spc-range-marker-red span {
-  color: #973737;
+.spc-range-foot-alert {
+  color: #f2a3a3;
 }
 
 .spc-toggle {

@@ -140,6 +140,18 @@ def _reset_state_for_new_session(
         return previous_state
 
     reset_state = dict(previous_state)
+    prev_levels = previous_state.get("levels", {}) if isinstance(previous_state, dict) else {}
+    prev_support_obj = prev_levels.get("support", {}) if isinstance(prev_levels, dict) else {}
+    prev_resistance_obj = prev_levels.get("resistance", {}) if isinstance(prev_levels, dict) else {}
+    closing_support = _safe_float(previous_state.get("support_level"))
+    if closing_support is None:
+        closing_support = _safe_float(prev_support_obj.get("immediate"))
+    closing_resistance = _safe_float(previous_state.get("resistance_level"))
+    if closing_resistance is None:
+        closing_resistance = _safe_float(prev_resistance_obj.get("immediate"))
+
+    reset_state["support_level"] = closing_support
+    reset_state["resistance_level"] = closing_resistance
     reset_state["previous_support"] = None
     reset_state["previous_resistance"] = None
     reset_state["current_support"] = None
@@ -448,40 +460,43 @@ def _is_support_transition_active(support_shift_cycle: Any) -> bool:
 def _canonicalize_trap_reference(
     *,
     trap: dict[str, Any],
+    spot: float | None,
     support_level: float | None,
     resistance_level: float | None,
     breakout_up: bool,
     breakout_down: bool,
 ) -> tuple[float | None, str]:
-    raw_affected_level = _safe_float(trap.get("trap_affected_level"))
+    spot_value = _safe_float(spot)
+    support_value = _safe_float(support_level)
+    resistance_value = _safe_float(resistance_level)
+    raw_direction = str(trap.get("trap_direction") or "").strip().lower()
     raw_type = str(trap.get("trap_type") or "").strip().lower()
 
     if (
-        raw_affected_level is not None
-        and resistance_level is not None
-        and abs(raw_affected_level - float(resistance_level)) < 1e-6
+        spot_value is not None
+        and support_value is not None
+        and resistance_value is not None
+        and resistance_value > support_value
     ):
-        return float(resistance_level), "upside"
-    if (
-        raw_affected_level is not None
-        and support_level is not None
-        and abs(raw_affected_level - float(support_level)) < 1e-6
-    ):
-        return float(support_level), "downside"
+        dist_to_support = max(0.0, spot_value - support_value)
+        dist_to_resistance = max(0.0, resistance_value - spot_value)
+        if dist_to_support < dist_to_resistance:
+            return support_value, "upside"
+        return resistance_value, "downside"
 
-    raw_direction = str(trap.get("trap_direction") or "").strip().lower()
-    if breakout_up and resistance_level is not None:
-        return float(resistance_level), "upside"
-    if breakout_down and support_level is not None:
-        return float(support_level), "downside"
-    if raw_direction == "upside" and resistance_level is not None:
-        return float(resistance_level), "upside"
-    if raw_direction == "downside" and support_level is not None:
-        return float(support_level), "downside"
-    if ("breakdown" in raw_type or "support" in raw_type) and support_level is not None:
-        return float(support_level), "downside"
-    if ("breakout" in raw_type or "resistance" in raw_type) and resistance_level is not None:
-        return float(resistance_level), "upside"
+    if raw_direction == "downside" and resistance_value is not None:
+        return resistance_value, "downside"
+    if raw_direction == "upside" and support_value is not None:
+        return support_value, "upside"
+
+    if breakout_up and resistance_value is not None:
+        return resistance_value, "upside"
+    if breakout_down and support_value is not None:
+        return support_value, "downside"
+    if ("breakdown" in raw_type or "support" in raw_type) and support_value is not None:
+        return support_value, "downside"
+    if ("breakout" in raw_type or "resistance" in raw_type) and resistance_value is not None:
+        return resistance_value, "upside"
 
     return None, ""
 
@@ -1726,6 +1741,7 @@ def _build_v2_intelligence(
 
     trap_affected_level, trap_direction = _canonicalize_trap_reference(
         trap=trap,
+        spot=spot,
         support_level=support_level,
         resistance_level=resistance_level,
         breakout_up=bool(breakout.get("breakout_up")),
