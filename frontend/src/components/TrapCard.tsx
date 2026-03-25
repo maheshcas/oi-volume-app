@@ -65,7 +65,8 @@ export default function TrapCard({
   show_affected_level = true,
 }: TrapCardProps) {
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
-  const style = levelStyles[trap_level];
+  const resolvedTrapLevel = levelStyles[trap_level] ? trap_level : "Moderate";
+  const style = levelStyles[resolvedTrapLevel];
   const isRejection = trap_direction === "downside";
   const directionSymbol =
     trap_direction === "downside"
@@ -86,7 +87,7 @@ export default function TrapCard({
           {trap_direction ? (
             <span className={`dir-pill ${isRejection ? "dp-rejection" : "dp-absorption"}`}>
               <span className="dir-arrow">{directionSymbol}</span>
-              <span>{isRejection ? "Resistance" : "Support"}</span>
+              <span>{isRejection ? "Resistance rejection" : "Support absorption"}</span>
             </span>
           ) : null}
         </div>
@@ -94,21 +95,21 @@ export default function TrapCard({
         <div className="trap-pct-row">
           <span className="trap-pct">{probability}%</span>
           <span
-            className={`trap-badge lvl-${trap_level.toLowerCase()}`}
+            className={`trap-badge lvl-${resolvedTrapLevel.toLowerCase()}`}
             style={{
               background: style.surface,
-              borderColor: trap_level === "High" ? "rgba(255, 68, 68, 0.30)" : style.border,
+              borderColor: resolvedTrapLevel === "High" ? "rgba(255, 68, 68, 0.30)" : style.border,
               color: style.accent,
             }}
           >
-            {trap_level}
+            {resolvedTrapLevel}
           </span>
         </div>
 
         <div className="trap-bar-outer">
           <div
             className={`trap-bar-fill ${style.bar}`}
-            style={{ width: `${probability}%`, background: trap_level === "High" ? "#ff4444" : style.accent, opacity: trap_level === "High" ? 0.8 : 1 }}
+            style={{ width: `${probability}%`, background: resolvedTrapLevel === "High" ? "#ff4444" : style.accent, opacity: resolvedTrapLevel === "High" ? 0.8 : 1 }}
           />
         </div>
 

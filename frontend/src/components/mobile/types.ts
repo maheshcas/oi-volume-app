@@ -1,3 +1,5 @@
+import type { SignalHistoryItem } from "../decisionUx";
+
 export type MobileNavKey = "overview" | "chart" | "ladder" | "writers" | "alerts";
 
 export type MobileOption = {
@@ -40,6 +42,9 @@ export type MobileDashboardData = {
   pcr: string;
   tradeAction: string;
   resolvedReason: string;
+  blockingReason?: string;
+  winningEngine?: string;
+  decisionConfidence?: number | null;
   bias: string;
   dayTrend: string;
   longTrend: string;
@@ -53,6 +58,8 @@ export type MobileDashboardData = {
   absorptionLevel: number | null;
   absorptionMessage: string | null;
   supportTransitionActive: boolean;
+  supportTransitionBadge?: boolean;
+  resistanceTransitionBadge?: boolean;
   trapProbability: number | null;
   trapType: string;
   trapDirection?: "upside" | "downside" | "";
@@ -81,4 +88,5 @@ export type MobileDashboardData = {
   };
   alerts: MobileAlert[];
   ladderRows: MobileStrikeRow[];
+  signalHistory?: SignalHistoryItem[];
 };

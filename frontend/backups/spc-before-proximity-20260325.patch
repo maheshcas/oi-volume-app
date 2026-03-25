@@ -1,0 +1,153 @@
+diff --git a/frontend/src/components/StructuralPriceContextCard.tsx b/frontend/src/components/StructuralPriceContextCard.tsx
+--- a/frontend/src/components/StructuralPriceContextCard.tsx
++++ b/frontend/src/components/StructuralPriceContextCard.tsx
+@@
+-    const nearSupport =
+-      rangeSummary.distToSupport >= 0 &&
+-      rangeSummary.distToSupport < 30 &&
+-      !hasBrokenSupport &&
+-      !hasBrokenResistance;
+-    const nearResistance =
+-      rangeSummary.distToResistance >= 0 &&
+-      rangeSummary.distToResistance < 30 &&
+-      !hasBrokenSupport &&
+-      !hasBrokenResistance;
+@@
+-      nearSupport,
+-      nearResistance,
+       isUpperThird: positionPercent >= 67,
+       isLowerThird: positionPercent <= 33,
+     };
+   }, [rangeSummary]);
+@@
+-  const breachBanner = useMemo(() => {
+-    if (!trackSummary) return null;
+-    if (trackSummary.hasBrokenSupport) {
+-      return {
+-        className: "spc-breach-banner spc-breach-banner-support-break",
+-        text: `Support broken below ${trackSummary.support.toLocaleString("en-IN")}`,
+-      };
+-    }
+-    if (trackSummary.hasBrokenResistance) {
+-      return {
+-        className: "spc-breach-banner spc-breach-banner-resistance-break",
+-        text: `Resistance broken above ${trackSummary.resistance.toLocaleString("en-IN")}`,
+-      };
+-    }
+-    if (trackSummary.nearSupport) {
+-      return {
+-        className: "spc-breach-banner spc-breach-banner-near-s",
+-        text: `Approaching support at ${trackSummary.support.toLocaleString("en-IN")}`,
+-      };
+-    }
+-    if (trackSummary.nearResistance) {
+-      return {
+-        className: "spc-breach-banner spc-breach-banner-near-r",
+-        text: `Approaching resistance at ${trackSummary.resistance.toLocaleString("en-IN")}`,
+-      };
+-    }
+-    return null;
+-  }, [trackSummary]);
+@@
+-              <div
+-                className={`spc-range-spot ${
+-                  trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance
+-                    ? "spc-range-spot-breach"
+-                    : trackSummary.nearSupport
+-                      ? "spc-range-spot-near-s"
+-                      : trackSummary.nearResistance
+-                        ? "spc-range-spot-near-r"
+-                        : ""
+-                }`}
+-                style={{ left: `${trackSummary.spotPct}%` }}
+-              />
++              <div
++                className={`spc-range-spot ${trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-spot-breach" : ""}`}
++                style={{ left: `${trackSummary.spotPct}%` }}
++              />
+             </div>
+-            {breachBanner ? (
+-              <div className={breachBanner.className}>
+-                <span className="spc-breach-dot" />
+-                <span>{breachBanner.text}</span>
+-              </div>
+-            ) : null}
+             <div className="spc-range-foot spc-range-foot-legacy">
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@
+ .spc-range-spot {
+   position: absolute;
+   top: 4px;
+   width: 14px;
+   height: 14px;
+   transform: translateX(-50%);
+   border-radius: 999px;
+   background: #00c8ff;
+   border: 2px solid #dff7ff;
+   box-shadow: 0 0 0 2px rgba(0, 200, 255, 0.2);
+ }
+-
+-.spc-range-spot-near-s {
+-  background: #2fd07c;
+-  border-color: #e7fff1;
+-  box-shadow: 0 0 0 2px rgba(47, 208, 124, 0.22);
+-}
+-
+-.spc-range-spot-near-r {
+-  background: #eb5757;
+-  border-color: #fff0f0;
+-  box-shadow: 0 0 0 2px rgba(235, 87, 87, 0.18);
+-}
+ 
+ .spc-range-spot-breach {
+   background: #eb5757;
+   border-color: #fff0f0;
+   box-shadow: 0 0 0 2px rgba(235, 87, 87, 0.18);
+ }
+-
+-.spc-breach-banner {
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  margin-top: 6px;
+-  padding: 6px 12px;
+-  border-radius: 10px;
+-  border: 0.5px solid;
+-  font-size: 12px;
+-  font-weight: 600;
+-  letter-spacing: 0.02em;
+-}
+-
+-.spc-breach-dot {
+-  width: 6px;
+-  height: 6px;
+-  border-radius: 50%;
+-  background: currentColor;
+-  flex-shrink: 0;
+-}
+-
+-.spc-breach-banner-support-break {
+-  background: rgba(224, 92, 106, 0.12);
+-  border-color: rgba(224, 92, 106, 0.34);
+-  color: #f2a3a3;
+-}
+-
+-.spc-breach-banner-resistance-break {
+-  background: rgba(243, 180, 90, 0.12);
+-  border-color: rgba(243, 180, 90, 0.34);
+-  color: #ffd69f;
+-}
+-
+-.spc-breach-banner-near-s {
+-  background: rgba(38, 168, 105, 0.12);
+-  border-color: rgba(38, 168, 105, 0.34);
+-  color: #9ff2ba;
+-}
+-
+-.spc-breach-banner-near-r {
+-  background: rgba(224, 92, 106, 0.12);
+-  border-color: rgba(224, 92, 106, 0.34);
+-  color: #f2a3a3;
+-}

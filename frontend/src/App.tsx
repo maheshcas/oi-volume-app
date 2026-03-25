@@ -137,6 +137,9 @@ type IntelligenceResponse = {
     summary_line?: string;
     decision_explanation?: string;
     resolved_reason?: string;
+    blocking_reason?: string;
+    winning_engine?: string;
+    decision_confidence?: number;
     pressure_state?: string;
     trade_action?: string;
     state?: string;
@@ -196,10 +199,20 @@ type IntelligenceResponse = {
     absorption_level?: number | null;
     absorption_message?: string | null;
     support_transition_active?: boolean;
+    support_transition_badge?: boolean;
+    resistance_transition_badge?: boolean;
     previous_support?: number | null;
     previous_resistance?: number | null;
     current_support?: number | null;
     current_resistance?: number | null;
+    signal_history?: Array<{
+      timestamp?: string;
+      trade_action?: string;
+      resolved_reason?: string;
+      blocking_reason?: string;
+      winning_engine?: string;
+      decision_confidence?: number;
+    }>;
   };
   levels?: {
     support?: {
@@ -1854,7 +1867,7 @@ export default function App() {
           typeof displayResistance === "number" &&
           rawTrapAffectedLevel <= displayResistance
             ? rawTrapAffectedLevel
-            : displaySupport
+            : displayResistance
         )
       : trapDirection === "upside"
         ? (
@@ -1862,7 +1875,7 @@ export default function App() {
             typeof displaySupport === "number" &&
             rawTrapAffectedLevel >= displaySupport
               ? rawTrapAffectedLevel
-              : displayResistance
+              : displaySupport
           )
         : rawTrapAffectedLevel;
   const supportRangeRaw =
@@ -2869,6 +2882,14 @@ export default function App() {
     intelligence?.market_state?.resolved_reason ??
     intelligence?.market_state?.decision_explanation ??
     decisionExplanation;
+  const decisionBlockingReason = intelligence?.market_state?.blocking_reason ?? "NONE";
+  const decisionWinningEngine = intelligence?.market_state?.winning_engine ?? "none";
+  const decisionConfidence = intelligence?.market_state?.decision_confidence ?? null;
+  const decisionSupportTransitionBadge = Boolean(intelligence?.market_state?.support_transition_badge);
+  const decisionResistanceTransitionBadge = Boolean(intelligence?.market_state?.resistance_transition_badge);
+  const decisionSignalHistory = Array.isArray(intelligence?.market_state?.signal_history)
+    ? intelligence?.market_state?.signal_history
+    : [];
 
   const mobileDashboardData = {
     symbol,
@@ -2890,6 +2911,9 @@ export default function App() {
     pcr: typeof apiTargetProjection?.confirmation?.pcr === "number" ? apiTargetProjection.confirmation.pcr.toFixed(2) : "-",
     tradeAction: mobileTradeAction,
     resolvedReason: mobileResolvedReason,
+    blockingReason: decisionBlockingReason,
+    winningEngine: decisionWinningEngine,
+    decisionConfidence,
     bias: displayPrimaryBias,
     dayTrend: dayTrendDisplay,
     longTrend: longTrendDisplay,
@@ -2903,6 +2927,8 @@ export default function App() {
     absorptionLevel: intelligence?.market_state?.absorption_level ?? null,
     absorptionMessage: intelligence?.market_state?.absorption_message ?? null,
     supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
+    supportTransitionBadge: decisionSupportTransitionBadge,
+    resistanceTransitionBadge: decisionResistanceTransitionBadge,
     trapProbability: displayTrapRiskPct,
     trapType: displayTrapType ?? "No active trap",
     trapDirection,
@@ -2941,6 +2967,7 @@ export default function App() {
     },
     alerts: displayAlerts.map((item) => ({ message: item.message, severity: item.severity })),
     ladderRows: mobileStrikeRows,
+    signalHistory: decisionSignalHistory,
   };
 
   return (
@@ -3098,6 +3125,12 @@ export default function App() {
             detailWalls: decisionLayerWalls || null,
             support: formatNumber(displaySupport),
             resistance: formatNumber(displayResistance),
+            blockingReason: decisionBlockingReason,
+            winningEngine: decisionWinningEngine,
+            decisionConfidence,
+            supportTransitionBadge: decisionSupportTransitionBadge,
+            resistanceTransitionBadge: decisionResistanceTransitionBadge,
+            signalHistory: decisionSignalHistory,
           }}
           keyLevels={{
             support: formatNumber(displaySupport),
@@ -3135,9 +3168,19 @@ export default function App() {
             previousResistance,
             materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
             confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
+            sessionPhase: displaySessionPhase,
             bias: String(displayPrimaryBias ?? displayBias),
             biasStrength: biasStrengthLabel,
             regime: displayRegime,
+            breakoutProbabilityUp:
+              intelligence?.market_state?.breakout_probability?.upside ??
+              (typeof displayBullProbability === "number" ? displayBullProbability : null),
+            breakoutProbabilityDown:
+              intelligence?.market_state?.breakout_probability?.downside ??
+              (typeof displayBearProbability === "number" ? displayBearProbability : null),
+            trapProbability: typeof displayTrapRiskPct === "number" ? displayTrapRiskPct : null,
+            trapDirection,
+            readinessScore: displayReadinessScore,
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel: formatNumber(
               displayRows.reduce(

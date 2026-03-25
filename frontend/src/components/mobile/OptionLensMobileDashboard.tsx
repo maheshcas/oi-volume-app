@@ -50,11 +50,17 @@ export default function OptionLensMobileDashboard({
         <PrimarySignalCard
           tradeAction={data.tradeAction}
           resolvedReason={data.resolvedReason}
+          blockingReason={data.blockingReason}
+          winningEngine={data.winningEngine}
+          decisionConfidence={data.decisionConfidence}
           bias={data.bias}
           readinessScore={data.readinessScore}
           readinessState={data.readinessState}
           pressureState={data.pressureState}
           regime={data.regime}
+          supportTransitionBadge={data.supportTransitionBadge}
+          resistanceTransitionBadge={data.resistanceTransitionBadge}
+          signalHistory={data.signalHistory}
         />
 
         <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />

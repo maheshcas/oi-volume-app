@@ -19,6 +19,8 @@ type Props = {
   resistanceEnd?: number | null;
   target1?: number | null;
   target2?: number | null;
+  previousSupport?: number | null;
+  previousResistance?: number | null;
   width?: number;
   height?: number;
 };
@@ -59,6 +61,8 @@ export default function SingleStructureCandleCard({
   regime,
   support,
   resistance,
+  previousSupport,
+  previousResistance,
   width = 1000,
   height = 320,
 }: Props) {
@@ -77,8 +81,10 @@ export default function SingleStructureCandleCard({
 
   const option = useMemo(() => {
     const padding = 60;
-    const minBound = Math.min(low, supportCenter ?? spot, spot) - padding;
-    const maxBound = Math.max(high, resistanceCenter ?? spot, spot) + padding;
+    const prevSup = typeof previousSupport === "number" ? previousSupport : null;
+    const prevRes = typeof previousResistance === "number" ? previousResistance : null;
+    const minBound = Math.min(low, supportCenter ?? spot, prevSup ?? spot, spot) - padding;
+    const maxBound = Math.max(high, resistanceCenter ?? spot, prevRes ?? spot, spot) + padding;
     console.log("SPC bounds", { low, high, spot, support: supportCenter, resistance: resistanceCenter, minBound, maxBound });
     const yMin = minBound;
     const yMax = maxBound;
@@ -94,6 +100,12 @@ export default function SingleStructureCandleCard({
       { key: "spot", y: priceToY(spot), text: `SPOT  ${fmtIN(spot, 1)}`, fill: "#fbbf24", bg: "rgba(245,158,11,0.14)", border: "rgba(245,158,11,0.38)" },
       ...(typeof supportCenter === "number"
         ? [{ key: "support", y: priceToY(supportCenter), text: `S  ${fmtIN(supportCenter)}`, fill: "#34d399", bg: "rgba(16,185,129,0.12)", border: "rgba(16,185,129,0.32)" }]
+        : []),
+      ...(typeof prevSup === "number" && prevSup !== supportCenter
+        ? [{ key: "prevSupport", y: priceToY(prevSup), text: `prev S  ${fmtIN(prevSup)}`, fill: "rgba(52,211,153,0.35)", bg: "rgba(16,185,129,0.05)", border: "rgba(16,185,129,0.15)" }]
+        : []),
+      ...(typeof prevRes === "number" && prevRes !== resistanceCenter
+        ? [{ key: "prevResistance", y: priceToY(prevRes), text: `prev R  ${fmtIN(prevRes)}`, fill: "rgba(248,113,113,0.35)", bg: "rgba(239,68,68,0.05)", border: "rgba(239,68,68,0.15)" }]
         : []),
     ].sort((a, b) => a.y - b.y);
 
@@ -150,7 +162,7 @@ export default function SingleStructureCandleCard({
           style: {
             text: label.text,
             fill: label.fill,
-            font: `${label.key === "spot" ? 800 : 700} ${label.key === "spot" ? 12 : 10}px JetBrains Mono, monospace`,
+            font: `${label.key === "spot" ? 800 : 700} ${label.key === "spot" ? 12 : label.key.startsWith("prev") ? 9 : 10}px JetBrains Mono, monospace`,
           },
           silent: true,
         },
@@ -438,6 +450,38 @@ export default function SingleStructureCandleCard({
                     },
                   ]
                 : []),
+              ...(typeof prevSup === "number" && prevSup !== supportCenter
+                ? [
+                    {
+                      yAxis: prevSup,
+                      lineStyle: {
+                        color: "#10b981",
+                        width: 1,
+                        type: [4, 6],
+                        opacity: 0.3,
+                      },
+                      label: {
+                        show: false,
+                      },
+                    },
+                  ]
+                : []),
+              ...(typeof prevRes === "number" && prevRes !== resistanceCenter
+                ? [
+                    {
+                      yAxis: prevRes,
+                      lineStyle: {
+                        color: "#ef4444",
+                        width: 1,
+                        type: [4, 6],
+                        opacity: 0.3,
+                      },
+                      label: {
+                        show: false,
+                      },
+                    },
+                  ]
+                : []),
             ],
           },
           emphasis: {
@@ -548,6 +592,8 @@ export default function SingleStructureCandleCard({
     supportCenter,
     supportZoneBot,
     supportZoneTop,
+    previousSupport,
+    previousResistance,
   ]);
 
   return (

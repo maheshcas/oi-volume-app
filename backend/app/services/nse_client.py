@@ -20,6 +20,8 @@ HEADERS = {
 API_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "X-Requested-With": "XMLHttpRequest",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 _SESSION_LOCK = threading.Lock()
@@ -65,7 +67,11 @@ def _cache_key(url: str, params: dict) -> str:
 
 
 def _request_json(url: str, params: dict, context: str) -> dict:
-    key = _cache_key(url, params)
+    request_params = dict(params)
+    if context == "option chain":
+        request_params["_"] = str(int(time.time() * 1000))
+
+    key = _cache_key(url, request_params)
     last_error = "Unknown error"
 
     for attempt in range(3):
@@ -73,7 +79,7 @@ def _request_json(url: str, params: dict, context: str) -> dict:
         session = _ensure_session(force_new=force_new)
         try:
             _prime_session(session, force=force_new)
-            response = session.get(url, params=params, timeout=10, headers=API_HEADERS)
+            response = session.get(url, params=request_params, timeout=10, headers=API_HEADERS)
             if response.status_code in (401, 403):
                 last_error = f"HTTP {response.status_code}"
                 continue

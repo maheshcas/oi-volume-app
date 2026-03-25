@@ -4,6 +4,7 @@ import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
 import StructuralChartCard from "./StructuralChartCard";
 import TradePlanCard from "./TradePlanCard";
+import type { SignalHistoryItem } from "./decisionUx";
 
 type CandlePoint = {
   time: number;
@@ -31,6 +32,12 @@ type DashboardLayoutProps = {
     resistance: string;
     majorSupport?: string;
     majorResistance?: string;
+    blockingReason?: string;
+    winningEngine?: string;
+    decisionConfidence?: number | null;
+    supportTransitionBadge?: boolean;
+    resistanceTransitionBadge?: boolean;
+    signalHistory?: SignalHistoryItem[];
   };
   decisionLayer: ReactNode;
   keyLevels: {
@@ -74,9 +81,15 @@ type DashboardLayoutProps = {
     previousResistance?: number | null;
     materialBreachConfirmed?: boolean;
     confirmationType?: string | null;
+    sessionPhase?: string | null;
     bias: string;
     biasStrength: string;
     regime: string;
+    breakoutProbabilityUp?: number | null;
+    breakoutProbabilityDown?: number | null;
+    trapProbability?: number | null;
+    trapDirection?: "upside" | "downside" | "";
+    readinessScore?: number | null;
     trapZoneLabel?: string;
     volumeLabel?: string;
   };
@@ -144,6 +157,12 @@ export default function DashboardLayout({
           detailWalls={decision.detailWalls}
           support={decision.support}
           resistance={decision.resistance}
+          blockingReason={decision.blockingReason}
+          winningEngine={decision.winningEngine}
+          decisionConfidence={decision.decisionConfidence}
+          supportTransitionBadge={decision.supportTransitionBadge}
+          resistanceTransitionBadge={decision.resistanceTransitionBadge}
+          signalHistory={decision.signalHistory}
         />
       </div>
 

@@ -54,6 +54,39 @@ def _compute_raw_score(row: dict[str, Any], side: OptionType) -> tuple[float, fl
     return 0.0, oi, doi, vol
 
 
+def _hydrate_previous_sr_state(previous_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(previous_state, dict):
+        return previous_state
+
+    hydrated = dict(previous_state)
+    levels = dict(hydrated.get("levels") or {})
+    support_levels = dict(levels.get("support") or {})
+    resistance_levels = dict(levels.get("resistance") or {})
+
+    top_support = _to_float(
+        hydrated.get("support_level", hydrated.get("current_support", hydrated.get("previous_support"))),
+        0.0,
+    )
+    top_resistance = _to_float(
+        hydrated.get("resistance_level", hydrated.get("current_resistance", hydrated.get("previous_resistance"))),
+        0.0,
+    )
+
+    if _to_float(support_levels.get("immediate"), 0.0) <= 0 and top_support > 0:
+        support_levels["immediate"] = top_support
+    if _to_float(support_levels.get("major"), 0.0) <= 0 and top_support > 0:
+        support_levels["major"] = top_support
+    if _to_float(resistance_levels.get("immediate"), 0.0) <= 0 and top_resistance > 0:
+        resistance_levels["immediate"] = top_resistance
+    if _to_float(resistance_levels.get("major"), 0.0) <= 0 and top_resistance > 0:
+        resistance_levels["major"] = top_resistance
+
+    levels["support"] = support_levels
+    levels["resistance"] = resistance_levels
+    hydrated["levels"] = levels
+    return hydrated
+
+
 def _normalize_scores(values: list[float]) -> list[float]:
     if not values:
         return []
@@ -201,6 +234,9 @@ def _apply_level_hysteresis(
     prev_obj = prev_levels.get(side_key, {}) if isinstance(prev_levels, dict) else {}
     prev_immediate = _to_float((prev_obj.get("immediate") if isinstance(prev_obj, dict) else None), 0.0)
     prev_score = _to_float((prev_obj.get("immediate_score") if isinstance(prev_obj, dict) else None), 0.0)
+    if prev_immediate <= 0:
+        fallback_key = "resistance_level" if side == "CE" else "support_level"
+        prev_immediate = _to_float((previous_state or {}).get(fallback_key), 0.0)
 
     if prev_immediate <= 0:
         return immediate
@@ -266,6 +302,68 @@ def _apply_level_hysteresis(
         current_oi_gain,
     )
     return prev_candidate
+
+
+def _resolve_display_candidate(
+    *,
+    side: OptionType,
+    immediate: _ScoredStrike | None,
+    major: _ScoredStrike | None,
+    scored: list[_ScoredStrike],
+    previous_state: dict[str, Any] | None,
+    spot: float | None,
+    resistance_upward_buffer: float = 25.0,
+    support_downward_buffer: float = 25.0,
+) -> _ScoredStrike | None:
+    candidate = immediate or major
+    if candidate is None:
+        return None
+
+    prev_levels = (previous_state or {}).get("levels", {})
+    side_key = "resistance" if side == "CE" else "support"
+    prev_obj = prev_levels.get(side_key, {}) if isinstance(prev_levels, dict) else {}
+    prev_immediate = _to_float((prev_obj.get("immediate") if isinstance(prev_obj, dict) else None), 0.0)
+    prev_score = _to_float((prev_obj.get("immediate_score") if isinstance(prev_obj, dict) else None), 0.0)
+    if prev_immediate <= 0:
+        fallback_key = "resistance_level" if side == "CE" else "support_level"
+        prev_immediate = _to_float((previous_state or {}).get(fallback_key), 0.0)
+
+    if prev_immediate <= 0 or abs(candidate.strike - prev_immediate) < 1e-6:
+        return candidate
+
+    prev_candidate = next((item for item in scored if abs(item.strike - prev_immediate) < 1e-6), None)
+    held_candidate = prev_candidate or _ScoredStrike(
+        strike=float(prev_immediate),
+        score=float(prev_score),
+        oi=0.0,
+        doi=0.0,
+        vol=0.0,
+        distance_pct=0.0,
+        side=side,
+    )
+
+    if spot is not None:
+        if side == "CE" and candidate.strike > held_candidate.strike and spot < (held_candidate.strike + resistance_upward_buffer):
+            logger.debug(
+                "SRTrace[%s][display_buffer_hold] prev=%s current=%s spot=%.2f required_spot=%.2f",
+                side,
+                held_candidate.strike,
+                candidate.strike,
+                spot,
+                held_candidate.strike + resistance_upward_buffer,
+            )
+            return held_candidate
+        if side == "PE" and candidate.strike < held_candidate.strike and spot > (held_candidate.strike - support_downward_buffer):
+            logger.debug(
+                "SRTrace[%s][display_buffer_hold] prev=%s current=%s spot=%.2f required_spot=%.2f",
+                side,
+                held_candidate.strike,
+                candidate.strike,
+                spot,
+                held_candidate.strike - support_downward_buffer,
+            )
+            return held_candidate
+    return candidate
 
 
 def _compute_cluster_zone(
@@ -535,6 +633,7 @@ def run_sr_engine(
     oi_spike_threshold: float = 0.2,
     volume_expansion_threshold: float = 1.2,
 ) -> dict[str, Any]:
+    previous_state = _hydrate_previous_sr_state(previous_state)
     rows = features.get("rows", []) or []
     spot = features.get("meta", {}).get("spot")
     spot_num = _to_float(spot, 0.0) if spot is not None else None
@@ -611,8 +710,25 @@ def run_sr_engine(
             }
         )
 
-    resistance_immediate = immediate_res.strike if immediate_res is not None else (major_res.strike if major_res else None)
-    support_immediate = immediate_sup.strike if immediate_sup is not None else (major_sup.strike if major_sup else None)
+    display_res = _resolve_display_candidate(
+        side="CE",
+        immediate=immediate_res,
+        major=major_res,
+        scored=ce_scored,
+        previous_state=previous_state,
+        spot=spot_num,
+    )
+    display_sup = _resolve_display_candidate(
+        side="PE",
+        immediate=immediate_sup,
+        major=major_sup,
+        scored=pe_scored,
+        previous_state=previous_state,
+        spot=spot_num,
+    )
+
+    resistance_immediate = display_res.strike if display_res is not None else None
+    support_immediate = display_sup.strike if display_sup is not None else None
     support_row = _find_strike_row(rows, support_immediate)
     resistance_row = _find_strike_row(rows, resistance_immediate)
     support_defense_score = None
@@ -674,21 +790,21 @@ def run_sr_engine(
         # Backward compatible fields: strike/score default to immediate levels.
         "resistance": {
             "strike": resistance_immediate,
-            "score": round((immediate_res.score if immediate_res else (major_res.score if major_res else 0.0)) * 100, 2),
+            "score": round((display_res.score if display_res else 0.0) * 100, 2),
             "immediate": resistance_immediate,
             "major": major_res.strike if major_res else None,
             "defense_score": resistance_defense_score,
-            "immediate_score": round(immediate_res.score if immediate_res else 0.0, 6),
+            "immediate_score": round(display_res.score if display_res else 0.0, 6),
             "major_score": round(major_res.score if major_res else 0.0, 6),
             "levels": _top_levels(ce_scored),
         },
         "support": {
             "strike": support_immediate,
-            "score": round((immediate_sup.score if immediate_sup else (major_sup.score if major_sup else 0.0)) * 100, 2),
+            "score": round((display_sup.score if display_sup else 0.0) * 100, 2),
             "immediate": support_immediate,
             "major": major_sup.strike if major_sup else None,
             "defense_score": support_defense_score,
-            "immediate_score": round(immediate_sup.score if immediate_sup else 0.0, 6),
+            "immediate_score": round(display_sup.score if display_sup else 0.0, 6),
             "major_score": round(major_sup.score if major_sup else 0.0, 6),
             "levels": _top_levels(pe_scored),
         },

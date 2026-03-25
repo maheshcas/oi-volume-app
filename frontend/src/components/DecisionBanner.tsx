@@ -1,3 +1,11 @@
+import {
+  confidenceLabel,
+  formatDecisionTime,
+  friendlyBlockingReason,
+  friendlyWinningEngine,
+  type SignalHistoryItem,
+} from "./decisionUx";
+
 type DecisionBannerProps = {
   action: "WAIT" | "CAUTION" | "READY";
   direction: "Bullish" | "Bearish" | "Neutral" | "Conflict";
@@ -12,6 +20,12 @@ type DecisionBannerProps = {
   detailWalls?: string | null;
   support: string;
   resistance: string;
+  blockingReason?: string;
+  winningEngine?: string;
+  decisionConfidence?: number | null;
+  supportTransitionBadge?: boolean;
+  resistanceTransitionBadge?: boolean;
+  signalHistory?: SignalHistoryItem[];
 };
 
 function formatDirectionLabel(direction: DecisionBannerProps["direction"]) {
@@ -75,6 +89,12 @@ export default function DecisionBanner({
   detailWalls,
   support: _support,
   resistance: _resistance,
+  blockingReason = "NONE",
+  winningEngine = "none",
+  decisionConfidence = null,
+  supportTransitionBadge = false,
+  resistanceTransitionBadge = false,
+  signalHistory = [],
 }: DecisionBannerProps) {
   const displayExplanation = normalizeExplanation(action, direction, explanation);
   const toneClass =
@@ -84,6 +104,7 @@ export default function DecisionBanner({
         ? "ia-decision-banner-caution"
         : "ia-decision-banner-wait";
   const readinessPct = Math.max(0, Math.min(100, Number(readinessScore) || 0));
+  const confidencePct = Math.max(0, Math.min(100, Number(decisionConfidence) || 0));
   const biasLabel = bias || formatDirectionLabel(direction);
   const readinessStateClass =
     readinessState.toLowerCase().includes("high") || readinessState.toLowerCase().includes("active")
@@ -92,6 +113,14 @@ export default function DecisionBanner({
         ? "ia-text-bear"
         : "ia-text-warn";
   const pressureLabel = pressureState.replace(/\s*Pressure$/i, "").trim() || pressureState;
+  const confidenceTone = confidenceLabel(decisionConfidence);
+  const timelineItems = signalHistory.slice(-5).reverse();
+  const transitionLabel = supportTransitionBadge
+    ? "Support Transition Active"
+    : resistanceTransitionBadge
+      ? "Resistance Transition Active"
+      : null;
+  const showBlocker = blockingReason && blockingReason !== "NONE";
 
   return (
     <div className={`ia-card ia-decision-banner ia-decision-banner-v2 ${toneClass}`}>
@@ -102,6 +131,18 @@ export default function DecisionBanner({
 
       <div className="ia-decision-banner-v2-body">
         <div className="ia-decision-banner-explanation">{displayExplanation}</div>
+
+        <div className="ia-decision-meta-row">
+          {showBlocker ? (
+            <span className="ia-decision-meta-chip ia-decision-meta-chip-blocker">
+              Blocker: {friendlyBlockingReason(blockingReason)}
+            </span>
+          ) : null}
+          <span className="ia-decision-meta-chip">{friendlyWinningEngine(winningEngine)}</span>
+          {transitionLabel ? (
+            <span className="ia-decision-meta-chip ia-decision-meta-chip-transition">{transitionLabel}</span>
+          ) : null}
+        </div>
 
         <div className="ia-readiness-wrap">
           <div className="ia-readiness-row">
@@ -114,6 +155,18 @@ export default function DecisionBanner({
               <span className="ia-readiness-entry">57 entry</span>
               <div className="ia-readiness-threshold" />
             </div>
+          </div>
+        </div>
+
+        <div className="ia-confidence-strip">
+          <div className="ia-confidence-head">
+            <span className="ia-decision-grid-label">Decision Confidence</span>
+            <span className={`ia-confidence-chip ia-confidence-chip-${confidenceTone.toLowerCase()}`}>
+              {Math.round(confidencePct)}% {confidenceTone}
+            </span>
+          </div>
+          <div className="ia-confidence-track">
+            <div className="ia-confidence-fill" style={{ width: `${confidencePct}%` }} />
           </div>
         </div>
 
@@ -135,6 +188,28 @@ export default function DecisionBanner({
             <div className={`ia-decision-grid-value ${readinessStateClass}`}>{readinessState || "-"}</div>
           </div>
         </div>
+
+        {timelineItems.length ? (
+          <div className="ia-decision-timeline">
+            <div className="ia-decision-more-label">Recent Signal Flow</div>
+            <div className="ia-decision-timeline-list">
+              {timelineItems.map((item, index) => (
+                <div
+                  key={`${item.timestamp ?? "na"}-${item.trade_action ?? "na"}-${index}`}
+                  className="ia-decision-timeline-row"
+                >
+                  <span className="ia-decision-timeline-time">{formatDecisionTime(item.timestamp)}</span>
+                  <span className="ia-decision-timeline-action">{item.trade_action || "-"}</span>
+                  <span className="ia-decision-timeline-text">
+                    {item.blocking_reason && item.blocking_reason !== "NONE"
+                      ? friendlyBlockingReason(item.blocking_reason)
+                      : item.resolved_reason || "-"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {(detailSummary || detailInsight || detailWalls) ? (
           <details className="ia-decision-more">

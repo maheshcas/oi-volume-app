@@ -234,7 +234,8 @@ backend/app/services/background_updater.py
 Support Transition / Absorption Reference
 backend/app/services/background_updater.py
 - support_transition_active should only represent the fresh shift window
-- previous_support should clear after the shift is consumed so the same old shift is not rediscovered all session
+- previous_support / previous_resistance are now retained for structural display context after shifts
+- support-transition telemetry and UI previous-level context are no longer treated as the same lifetime
 - absorption_reference_level should stay aligned with active support logic rather than lagging one level behind
 - Validation status:
   - if support_transition_active stays at 0 across a calm session, the stale carryover fix is behaving correctly
@@ -258,10 +259,13 @@ backend/app/services/background_updater.py
 
 Logger / Stability Validation
 backend/app/services/stability_logger.py
-- Logger can be disabled with:
-  - OPTIONLENS_ENABLE_STABILITY_LOGGER=false
+- Logger is currently hard-disabled in code for local runtime validation.
+- Disable points:
+  - OPTIONLENS_ENABLE_STABILITY_LOGGER defaults to false
+  - StabilityLoggerService.run() returns immediately
+  - app startup no longer schedules the logger task
 - Lock file writes real PID in fixed-width hex.
-- Snapshot JSONL must include:
+- When logger is re-enabled, snapshot JSONL must include:
   - trap_probability
   - trap_type
   - committed_regime
@@ -273,6 +277,59 @@ backend/app/services/stability_logger.py
   - confirmation_type
 - Validation note:
   - transitions file appears only when watched fields actually change
+  - current local expected state is:
+    - no stability_*.jsonl
+    - no transitions_*.jsonl
+    - only .logger.lock may remain
+
+Readiness Stability
+backend/app/services/background_updater.py
+- Readiness no longer reads volatile detected_regime directly.
+- Regime-facing readiness clamps now use committed_regime / stable regime state.
+- Validation implication:
+  - single-cycle Range Day <-> Balanced Structure flickers should not create ±10 to ±20 point readiness spikes
+  - if readiness remains low all session, inspect clarity / alignment_score rather than trap alone
+
+Decision UX Layer
+backend/app/services/background_updater.py
+- market_state now exposes additive UX fields:
+  - resolved_reason
+  - blocking_reason
+  - winning_engine
+  - decision_confidence
+  - support_transition_badge
+  - resistance_transition_badge
+  - signal_history
+- blocking_reason is a single dominant blocker inferred from the final resolved decision path:
+  - transition badges
+  - absorption conflict
+  - no breach confirmation
+  - trap high
+  - range conflict
+  - promotion guard
+  - low readiness
+- winning_engine is inferred from the same final path and does not change core resolver behavior.
+- decision_confidence is a UI score derived from:
+  - trade_readiness base
+  - trap reduction
+  - transition penalty
+  - WAIT / blocker penalties
+  - small confirmed-breach lift
+- signal_history:
+  - stored in _state
+  - capped at 10 items
+  - only appends when action / resolved_reason / blocking_reason changes
+  - intended for recent UI timeline, not analytics
+
+SR Reset / Cold-Start Hydration
+backend/app/engines/sr_engine.py
+backend/app/services/background_updater.py
+- SR hysteresis now hydrates previous support/resistance from persisted top-level state on restart and cold start.
+- Purpose:
+  - prevent 25-point support / resistance buffers from being bypassed on the first post-restart OI read
+- Validation target:
+  - no downward support move should occur while spot is still above old support - 25
+  - no upward resistance move should occur while spot is still below old resistance + 25
 
 Frontend / Backend Contract Areas Worth Validating
 
@@ -282,8 +339,9 @@ Trap contract
 - signals.trap.trap_direction
 - signals.trap.trap_affected_level
 - signals.trap.show_affected_level
-- Downside trap affected level should resolve to support-side structure.
-- Upside trap affected level should resolve to resistance-side structure.
+- Downside trap affected level should resolve to resistance-side structure.
+- Upside trap affected level should resolve to support-side structure.
+- Frontend may still apply a defensive fallback, but backend source of truth should already be correct.
 
 Key levels contract
 - levels.support.strike
@@ -306,6 +364,12 @@ Current deployment status
   - accumulator minimum hold
   - stale previous_support carryover reset
   - 25-point upward resistance promotion buffer
+  - 25-point downward support demotion buffer
+  - readiness stabilization via committed_regime
+  - previous S/R retention for frontend structural context
+  - SR cold-start hydration for restart-safe buffers
+  - local stability logger disable
+  - decision UX fields in market_state for blocker / winning engine / confidence / timeline
 - Waiting on live session confirmation:
   - breach_confirmed firing end to end
   - committed_regime candidate ladder reaching count 3 and flipping

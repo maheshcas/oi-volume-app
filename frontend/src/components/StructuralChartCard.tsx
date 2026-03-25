@@ -29,9 +29,15 @@ type StructuralChartCardProps = {
   previousResistance?: number | null;
   materialBreachConfirmed?: boolean;
   confirmationType?: string | null;
+  sessionPhase?: string | null;
   bias: string;
   biasStrength: string;
   regime: string;
+  breakoutProbabilityUp?: number | null;
+  breakoutProbabilityDown?: number | null;
+  trapProbability?: number | null;
+  trapDirection?: "upside" | "downside" | "";
+  readinessScore?: number | null;
   trapZoneLabel?: string;
   volumeLabel?: string;
 };
@@ -59,9 +65,15 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         previousResistance={props.previousResistance}
         materialBreachConfirmed={props.materialBreachConfirmed}
         confirmationType={props.confirmationType}
+        sessionPhase={props.sessionPhase}
         bias={props.bias}
         biasStrength={props.biasStrength}
         regime={props.regime}
+        breakoutProbabilityUp={props.breakoutProbabilityUp}
+        breakoutProbabilityDown={props.breakoutProbabilityDown}
+        trapProbability={props.trapProbability}
+        trapDirection={props.trapDirection}
+        readinessScore={props.readinessScore}
         showPremiumOverlay={false}
         trapZoneLabel={props.trapZoneLabel}
         volumeLabel={props.volumeLabel}

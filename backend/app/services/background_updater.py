@@ -74,6 +74,7 @@ ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lowe
     "yes",
     "on",
 }
+STATE_SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "logs" / "state_snapshots"
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
@@ -94,6 +95,32 @@ def _utc_iso(dt: datetime | None) -> str | None:
 
 def _cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
     return f"{instrument_type.upper()}::{symbol.upper()}::{expiry or 'AUTO'}"
+
+
+def _state_snapshot_path(kind: str, key: str) -> Path:
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(key))
+    return STATE_SNAPSHOT_DIR / f"{kind}_{safe_key}.json"
+
+
+def _load_persisted_state(kind: str, key: str) -> dict[str, Any]:
+    path = _state_snapshot_path(kind, key)
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.debug("State snapshot load failed [%s][%s]: %s", kind, key, exc)
+        return {}
+
+
+def _persist_state_snapshot(kind: str, key: str, state: dict[str, Any]) -> None:
+    path = _state_snapshot_path(kind, key)
+    try:
+        STATE_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=True, default=str), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("State snapshot persist failed [%s][%s]: %s", kind, key, exc)
 
 
 def _parse_timestamp_utc(text: str | None) -> datetime:
@@ -152,16 +179,34 @@ def _reset_state_for_new_session(
 
     reset_state["support_level"] = closing_support
     reset_state["resistance_level"] = closing_resistance
-    reset_state["previous_support"] = None
-    reset_state["previous_resistance"] = None
-    reset_state["current_support"] = None
-    reset_state["current_resistance"] = None
-    reset_state["absorption_reference_level"] = None
-    reset_state["support_shift_cycle"] = 0
+    reset_state["previous_support"] = closing_support
+    reset_state["previous_resistance"] = closing_resistance
+    reset_state["current_support"] = closing_support
+    reset_state["current_resistance"] = closing_resistance
+    reset_state["absorption_reference_level"] = closing_support
+    # Negative cycle means "carry yesterday's closing anchor for the first live cycle only".
+    reset_state["support_shift_cycle"] = -1
     reset_state["session_phase"] = "Transition"
     reset_state["session_phase_confidence"] = 0.45
     reset_state["session_phase_session_key"] = session_key
     reset_state["session_date"] = session_key
+    reset_state["signal_history"] = []
+    reset_levels = dict(reset_state.get("levels") or {})
+    reset_support_levels = dict(reset_levels.get("support") or {})
+    reset_resistance_levels = dict(reset_levels.get("resistance") or {})
+    reset_support_levels["immediate"] = closing_support
+    reset_support_levels["major"] = closing_support
+    reset_resistance_levels["immediate"] = closing_resistance
+    reset_resistance_levels["major"] = closing_resistance
+    reset_levels["support"] = reset_support_levels
+    reset_levels["resistance"] = reset_resistance_levels
+    reset_state["levels"] = reset_levels
+    logger.debug(
+        "Session reset anchor seeded: session=%s previous_support=%s previous_resistance=%s",
+        session_key,
+        closing_support,
+        closing_resistance,
+    )
     return reset_state
 
 
@@ -411,14 +456,18 @@ def _resolve_absorption_reference_level(
     *,
     spot: float | None,
     current_support: float | None,
+    current_resistance: float | None,
     previous_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     prev = previous_state or {}
     prev_current_support = _safe_float(prev.get("current_support"))
     prev_previous_support = _safe_float(prev.get("previous_support"))
+    prev_current_resistance = _safe_float(prev.get("current_resistance"))
+    prev_previous_resistance = _safe_float(prev.get("previous_resistance"))
     prev_shift_cycle = int(prev.get("support_shift_cycle", 0) or 0)
 
     current_support_value = _safe_float(current_support)
+    current_resistance_value = _safe_float(current_resistance)
     support_shift_detected = bool(
         current_support_value is not None
         and prev_current_support is not None
@@ -436,20 +485,45 @@ def _resolve_absorption_reference_level(
             if prev_shift_cycle == 1:
                 support_shift_cycle = 2
             else:
-                previous_support = None
                 support_shift_cycle = 0
+        elif prev_shift_cycle < 0:
+            previous_support = prev_previous_support if prev_previous_support is not None else prev_current_support
+            support_shift_cycle = 0
         else:
-            previous_support = None
             support_shift_cycle = 0
 
-    return {
+    if (
+        current_resistance_value is not None
+        and prev_current_resistance is not None
+        and abs(current_resistance_value - prev_current_resistance) > 1e-6
+    ):
+        previous_resistance = prev_current_resistance
+    else:
+        previous_resistance = (
+            prev_previous_resistance
+            if prev_previous_resistance is not None and prev_previous_resistance != current_resistance_value
+            else None
+        )
+
+    resolved = {
         "previous_support": previous_support,
         "current_support": current_support_value,
+        "previous_resistance": previous_resistance,
+        "current_resistance": current_resistance_value,
         # Absorption should be computed against the active committed support.
         # Keep transition telemetry separately via previous_support/support_shift_cycle.
         "absorption_reference_level": current_support_value,
         "support_shift_cycle": int(support_shift_cycle),
     }
+    logger.debug(
+        "Support reference resolved: previous_support=%s current_support=%s previous_resistance=%s current_resistance=%s shift_cycle=%s",
+        resolved.get("previous_support"),
+        resolved.get("current_support"),
+        resolved.get("previous_resistance"),
+        resolved.get("current_resistance"),
+        resolved.get("support_shift_cycle"),
+    )
+    return resolved
 
 
 def _is_support_transition_active(support_shift_cycle: Any) -> bool:
@@ -709,6 +783,167 @@ def _compute_trade_readiness(
     }
 
 
+def _derive_resolved_reason(
+    *,
+    trade_action: str,
+    blocking_reason: str,
+    material_breach: dict[str, Any] | None,
+    support_absorption: dict[str, Any] | None,
+    pressure_state: str | None,
+    summary_line: str,
+) -> str:
+    breach = material_breach or {}
+    absorption = support_absorption or {}
+    if bool(breach.get("material_breach_confirmed")) and bool(breach.get("resistance_broken")):
+        return "Breakout confirmed"
+    if bool(breach.get("material_breach_confirmed")) and bool(breach.get("support_broken")):
+        return "Breakdown confirmed"
+    if blocking_reason == "ABSORPTION_ACTIVE" or bool(absorption.get("absorption_detected")):
+        return "Support absorption active"
+    if blocking_reason in {"SUPPORT_TRANSITION", "RESISTANCE_TRANSITION"}:
+        return "Level transition active"
+    if blocking_reason == "NO_BREAK_CONFIRMATION":
+        return "Breakout not confirmed"
+    if blocking_reason == "TRAP_HIGH":
+        return "Trap risk elevated"
+    if blocking_reason == "RANGE_CONFLICT":
+        return "Range conflict"
+    if blocking_reason == "LONG_BIAS_GUARD":
+        return "Promotion guard active"
+    if blocking_reason == "LOW_READINESS":
+        return "Readiness below threshold"
+    if str(trade_action or "").upper() == "LONG BIAS":
+        return "Upside pressure building"
+    if str(trade_action or "").upper() == "SHORT BIAS":
+        return "Downside pressure building"
+    if str(trade_action or "").upper() == "BREAKOUT WATCH":
+        return "Upside expansion watch"
+    if str(trade_action or "").upper() == "BREAKDOWN WATCH":
+        return "Downside expansion watch"
+    if str(pressure_state or "").strip():
+        return str(pressure_state)
+    return summary_line or "Waiting for cleaner move"
+
+
+def _determine_blocking_reason(
+    *,
+    trade_action: str,
+    readiness_active: bool,
+    trade_readiness: float,
+    trap_probability: float,
+    absorption_detected: bool,
+    absorption_wins: bool,
+    material_breach: dict[str, Any] | None,
+    conflict_market_state: str | None,
+    support_transition_badge: bool,
+    resistance_transition_badge: bool,
+    dps_adjusted: float,
+) -> str:
+    action_text = str(trade_action or "WAIT").upper()
+    breach = material_breach or {}
+    if support_transition_badge:
+        return "SUPPORT_TRANSITION"
+    if resistance_transition_badge:
+        return "RESISTANCE_TRANSITION"
+    if absorption_wins or (absorption_detected and action_text == "WAIT"):
+        return "ABSORPTION_ACTIVE"
+    if action_text == "WAIT" and (
+        (bool(breach.get("support_broken")) or bool(breach.get("resistance_broken")))
+        and not bool(breach.get("material_breach_confirmed"))
+    ):
+        return "NO_BREAK_CONFIRMATION"
+    if action_text == "WAIT" and float(trap_probability or 0.0) >= 70.0:
+        return "TRAP_HIGH"
+    if str(conflict_market_state or "").strip().lower() in {"compression", "range conflict", "balanced"} and action_text == "WAIT":
+        return "RANGE_CONFLICT"
+    if action_text == "WAIT" and readiness_active and abs(float(dps_adjusted or 0.0)) > 0.35:
+        return "LONG_BIAS_GUARD"
+    if action_text == "WAIT" and float(trade_readiness or 0.0) < 57.0:
+        return "LOW_READINESS"
+    return "NONE"
+
+
+def _determine_winning_engine(
+    *,
+    trade_action: str,
+    blocking_reason: str,
+    material_breach: dict[str, Any] | None,
+    absorption_wins: bool,
+) -> str:
+    breach = material_breach or {}
+    if blocking_reason == "TRAP_HIGH":
+        return "trap_engine"
+    if absorption_wins or blocking_reason == "ABSORPTION_ACTIVE":
+        return "absorption_detector"
+    if bool(breach.get("material_breach_confirmed")) or blocking_reason == "NO_BREAK_CONFIRMATION":
+        return "material_breach_engine"
+    if blocking_reason in {"SUPPORT_TRANSITION", "RESISTANCE_TRANSITION"}:
+        return "sr_transition_guard"
+    if blocking_reason == "LONG_BIAS_GUARD":
+        return "promotion_guard"
+    if blocking_reason == "LOW_READINESS":
+        return "readiness_gate"
+    if str(trade_action or "").upper() in {"BREAKOUT WATCH", "BREAKDOWN WATCH"}:
+        return "material_breach_engine"
+    return "none"
+
+
+def _compute_decision_confidence(
+    *,
+    trade_readiness: float,
+    trap_probability: float,
+    trade_action: str,
+    blocking_reason: str,
+    support_transition_badge: bool,
+    resistance_transition_badge: bool,
+    material_breach_confirmed: bool,
+) -> int:
+    confidence = float(trade_readiness or 0.0)
+    confidence -= min(18.0, max(0.0, float(trap_probability or 0.0) - 55.0) * 0.35)
+    if support_transition_badge or resistance_transition_badge:
+        confidence -= 12.0
+    if str(trade_action or "").upper() == "WAIT":
+        confidence -= 8.0
+    if blocking_reason in {"NO_BREAK_CONFIRMATION", "RANGE_CONFLICT", "LONG_BIAS_GUARD", "ABSORPTION_ACTIVE"}:
+        confidence -= 6.0
+    if blocking_reason == "TRAP_HIGH":
+        confidence -= 10.0
+    if material_breach_confirmed:
+        confidence += 8.0
+    return int(round(max(0.0, min(100.0, confidence))))
+
+
+def _update_signal_history(
+    previous_state: dict[str, Any] | None,
+    *,
+    timestamp: str,
+    trade_action: str,
+    resolved_reason: str,
+    blocking_reason: str,
+    winning_engine: str,
+    decision_confidence: int,
+) -> list[dict[str, Any]]:
+    history_raw = (previous_state or {}).get("signal_history", [])
+    history: list[dict[str, Any]] = [item for item in history_raw if isinstance(item, dict)][-10:]
+    next_item = {
+        "timestamp": timestamp,
+        "trade_action": str(trade_action or "WAIT"),
+        "resolved_reason": str(resolved_reason or ""),
+        "blocking_reason": str(blocking_reason or "NONE"),
+        "winning_engine": str(winning_engine or "none"),
+        "decision_confidence": int(decision_confidence),
+    }
+    if history:
+        last = history[-1]
+        if (
+            str(last.get("trade_action") or "") == next_item["trade_action"]
+            and str(last.get("resolved_reason") or "") == next_item["resolved_reason"]
+            and str(last.get("blocking_reason") or "") == next_item["blocking_reason"]
+        ):
+            return history
+    return (history + [next_item])[-10:]
+
+
 def _apply_momentum_override(
     *,
     trade_action: str,
@@ -847,6 +1082,17 @@ def _derive_committed_regime_label(*, state: str, engine_regime: str) -> str:
     if "standby" in text or "range play" in text or "range day" in text:
         return "Range Day"
     return str(engine_regime or "Range Day")
+
+
+def _readiness_regime_state(*, committed_regime: str, backend_state: str) -> str:
+    text = str(committed_regime or "").strip().lower()
+    if "range" in text:
+        return "Standby"
+    if "balanced" in text:
+        return "Balanced Structure"
+    if "transition" in text:
+        return "Transition Phase"
+    return str(backend_state or "")
 
 
 def _apply_committed_regime_hysteresis(
@@ -1694,6 +1940,7 @@ def _build_v2_intelligence(
     support_reference_state = _resolve_absorption_reference_level(
         spot=spot,
         current_support=support_level,
+        current_resistance=resistance_level,
         previous_state=previous_state,
     )
     absorption_reference_level = support_reference_state.get("absorption_reference_level")
@@ -1910,7 +2157,10 @@ def _build_v2_intelligence(
     )
     decision["trade_readiness"] = trade_readiness["trade_readiness"]
     decision["readiness_state"] = trade_readiness["readiness_state"]
-    backend_state = str(decision.get("state", "") or "")
+    backend_state = _readiness_regime_state(
+        committed_regime=committed_regime,
+        backend_state=str(decision.get("state", "") or ""),
+    )
     if backend_state == "Aggressive Trend":
         decision["trade_readiness"] = max(float(decision.get("trade_readiness", 0.0) or 0.0), 55.0)
     elif backend_state == "Cautious Trend":
@@ -2416,6 +2666,67 @@ def _build_v2_intelligence(
         decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
     if decision.get("momentum_override_explanation"):
         decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
+    trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    support_transition_badge = _is_support_transition_active(
+        support_reference_state.get("support_shift_cycle", 0)
+    )
+    previous_cycle_resistance = _safe_float(
+        (previous_state or {}).get("current_resistance")
+        or (previous_state or {}).get("resistance_level")
+        or (((previous_state or {}).get("levels") or {}).get("resistance", {}) or {}).get("immediate")
+    )
+    current_cycle_resistance = _safe_float(support_reference_state.get("current_resistance"))
+    # There is no dedicated resistance transition cycle yet, so use current-cycle level divergence.
+    resistance_transition_badge = (
+        previous_cycle_resistance is not None
+        and current_cycle_resistance is not None
+        and abs(previous_cycle_resistance - current_cycle_resistance) > 1e-6
+    )
+    blocking_reason = _determine_blocking_reason(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        readiness_active=bool(decision.get("readiness_active", False)),
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        trap_probability=trap_probability,
+        absorption_detected=absorption_detected,
+        absorption_wins=absorption_wins,
+        material_breach=material_breach,
+        conflict_market_state=str(decision.get("conflict_market_state", "") or ""),
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        dps_adjusted=float(decision.get("dps_adjusted", 0.0) or 0.0),
+    )
+    winning_engine = _determine_winning_engine(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        material_breach=material_breach,
+        absorption_wins=absorption_wins,
+    )
+    decision_confidence = _compute_decision_confidence(
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        trap_probability=trap_probability,
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        material_breach_confirmed=material_breach_confirmed,
+    )
+    resolved_reason = _derive_resolved_reason(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        material_breach=material_breach,
+        support_absorption=support_absorption,
+        pressure_state=str(decision.get("pressure_state", "") or ""),
+        summary_line=summary_line,
+    )
+    signal_history = _update_signal_history(
+        previous_state,
+        timestamp=str(features.get("meta", {}).get("timestamp") or _utc_iso(event_timestamp) or ""),
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        resolved_reason=resolved_reason,
+        blocking_reason=blocking_reason,
+        winning_engine=winning_engine,
+        decision_confidence=decision_confidence,
+    )
     trade_plan = generate_trade_plan(
         bias=stable_bias,
         probability_bull=float((decision.get("bull_probability", 0.5) or 0.5) * 100.0),
@@ -2428,7 +2739,6 @@ def _build_v2_intelligence(
         volatility_state=decision.get("volatility_state"),
     )
 
-    trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
     support_zone = sr.get("support_range")
     if support_zone is None:
         support_zone = [sr.get("support", {}).get("immediate"), sr.get("support", {}).get("major")]
@@ -2616,6 +2926,8 @@ def _build_v2_intelligence(
         "resistance_level": resistance_level,
         "previous_support": support_reference_state.get("previous_support"),
         "current_support": support_reference_state.get("current_support"),
+        "previous_resistance": support_reference_state.get("previous_resistance"),
+        "current_resistance": support_reference_state.get("current_resistance"),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
         "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
         "sr_breach_state": sr_breach_state,
@@ -2641,6 +2953,12 @@ def _build_v2_intelligence(
         "trade_action": decision.get("trade_action"),
         "trade_readiness": decision.get("trade_readiness"),
         "readiness_state": decision.get("readiness_state"),
+        "resolved_reason": resolved_reason,
+        "blocking_reason": blocking_reason,
+        "winning_engine": winning_engine,
+        "decision_confidence": decision_confidence,
+        "support_transition_badge": support_transition_badge,
+        "resistance_transition_badge": resistance_transition_badge,
         "regime_state": decision.get("state"),
         "regime_candidate": decision.get("regime_candidate"),
         "regime_hold_count": decision.get("regime_hold_count"),
@@ -2693,6 +3011,8 @@ def _build_v2_intelligence(
         "support_absorption": support_absorption,
         "previous_support": support_reference_state.get("previous_support"),
         "current_support": support_reference_state.get("current_support"),
+        "previous_resistance": support_reference_state.get("previous_resistance"),
+        "current_resistance": support_reference_state.get("current_resistance"),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
@@ -2756,11 +3076,15 @@ def _build_v2_intelligence(
             "support_absorption": support_absorption,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),
+            "previous_resistance": support_reference_state.get("previous_resistance"),
+            "current_resistance": support_reference_state.get("current_resistance"),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
             "support_transition_active": _is_support_transition_active(
                 support_reference_state.get("support_shift_cycle", 0)
             ),
+            "support_transition_badge": support_transition_badge,
+            "resistance_transition_badge": resistance_transition_badge,
             "absorption_detected": bool(support_absorption.get("absorption_detected")),
             "absorption_level": support_absorption.get("level"),
             "absorption_message": support_absorption.get("message"),
@@ -2772,6 +3096,10 @@ def _build_v2_intelligence(
             "target2": target.get("target_2"),
             "summary_line": summary_line,
             "decision_explanation": decision_explanation,
+            "resolved_reason": resolved_reason,
+            "blocking_reason": blocking_reason,
+            "winning_engine": winning_engine,
+            "decision_confidence": decision_confidence,
             "sr_breach_state": sr_breach_state,
             "alignment_score": round(float(alignment_score), 4),
             "pressure_state": decision.get("pressure_state"),
@@ -2797,6 +3125,7 @@ def _build_v2_intelligence(
             "regime_candidate": str(decision.get("regime_candidate", "")),
             "regime_hold_count": int(decision.get("regime_hold_count", 0) or 0),
             "regime_zone": str(decision.get("regime_zone", "")),
+            "signal_history": signal_history,
         },
         "levels": {
             "resistance": {
@@ -2920,8 +3249,17 @@ def _build_v2_intelligence(
             "breakout_candidate": breakout_candidate,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),
+            "previous_resistance": support_reference_state.get("previous_resistance"),
+            "current_resistance": support_reference_state.get("current_resistance"),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
+            "blocking_reason": blocking_reason,
+            "winning_engine": winning_engine,
+            "decision_confidence": decision_confidence,
+            "resolved_reason": resolved_reason,
+            "support_transition_badge": support_transition_badge,
+            "resistance_transition_badge": resistance_transition_badge,
+            "signal_history": signal_history,
             "wick_zero_streak": int(wick_zero_streak),
             "oi_near_one_streak": int(oi_near_one_streak),
             "volume_near_one_streak": int(volume_near_one_streak),
@@ -2992,8 +3330,8 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
         previous_score = await cache.get_previous_score(key)
         last_10_scores = await cache.get_score_history(key, limit=10)
-        previous_state = await cache.get_previous_state(f"STATE::{key}") or {}
-        previous_adaptive_state = await cache.get_previous_state(f"ADAPT::{key}") or {}
+        previous_state = await cache.get_previous_state(f"STATE::{key}") or _load_persisted_state("STATE", key)
+        previous_adaptive_state = await cache.get_previous_state(f"ADAPT::{key}") or _load_persisted_state("ADAPT", key)
         perf_snapshot = tracker.get_daily_metrics(key)
         bias_acc = float(perf_snapshot.get("bias_accuracy_percent", 55.0) or 55.0) / 100.0
         trap_acc = float(perf_snapshot.get("trap_accuracy_percent", 55.0) or 55.0) / 100.0
@@ -3137,9 +3475,11 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         current_state = summary_section[key]["v2"].get("_state", {})
         if isinstance(current_state, dict):
             await cache.set_previous_state(f"STATE::{key}", current_state)
+            _persist_state_snapshot("STATE", key, current_state)
         current_adaptive_state = summary_section[key]["v2"].get("_adaptive_state", {})
         if isinstance(current_adaptive_state, dict):
             await cache.set_previous_state(f"ADAPT::{key}", current_adaptive_state)
+            _persist_state_snapshot("ADAPT", key, current_adaptive_state)
 
     return option_chain_section, summary_section
 
