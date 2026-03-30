@@ -20,6 +20,7 @@
     "@tailwindcss/vite": "^4.2.1",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.6",
+    "framer-motion": "^12.38.0",
     "highcharts": "^12.5.0",
     "highcharts-react-official": "^3.2.3",
     "lightweight-charts": "^5.1.0",

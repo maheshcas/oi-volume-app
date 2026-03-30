@@ -1,5 +1,3 @@
-import type { SignalHistoryItem } from "../decisionUx";
-
 export type MobileNavKey = "overview" | "chart" | "ladder" | "writers" | "alerts";
 
 export type MobileOption = {
@@ -88,5 +86,4 @@ export type MobileDashboardData = {
   };
   alerts: MobileAlert[];
   ladderRows: MobileStrikeRow[];
-  signalHistory?: SignalHistoryItem[];
 };

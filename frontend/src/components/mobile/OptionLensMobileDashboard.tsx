@@ -60,7 +60,6 @@ export default function OptionLensMobileDashboard({
           regime={data.regime}
           supportTransitionBadge={data.supportTransitionBadge}
           resistanceTransitionBadge={data.resistanceTransitionBadge}
-          signalHistory={data.signalHistory}
         />
 
         <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />

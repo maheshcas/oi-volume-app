@@ -1,9 +1,7 @@
 import {
   confidenceLabel,
-  formatDecisionTime,
   friendlyBlockingReason,
   friendlyWinningEngine,
-  type SignalHistoryItem,
 } from "./decisionUx";
 
 type DecisionBannerProps = {
@@ -25,7 +23,6 @@ type DecisionBannerProps = {
   decisionConfidence?: number | null;
   supportTransitionBadge?: boolean;
   resistanceTransitionBadge?: boolean;
-  signalHistory?: SignalHistoryItem[];
 };
 
 function formatDirectionLabel(direction: DecisionBannerProps["direction"]) {
@@ -94,7 +91,6 @@ export default function DecisionBanner({
   decisionConfidence = null,
   supportTransitionBadge = false,
   resistanceTransitionBadge = false,
-  signalHistory = [],
 }: DecisionBannerProps) {
   const displayExplanation = normalizeExplanation(action, direction, explanation);
   const toneClass =
@@ -114,7 +110,6 @@ export default function DecisionBanner({
         : "ia-text-warn";
   const pressureLabel = pressureState.replace(/\s*Pressure$/i, "").trim() || pressureState;
   const confidenceTone = confidenceLabel(decisionConfidence);
-  const timelineItems = signalHistory.slice(-5).reverse();
   const transitionLabel = supportTransitionBadge
     ? "Support Transition Active"
     : resistanceTransitionBadge
@@ -188,28 +183,6 @@ export default function DecisionBanner({
             <div className={`ia-decision-grid-value ${readinessStateClass}`}>{readinessState || "-"}</div>
           </div>
         </div>
-
-        {timelineItems.length ? (
-          <div className="ia-decision-timeline">
-            <div className="ia-decision-more-label">Recent Signal Flow</div>
-            <div className="ia-decision-timeline-list">
-              {timelineItems.map((item, index) => (
-                <div
-                  key={`${item.timestamp ?? "na"}-${item.trade_action ?? "na"}-${index}`}
-                  className="ia-decision-timeline-row"
-                >
-                  <span className="ia-decision-timeline-time">{formatDecisionTime(item.timestamp)}</span>
-                  <span className="ia-decision-timeline-action">{item.trade_action || "-"}</span>
-                  <span className="ia-decision-timeline-text">
-                    {item.blocking_reason && item.blocking_reason !== "NONE"
-                      ? friendlyBlockingReason(item.blocking_reason)
-                      : item.resolved_reason || "-"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
 
         {(detailSummary || detailInsight || detailWalls) ? (
           <details className="ia-decision-more">

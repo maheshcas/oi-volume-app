@@ -1,16 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import SingleStructureCandleCard from "./SingleStructureCandleCard";
+import StructureBand from "./StructureBand";
 
-type CandlePoint = {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-};
-
-type StructuralPriceContextCardProps = {
+type CandlePoint = { time: number; open: number; high: number; low: number; close: number; volume?: number };
+type Props = {
   candles: CandlePoint[];
   spotPrice: number | null;
   dayOpen?: number | null;
@@ -31,6 +24,14 @@ type StructuralPriceContextCardProps = {
   materialBreachConfirmed?: boolean;
   confirmationType?: string | null;
   sessionPhase?: string | null;
+  tradeAction?: string | null;
+  resolvedReason?: string | null;
+  decisionExplanation?: string | null;
+  decisionConfidence?: number | null;
+  readinessState?: string | null;
+  supportTransitionActive?: boolean;
+  supportTransitionBadge?: boolean;
+  resistanceTransitionBadge?: boolean;
   bias: string;
   biasStrength: string;
   regime: string;
@@ -44,47 +45,140 @@ type StructuralPriceContextCardProps = {
   volumeLabel?: string;
 };
 
-function dayKey(ms: number) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(ms));
-}
-
-function formatCompactNumber(value: number | null | undefined, digits = 0) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "-";
-  return value.toLocaleString("en-IN", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
-function fallbackPercent(value: number | null | undefined, fallback: number) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.min(100, value));
+const fmt = (v: number | null | undefined, d = 0) =>
+  typeof v === "number" && Number.isFinite(v)
+    ? v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d })
+    : "-";
+const dayKey = (ms: number) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms));
+const phaseLabel = (v?: string | null) => {
+  const t = String(v || "").trim();
+  if (!t) return "Transition Phase";
+  return t.toLowerCase().includes("phase") ? t : `${t} Phase`;
+};
+const actionLabel = (v?: string | null) => String(v || "").trim() || "WAIT";
+const human = (v: string | null | undefined, fb: string) => {
+  const t = String(v || "").trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}` : fb;
+};
+const confidenceLabel = (v?: number | null) => (typeof v === "number" && Number.isFinite(v) ? (v >= 75 ? "High" : v >= 55 ? "Moderate" : "Low") : null);
+const trapBadge = (v?: number | null) => {
+  const risk = typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
+  if (risk <= 10) return "No Trap";
+  if (risk >= 60) return `High Trap ${Math.round(risk)}%`;
+  return `Trap Risk ${Math.round(risk)}%`;
+};
+const trapSummary = (v?: number | null, d?: "upside" | "downside" | "") => {
+  const risk = typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
+  if (risk <= 10) return "";
+  if (d === "upside") return `TRAP RISK - SUPPORT ABSORPTION ${Math.round(risk)}%`;
+  if (d === "downside") return `TRAP RISK - RESISTANCE REJECTION ${Math.round(risk)}%`;
+  return `TRAP RISK ${Math.round(risk)}%`;
+};
+const positionSummary = (position: number, distToSupport: number, distToResistance: number) => {
+  if (distToSupport <= 25) return `Near support (${Math.round(Math.max(0, distToSupport))} pts above)`;
+  if (distToResistance <= 25) return `Near resistance (${Math.round(Math.max(0, distToResistance))} pts below)`;
+  if (position <= 33) return "Close to support";
+  if (position >= 67) return "Close to resistance";
+  return "Inside active band";
+};
+const formatPhaseBadge = ({
+  phase,
+  supportTransition,
+  resistanceTransition,
+}: {
+  phase?: string | null;
+  supportTransition: boolean;
+  resistanceTransition: boolean;
+}) => {
+  if (supportTransition) return "Support Transition";
+  if (resistanceTransition) return "Resistance Transition";
+  const base = phaseLabel(phase);
+  if (String(phase || "").toLowerCase().includes("transition")) return "Transition Phase";
+  return base;
+};
+const buildAlertMessage = ({
+  summary,
+}: {
+  summary: {
+    brokenS: boolean;
+    brokenR: boolean;
+    nearS: boolean;
+    nearR: boolean;
+    support: number;
+    resistance: number;
+  };
+}) => {
+  if (summary.brokenS) return `Below support - watching for continuation under ${fmt(summary.support)}`;
+  if (summary.brokenR) return `Above resistance - watching for acceptance over ${fmt(summary.resistance)}`;
+  if (summary.nearS) return `Approaching support at ${fmt(summary.support)}`;
+  if (summary.nearR) return `Approaching resistance at ${fmt(summary.resistance)}`;
+  return null;
+};
+const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
+  if (typeof score === "number" && Number.isFinite(score)) {
+    return Math.max(0.14, Math.min(0.68, score / 100));
   }
-  return Math.max(0, Math.min(100, fallback));
-}
+  const normalized = String(state || "").toLowerCase();
+  if (normalized === "high") return 0.68;
+  if (normalized === "moderate") return 0.5;
+  if (normalized === "low") return 0.28;
+  return 0.16;
+};
+const formatReason = ({
+  resolvedReason,
+  decisionExplanation,
+  action,
+  phase,
+  supportTransition,
+  resistanceTransition,
+  trapRisk,
+  bias,
+}: {
+  resolvedReason?: string | null;
+  decisionExplanation?: string | null;
+  action: string;
+  phase?: string | null;
+  supportTransition: boolean;
+  resistanceTransition: boolean;
+  trapRisk: number;
+  bias: string;
+}) => {
+  const resolved = human(resolvedReason, "");
+  if (resolved && resolved.toLowerCase() !== "no clear signal") return resolved;
+  const explanation = human(decisionExplanation, "");
+  if (explanation && explanation.toLowerCase() !== "no clear signal") return explanation;
+  if (supportTransition || resistanceTransition) return "Transition phase - waiting for structural clarity";
+  if (trapRisk >= 60) return "Trap risk elevated - waiting for clean confirmation";
+  if (action.toUpperCase().includes("BREAKOUT")) return "Resistance pressure building - waiting for upside acceptance";
+  if (action.toUpperCase().includes("BREAKDOWN")) return "Support under pressure - watching for continuation";
+  if (String(phase || "").toLowerCase().includes("transition")) return "Price inside range - no breakout confirmation";
+  if (String(bias || "").toLowerCase() === "bullish") return "Support holding but no clean confirmation yet";
+  if (String(bias || "").toLowerCase() === "bearish") return "Resistance holding but no clean confirmation yet";
+  return "Inside active band - no clean directional edge";
+};
+const actionTone = (v: string) => {
+  const t = v.toUpperCase();
+  if (t.includes("BREAKOUT") || t.includes("LONG")) return "bullish";
+  if (t.includes("BREAKDOWN") || t.includes("SHORT")) return "bearish";
+  if (t.includes("ABSORPTION")) return "amber";
+  return "neutral";
+};
 
-export default function StructuralPriceContextCard(props: StructuralPriceContextCardProps) {
-  const [isCompactViewport, setIsCompactViewport] = useState(false);
+export default function StructuralPriceContextCard(props: Props) {
+  const [compact, setCompact] = useState(false);
   const [showChart, setShowChart] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
     const media = window.matchMedia("(max-width: 900px)");
-    const syncViewport = () => {
-      const compact = media.matches;
-      setIsCompactViewport(compact);
-      setShowChart((current) => (compact ? current : true));
+    const sync = () => {
+      setCompact(media.matches);
+      setShowChart((current) => (media.matches ? current : true));
     };
-
-    syncViewport();
-    media.addEventListener("change", syncViewport);
-    return () => media.removeEventListener("change", syncViewport);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
   }, []);
 
   const todayCandles = useMemo(() => {
@@ -98,304 +192,103 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
 
   const ohlc = useMemo(() => {
     if (todayCandles.length) {
-      const open = props.dayOpen ?? todayCandles[0].open;
-      const high = props.dayHigh ?? Math.max(...todayCandles.map((c) => c.high));
-      const low = props.dayLow ?? Math.min(...todayCandles.map((c) => c.low));
-      const close = todayCandles[todayCandles.length - 1].close;
-      return { open, high, low, close };
+      return {
+        open: props.dayOpen ?? todayCandles[0].open,
+        high: props.dayHigh ?? Math.max(...todayCandles.map((c) => c.high)),
+        low: props.dayLow ?? Math.min(...todayCandles.map((c) => c.low)),
+        close: todayCandles[todayCandles.length - 1].close,
+      };
     }
-    if (
-      props.dayOpen !== null &&
-      props.dayOpen !== undefined &&
-      props.dayHigh !== null &&
-      props.dayHigh !== undefined &&
-      props.dayLow !== null &&
-      props.dayLow !== undefined &&
-      props.spotPrice !== null
-    ) {
+    if (props.dayOpen != null && props.dayHigh != null && props.dayLow != null && props.spotPrice != null) {
       return { open: props.dayOpen, high: props.dayHigh, low: props.dayLow, close: props.spotPrice };
     }
     return null;
   }, [props.dayHigh, props.dayLow, props.dayOpen, props.spotPrice, todayCandles]);
 
-  const rangeSummary = useMemo(() => {
-    if (
-      props.spotPrice === null ||
-      props.supportLevel === null ||
-      props.supportLevel === undefined ||
-      props.resistanceLevel === null ||
-      props.resistanceLevel === undefined ||
-      props.resistanceLevel <= props.supportLevel
-    ) {
-      return null;
-    }
-
-    const position =
-      ((props.spotPrice - props.supportLevel) / (props.resistanceLevel - props.supportLevel)) * 100;
-    const bandWidth = props.resistanceLevel - props.supportLevel;
-    const distToResistance = props.resistanceLevel - props.spotPrice;
-    const distToSupport = props.spotPrice - props.supportLevel;
+  const summary = useMemo(() => {
+    if (props.spotPrice == null || props.supportLevel == null || props.resistanceLevel == null || props.resistanceLevel <= props.supportLevel) return null;
+    const support = props.supportLevel;
+    const resistance = props.resistanceLevel;
+    const prevS = typeof props.previousSupport === "number" && props.previousSupport !== support ? props.previousSupport : null;
+    const prevR = typeof props.previousResistance === "number" && props.previousResistance !== resistance ? props.previousResistance : null;
+    const band = resistance - support;
+    const posRaw = ((props.spotPrice - support) / band) * 100;
+    const distS = props.spotPrice - support;
+    const distR = resistance - props.spotPrice;
+    const brokenS = props.spotPrice < support;
+    const brokenR = props.spotPrice > resistance;
+    const nearS = distS >= 0 && distS < 30 && !brokenS && !brokenR;
+    const nearR = distR >= 0 && distR < 30 && !brokenS && !brokenR;
+    const rightText = distR >= 0 ? `${Math.round(distR)} pts below R` : `${Math.round(Math.abs(distR))} pts above R`;
     return {
-      support: props.supportLevel,
-      resistance: props.resistanceLevel,
-      previousSupport:
-        typeof props.previousSupport === "number" && props.previousSupport !== props.supportLevel
-          ? props.previousSupport
-          : null,
-      previousResistance:
-        typeof props.previousResistance === "number" && props.previousResistance !== props.resistanceLevel
-          ? props.previousResistance
-          : null,
-      spot: props.spotPrice,
-      position: Math.max(0, Math.min(100, position)),
-      bandWidth,
-      distToResistance,
-      distToSupport,
+      support, resistance, prevS, prevR, band, spot: props.spotPrice, distS, distR, posRaw, brokenS, brokenR, nearS, nearR,
+      rightText,
+      positionText: brokenS ? `${Math.round(((props.spotPrice - (prevS ?? support)) / band) * 100)}% (breach zone)` : brokenR ? `${Math.round(((props.spotPrice - (prevR ?? resistance)) / band) * 100 + 100)}% (above R)` : `${Math.round(posRaw)}% in band`,
+      metaText: brokenS ? `${Math.round((prevS ?? support) - props.spotPrice)} pts below support` : brokenR ? `${Math.round(props.spotPrice - (prevR ?? resistance))} pts above resistance` : `${Math.round(distS)} pts above support`,
+      footLeft: brokenS ? `${Math.round((prevS ?? support) - props.spotPrice)} pts below old S` : brokenR ? `${Math.round(props.spotPrice - (prevR ?? resistance))} pts above old R` : `${Math.round(distS)} pts above S`,
+      supportShifted: prevS != null,
+      resistanceShifted: prevR != null,
+      upperThird: posRaw >= 67, lowerThird: posRaw <= 33,
     };
   }, [props.previousResistance, props.previousSupport, props.resistanceLevel, props.spotPrice, props.supportLevel]);
 
-  const trackSummary = useMemo(() => {
-    if (!rangeSummary) return null;
-
-    const hasSupportShift =
-      typeof rangeSummary.previousSupport === "number" &&
-      rangeSummary.previousSupport < rangeSummary.support;
-    const hasResistanceShift =
-      typeof rangeSummary.previousResistance === "number" &&
-      rangeSummary.previousResistance > rangeSummary.resistance;
-    const hasBrokenSupport =
-      typeof rangeSummary.previousSupport === "number" &&
-      rangeSummary.previousSupport > rangeSummary.support &&
-      rangeSummary.spot < rangeSummary.previousSupport;
-    const hasBrokenResistance =
-      typeof rangeSummary.previousResistance === "number" &&
-      rangeSummary.previousResistance < rangeSummary.resistance &&
-      rangeSummary.spot > rangeSummary.previousResistance;
-    const nearSupport =
-      rangeSummary.distToSupport >= 0 &&
-      rangeSummary.distToSupport < 30 &&
-      !hasBrokenSupport &&
-      !hasBrokenResistance;
-    const nearResistance =
-      rangeSummary.distToResistance >= 0 &&
-      rangeSummary.distToResistance < 30 &&
-      !hasBrokenSupport &&
-      !hasBrokenResistance;
-
-    const baseBandWidth = Math.max(1, rangeSummary.resistance - rangeSummary.support);
-    const maxExtension = baseBandWidth * 0.5;
-
-    const leftContextDistance =
-      (hasBrokenSupport || hasSupportShift) && typeof rangeSummary.previousSupport === "number"
-        ? Math.max(0, rangeSummary.previousSupport - rangeSummary.spot)
-        : 0;
-    const rightContextDistance =
-      (hasBrokenResistance || hasResistanceShift) && typeof rangeSummary.previousResistance === "number"
-        ? Math.max(0, rangeSummary.spot - rangeSummary.previousResistance)
-        : 0;
-
-    const leftShiftDistance =
-      hasSupportShift && typeof rangeSummary.previousSupport === "number"
-        ? Math.max(0, rangeSummary.support - rangeSummary.previousSupport)
-        : 0;
-    const rightShiftDistance =
-      hasResistanceShift && typeof rangeSummary.previousResistance === "number"
-        ? Math.max(0, rangeSummary.previousResistance - rangeSummary.resistance)
-        : 0;
-
-    const leftExtension = Math.min(Math.max(leftContextDistance, leftShiftDistance), maxExtension);
-    const rightExtension = Math.min(Math.max(rightContextDistance, rightShiftDistance), maxExtension);
-    const totalWidth = leftExtension + baseBandWidth + rightExtension;
-
-    let spotOffset = leftExtension + (rangeSummary.spot - rangeSummary.support);
-    if (hasBrokenSupport) {
-      spotOffset = Math.max(0, leftExtension - leftContextDistance);
-    } else if (hasBrokenResistance) {
-      spotOffset = Math.min(totalWidth, leftExtension + baseBandWidth + rightContextDistance);
-    }
-    spotOffset = Math.max(0, Math.min(totalWidth, spotOffset));
-
-    const spotPct = (spotOffset / totalWidth) * 100;
-    const leftExtensionPct = (leftExtension / totalWidth) * 100;
-    const rightExtensionPct = (rightExtension / totalWidth) * 100;
-    const bandStartPct = leftExtensionPct;
-    const bandWidthPct = (baseBandWidth / totalWidth) * 100;
-
-    let positionPercent = ((rangeSummary.spot - rangeSummary.support) / baseBandWidth) * 100;
-    let positionText = `${Math.round(positionPercent)}% in band`;
-    let metaText = `${Math.round(rangeSummary.distToSupport)} pts above support`;
-    let footCenterText = `${Math.round(rangeSummary.distToSupport)} pts above S`;
-    let footRightText =
-      rangeSummary.distToResistance >= 0
-        ? `${Math.round(rangeSummary.distToResistance)} pts below R`
-        : `${Math.round(Math.abs(rangeSummary.distToResistance))} pts above R`;
-    let supportLabel = rangeSummary.support.toLocaleString("en-IN");
-    let resistanceLabel = rangeSummary.resistance.toLocaleString("en-IN");
-
-    if (hasBrokenSupport && typeof rangeSummary.previousSupport === "number") {
-      positionPercent = ((rangeSummary.spot - rangeSummary.previousSupport) / baseBandWidth) * 100;
-      positionText = `${Math.round(positionPercent)}% (breach zone)`;
-      metaText = `${Math.round(rangeSummary.previousSupport - rangeSummary.spot)} pts below support`;
-      footCenterText = `${Math.round(rangeSummary.previousSupport - rangeSummary.spot)} pts below old S`;
-      footRightText =
-        rangeSummary.resistance >= rangeSummary.spot
-          ? `${Math.round(rangeSummary.resistance - rangeSummary.spot)} pts below R`
-          : `${Math.round(rangeSummary.spot - rangeSummary.resistance)} pts above R`;
-      supportLabel = `newS ${rangeSummary.support.toLocaleString("en-IN")}`;
-    } else if (hasBrokenResistance && typeof rangeSummary.previousResistance === "number") {
-      positionPercent = ((rangeSummary.spot - rangeSummary.previousResistance) / baseBandWidth) * 100 + 100;
-      positionText = `${Math.round(positionPercent)}% (above R)`;
-      metaText = `${Math.round(rangeSummary.spot - rangeSummary.previousResistance)} pts above resistance`;
-      footCenterText = `${Math.round(rangeSummary.spot - rangeSummary.previousResistance)} pts above old R`;
-      footRightText = `${Math.round(rangeSummary.resistance - rangeSummary.spot)} pts below new R`;
-      resistanceLabel = `newR ${rangeSummary.resistance.toLocaleString("en-IN")}`;
-    }
-
-    return {
-      ...rangeSummary,
-      hasBrokenSupport,
-      hasBrokenResistance,
-      baseBandWidth,
-      spotPct,
-      leftExtensionPct,
-      rightExtensionPct,
-      bandStartPct,
-      bandWidthPct,
-      positionText,
-      positionPercent,
-      metaText,
-      footCenterText,
-      footRightText,
-      supportLabel,
-      resistanceLabel,
-      markerPosition:
-        hasBrokenSupport || hasSupportShift
-          ? bandStartPct
-          : hasBrokenResistance || hasResistanceShift
-            ? bandStartPct + bandWidthPct
-            : null,
-      markerLabel:
-        (hasBrokenSupport || hasSupportShift) && typeof rangeSummary.previousSupport === "number"
-          ? `old S ${rangeSummary.previousSupport.toLocaleString("en-IN")}`
-          : (hasBrokenResistance || hasResistanceShift) && typeof rangeSummary.previousResistance === "number"
-            ? `old R ${rangeSummary.previousResistance.toLocaleString("en-IN")}`
-            : null,
-      nearSupport,
-      nearResistance,
-      isUpperThird: positionPercent >= 67,
-      isLowerThird: positionPercent <= 33,
-    };
-  }, [rangeSummary]);
-
-  const structuralStateLabel = useMemo(() => {
-    if (!trackSummary) return "Inside Balanced Range";
-    if (props.materialBreachConfirmed && trackSummary.hasBrokenResistance) return "Resistance Broken";
-    if (props.materialBreachConfirmed && trackSummary.hasBrokenSupport) return "Support Broken";
-    if ((props.trapProbability ?? 0) >= 40 && props.trapDirection === "downside") return "Resistance Rejection Risk";
-    if ((props.trapProbability ?? 0) >= 40 && props.trapDirection === "upside") return "Support Absorption Risk";
-    if (trackSummary.isUpperThird) return "Resistance Breakout Watch";
-    if (trackSummary.isLowerThird) return "Support Breakdown Watch";
-    return "Inside Balanced Range";
-  }, [props.materialBreachConfirmed, props.trapDirection, props.trapProbability, trackSummary]);
-
-  const phaseLabel = useMemo(() => {
-    const phaseText = String(props.sessionPhase || "").trim();
-    return phaseText || "Transition";
-  }, [props.sessionPhase]);
-
-  const watchZone = useMemo(() => {
-    if (!trackSummary) return null;
-    if (trackSummary.hasBrokenSupport || trackSummary.isLowerThird) {
-      return {
-        left: `${trackSummary.bandStartPct}%`,
-        width: `${Math.min(trackSummary.bandWidthPct * 0.22, 22)}%`,
-        tone: "support" as const,
-      };
-    }
-    if (trackSummary.hasBrokenResistance || trackSummary.isUpperThird) {
-      const widthPct = Math.min(trackSummary.bandWidthPct * 0.22, 22);
-      return {
-        left: `${trackSummary.bandStartPct + trackSummary.bandWidthPct - widthPct}%`,
-        width: `${widthPct}%`,
-        tone: "resistance" as const,
-      };
-    }
-    return null;
-  }, [trackSummary]);
-
   const breachBanner = useMemo(() => {
-    if (!trackSummary) return null;
-    if (trackSummary.hasBrokenSupport) {
-      return {
-        className: "spc-breach-banner spc-breach-banner-support-break",
-        text: `Support broken below ${trackSummary.support.toLocaleString("en-IN")}`,
-      };
-    }
-    if (trackSummary.hasBrokenResistance) {
-      return {
-        className: "spc-breach-banner spc-breach-banner-resistance-break",
-        text: `Resistance broken above ${trackSummary.resistance.toLocaleString("en-IN")}`,
-      };
-    }
-    if (trackSummary.nearSupport) {
-      return {
-        className: "spc-breach-banner spc-breach-banner-near-s",
-        text: `Approaching support at ${trackSummary.support.toLocaleString("en-IN")}`,
-      };
-    }
-    if (trackSummary.nearResistance) {
-      return {
-        className: "spc-breach-banner spc-breach-banner-near-r",
-        text: `Approaching resistance at ${trackSummary.resistance.toLocaleString("en-IN")}`,
-      };
-    }
+    if (!summary) return null;
+    if (summary.brokenS) return { className: "spc-breach-banner spc-breach-banner-support-break", text: buildAlertMessage({ summary }) };
+    if (summary.brokenR) return { className: "spc-breach-banner spc-breach-banner-resistance-break", text: buildAlertMessage({ summary }) };
+    if (summary.nearS) return { className: "spc-breach-banner spc-breach-banner-near-s", text: buildAlertMessage({ summary }) };
+    if (summary.nearR) return { className: "spc-breach-banner spc-breach-banner-near-r", text: buildAlertMessage({ summary }) };
     return null;
-  }, [trackSummary]);
+  }, [summary]);
 
-  const compactRangeTarget = useMemo(() => {
-    const targets = [props.target1, props.target2].filter(
-      (value): value is number => typeof value === "number" && !Number.isNaN(value)
+  const rangeText = useMemo(() => {
+    const targets = [props.target1, props.target2].filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+    if (!targets.length) return "Range -";
+    return `${fmt(Math.min(...targets))} to ${fmt(Math.max(...targets))}`;
+  }, [props.target1, props.target2]);
+
+  if (!summary) {
+    return (
+      <div className="spc-card">
+        <div className="spc-head">
+          <div><div className="spc-title">Structural Price Context</div></div>
+          <button type="button" className="spc-toggle" onClick={() => setShowChart((c) => !c)}>{showChart ? "Hide Chart" : "Show Chart"}</button>
+        </div>
+        <div className="spc-compact-panel"><div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div></div>
+      </div>
     );
-    if (!targets.length) {
-      return { text: "Range -", hint: null as string | null };
-    }
-    const low = Math.min(...targets);
-    const high = Math.max(...targets);
-    let hint = "Inside structure envelope";
-    if (
-      props.supportLevel !== null &&
-      props.supportLevel !== undefined &&
-      props.resistanceLevel !== null &&
-      props.resistanceLevel !== undefined
-    ) {
-      hint = `Below ${props.supportLevel.toLocaleString("en-IN")} · Above ${props.resistanceLevel.toLocaleString("en-IN")}`;
-    }
-    return {
-      text: `${low.toLocaleString("en-IN", { maximumFractionDigits: 0 })} ↔ ${high.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`,
-      hint,
-    };
-  }, [props.resistanceLevel, props.supportLevel, props.target1, props.target2]);
+  }
 
-  const compactTargets: Array<{ key: string; label: string; value: number | null; hint: string | null }> = [];
-
-  const previousSupportLabel =
-    typeof props.previousSupport === "number"
-      ? `prev S ${props.previousSupport.toLocaleString("en-IN")}`
-      : null;
-  const previousResistanceLabel =
-    typeof props.previousResistance === "number"
-      ? `prev R ${props.previousResistance.toLocaleString("en-IN")}`
-      : null;
-  const breakoutUpDisplay = fallbackPercent(props.breakoutProbabilityUp, trackSummary?.positionPercent ?? 50);
-  const breakoutDownDisplay = fallbackPercent(props.breakoutProbabilityDown, 100 - (trackSummary?.positionPercent ?? 50));
-  const trapDisplay =
-    typeof props.trapProbability === "number" && Number.isFinite(props.trapProbability)
-      ? Math.max(0, Math.min(100, props.trapProbability))
-      : 0;
-  const readinessDisplay =
-    typeof props.readinessScore === "number" && Number.isFinite(props.readinessScore)
-      ? Math.max(0, Math.min(100, props.readinessScore))
-      : 0;
+  const trapRisk = typeof props.trapProbability === "number" && Number.isFinite(props.trapProbability) ? Math.max(0, Math.min(100, props.trapProbability)) : 0;
+  const readiness = typeof props.readinessScore === "number" && Number.isFinite(props.readinessScore) ? Math.max(0, Math.min(100, props.readinessScore)) : null;
+  const act = actionLabel(props.tradeAction);
+  const supportTransition = Boolean(props.supportTransitionBadge ?? props.supportTransitionActive);
+  const resistanceTransition = Boolean(props.resistanceTransitionBadge);
+  const reason = formatReason({
+    resolvedReason: props.resolvedReason,
+    decisionExplanation: props.decisionExplanation,
+    action: act,
+    phase: props.sessionPhase,
+    supportTransition,
+    resistanceTransition,
+    trapRisk,
+    bias: props.bias,
+  });
+  const confLabel = confidenceLabel(props.decisionConfidence);
+  const phaseBadge = formatPhaseBadge({
+    phase: props.sessionPhase,
+    supportTransition,
+    resistanceTransition,
+  });
+  const readinessGlow = readinessGlowOpacity(readiness, props.readinessState);
+  const positionTextFriendly = positionSummary(summary.posRaw, summary.distS, Math.max(0, summary.distR));
+  const watchZoneLabel = "Resistance Watch";
+  const watchZoneToneClass =
+    summary.upperThird || summary.nearR
+      ? "spc-range-label-watch"
+      : summary.lowerThird || summary.nearS
+        ? "spc-range-label-watch-support"
+        : "";
 
   return (
     <div className="spc-card">
@@ -403,197 +296,115 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
         <div>
           <div className="spc-title">Structural Price Context</div>
           <div className="spc-status-row">
-            <span className="spc-chip spc-chip-neutral">
-              Bias <strong>{props.bias}</strong>
-            </span>
-            <span className="spc-chip spc-chip-neutral">
-              Regime <strong>{props.regime}</strong>
-            </span>
+            <span className="spc-chip spc-chip-neutral">Regime <strong>{props.regime}</strong></span>
             {props.volumeLabel ? <span className="spc-chip spc-chip-muted">{props.volumeLabel}</span> : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="spc-toggle"
-          onClick={() => setShowChart((current) => !current)}
-        >
-          {showChart ? "Hide Chart" : "Show Chart"}
-        </button>
+        <button type="button" className="spc-toggle" onClick={() => setShowChart((c) => !c)}>{showChart ? "Hide Chart" : "Show Chart"}</button>
       </div>
       <div className="spc-compact-panel">
-        {trackSummary ? (
-          <>
-            <div className="spc-hero-row">
-              <div className="spc-hero-copy">
-                <div className="spc-hero-state">{structuralStateLabel}</div>
-                <div className="spc-hero-phase">{phaseLabel}</div>
-              </div>
-              {props.bias ? (
-                <div className="spc-hero-bias">
-                  {props.bias}
-                  {props.biasStrength ? ` · ${props.biasStrength}` : ""}
-                </div>
-              ) : null}
+        <div className="spc-hero-row">
+          <div className="spc-hero-copy spc-hero-copy-decision">
+            <div className={`spc-action-label spc-action-${actionTone(act)}`}>{act}</div>
+            <div className="spc-hero-state">{reason}</div>
+          </div>
+          <div className="spc-hero-side">
+            <div className="spc-hero-side-row">
+              <div className="spc-hero-bias">Bias: {props.bias}</div>
+              {typeof props.decisionConfidence === "number" && confLabel ? <div className={`spc-confidence-chip spc-confidence-${confLabel.toLowerCase()}`}>Confidence: {confLabel} {Math.round(props.decisionConfidence)}%</div> : null}
             </div>
-            <div className="spc-compact-head">
-              <div className="spc-compact-metric">
-                <span>Support</span>
-                <strong>S {trackSummary.supportLabel}</strong>
-                {typeof props.supportDefenseRatio === "number" ? (
-                  <em className="spc-compact-defense">
-                    <span className={`spc-defense-dot ${props.supportDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
-                    PE/CE {props.supportDefenseRatio.toFixed(2)}x
-                  </em>
-                ) : null}
-                {previousSupportLabel ? <em className="spc-compact-prev">{previousSupportLabel}</em> : null}
-              </div>
-              <div className="spc-compact-metric spc-compact-metric-spot">
-                <span>Spot</span>
-                <strong>{trackSummary.spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</strong>
-                <em className="spc-compact-center-meta">{trackSummary.positionText}</em>
-              </div>
-              <div className="spc-compact-metric">
-                <span>Resistance</span>
-                <strong>R {trackSummary.resistanceLabel}</strong>
-                {typeof props.resistanceDefenseRatio === "number" ? (
-                  <em className="spc-compact-defense">
-                    <span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1.0 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />
-                    CE/PE {props.resistanceDefenseRatio.toFixed(2)}x
-                  </em>
-                ) : null}
-                {previousResistanceLabel ? <em className="spc-compact-prev">{previousResistanceLabel}</em> : null}
-              </div>
+          </div>
+        </div>
+        <div className="spc-status-row spc-status-row-decision">
+          <span className="spc-chip spc-chip-neutral">{phaseBadge}</span>
+          <span className={`spc-chip ${trapRisk >= 60 ? "spc-chip-danger" : trapRisk >= 25 ? "spc-chip-warning" : "spc-chip-success"}`}>
+            {trapRisk <= 10 ? "No Trap - clean structure" : trapBadge(props.trapProbability)}
+          </span>
+        </div>
+        <div className="spc-compact-head">
+          <div className="spc-compact-metric spc-compact-metric-support">
+            <span>Support</span>
+            <div className="spc-compact-value-row">
+              <strong className="spc-compact-token">S</strong>
+              <strong className="spc-compact-level">{fmt(summary.support)}</strong>
+              {summary.supportShifted ? <span className="spc-compact-state-badge">NEW</span> : null}
             </div>
-            <div className="spc-range-meta">
-              <span className="spc-range-label">Defended Structure</span>
-              <span className="spc-range-label">Active Band</span>
-              <span className={`spc-range-label ${watchZone?.tone === "resistance" ? "spc-range-label-watch" : watchZone?.tone === "support" ? "spc-range-label-watch-support" : ""}`}>
-                {trackSummary.isUpperThird ? "Breakout Watch" : trackSummary.isLowerThird ? "Breakdown Watch" : "Watch Zone"}
-              </span>
+            {typeof props.supportDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.supportDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />PE/CE {props.supportDefenseRatio.toFixed(2)}x</em> : null}
+            {summary.prevS != null ? <em className="spc-compact-prev">prev S {fmt(summary.prevS)}</em> : null}
+            <em className="spc-compact-center-meta">{summary.footLeft}</em>
+          </div>
+          <div className="spc-compact-metric spc-compact-metric-spot">
+            <span>Spot</span>
+            <strong>{fmt(summary.spot, 2)}</strong>
+            <em className="spc-compact-center-meta">{positionTextFriendly}</em>
+          </div>
+          <div className="spc-compact-metric spc-compact-metric-resistance">
+            <span>Resistance</span>
+            <div className="spc-compact-value-row">
+              <strong className="spc-compact-token">R</strong>
+              <strong className="spc-compact-level">{fmt(summary.resistance)}</strong>
+              {summary.resistanceShifted ? <span className="spc-compact-state-badge">NEW</span> : null}
             </div>
-            <div className="spc-range-submeta">
-              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-meta-alert" : undefined}>
-                {trackSummary.metaText}
-              </span>
-              <span>{trackSummary.footRightText}</span>
-            </div>
-            <div className="spc-range-track">
-              <div
-                className={`spc-range-extension spc-range-extension-left ${trackSummary.hasBrokenSupport ? "spc-range-extension-active" : ""}`}
-                style={{ width: `${trackSummary.leftExtensionPct}%` }}
-              />
-              <div
-                className="spc-range-band"
-                style={{
-                  left: `${trackSummary.bandStartPct}%`,
-                  width: `${trackSummary.bandWidthPct}%`,
-                }}
-              />
-              {watchZone ? (
-                <div
-                  className={`spc-watch-zone ${watchZone.tone === "resistance" ? "spc-watch-zone-resistance" : "spc-watch-zone-support"}`}
-                  style={{ left: watchZone.left, width: watchZone.width }}
-                />
-              ) : null}
-              <div
-                className={`spc-range-extension spc-range-extension-right ${trackSummary.hasBrokenResistance ? "spc-range-extension-active" : ""}`}
-                style={{ width: `${trackSummary.rightExtensionPct}%` }}
-              />
-              {trackSummary.markerPosition !== null && trackSummary.markerLabel ? (
-                <div className="spc-range-anchor" style={{ left: `${trackSummary.markerPosition}%` }}>
-                  <span>{trackSummary.markerLabel}</span>
-                </div>
-              ) : null}
-              <div
-                className={`spc-range-spot ${
-                  trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance
-                    ? "spc-range-spot-breach"
-                    : trackSummary.nearSupport
-                      ? "spc-range-spot-near-s"
-                      : trackSummary.nearResistance
-                        ? "spc-range-spot-near-r"
-                        : ""
-                }`}
-                style={{ left: `${trackSummary.spotPct}%` }}
-              />
-            </div>
-            {breachBanner ? (
-              <div className={breachBanner.className}>
-                <span className="spc-breach-dot" />
-                <span>{breachBanner.text}</span>
-              </div>
-            ) : null}
-            <div className="spc-range-foot spc-range-foot-legacy">
-              <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
-                {trackSummary.footCenterText}
-              </span>
-              <span className="spc-range-foot-core">
-                Up {formatCompactNumber(props.breakoutProbabilityUp, 0)}% · Trap {formatCompactNumber(props.trapProbability, 0)}% · Readiness {formatCompactNumber(props.readinessScore, 0)}
-              </span>
-              <span className={trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
-                {trackSummary.footRightText} · Break +50
-              </span>
-            </div>
-            <div className="spc-range-foot spc-range-foot-dense">
-              <div className="spc-foot-col spc-foot-col-left">
-                <span className={trackSummary.hasBrokenSupport || trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
-                  {trackSummary.footCenterText}
-                </span>
-                <span>
-                  Trap: {props.trapDirection === "upside" ? "Support absorption" : props.trapDirection === "downside" ? "Resistance rejection" : "No active trap"} {formatCompactNumber(trapDisplay, 0)}%
-                </span>
-              </div>
-              <div className="spc-foot-col spc-foot-col-center spc-foot-col-center-legacy">
-                <span className="spc-range-foot-core">
-                  Up Prob {formatCompactNumber(props.breakoutProbabilityUp, 0)}% · Down Prob {formatCompactNumber(props.breakoutProbabilityDown, 0)}%
-                </span>
-                <span>
-                  Readiness {formatCompactNumber(props.readinessScore, 0)} · Bias {props.bias || "-"}
-                </span>
-              </div>
-              <div className="spc-foot-col spc-foot-col-right">
-                <span className={trackSummary.hasBrokenResistance ? "spc-range-foot-alert" : undefined}>
-                  {trackSummary.footRightText}
-                </span>
-                <span>Break conf: +50 pts</span>
-              </div>
-              <div className="spc-foot-col spc-foot-col-center">
-                <span className="spc-range-foot-core">
-                  Up Prob {formatCompactNumber(breakoutUpDisplay, 0)}% · Down Prob {formatCompactNumber(breakoutDownDisplay, 0)}%
-                </span>
-                <span>
-                  Readiness {formatCompactNumber(readinessDisplay, 0)} · Bias {props.bias || "-"}
-                </span>
-              </div>
-            </div>
-            <div className="spc-range-subfoot">
-              <span className="spc-range-foot-range">Expected Range {compactRangeTarget.text}</span>
-            </div>
-            <div className="spc-mini-grid spc-mini-grid-legacy">
-              <div className="spc-mini-card">
-                <span>Band</span>
-                <strong>{Math.round(trackSummary.baseBandWidth)} pts</strong>
-              </div>
-              <div className="spc-mini-card">
-                <span>Distances</span>
-                <strong>{trackSummary.footCenterText}</strong>
-                <em>{trackSummary.footRightText}</em>
-              </div>
-              {compactTargets.map((target) => (
-                <div className="spc-mini-card" key={target.key}>
-                  <span>{target.label}</span>
-                  <strong>{target.value !== null && target.value !== undefined ? target.value.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "-"}</strong>
-                  {target.hint ? <em>{target.hint}</em> : null}
-                </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          <div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div>
-        )}
+            {typeof props.resistanceDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />CE/PE {props.resistanceDefenseRatio.toFixed(2)}x</em> : null}
+            {summary.prevR != null ? <em className="spc-compact-prev">prev R {fmt(summary.prevR)}</em> : null}
+            <em className="spc-compact-center-meta">{summary.rightText}</em>
+          </div>
+        </div>
+        <div className="spc-range-meta">
+          <span className="spc-range-label">Defended Support</span>
+          <span className="spc-range-label">Active Zone</span>
+          <span className={`spc-range-label ${watchZoneToneClass}`}>{watchZoneLabel}</span>
+        </div>
+        <div className="spc-range-submeta">
+          <span className={summary.brokenS || summary.brokenR ? "spc-range-meta-alert" : undefined}>{summary.metaText}</span>
+          <span>{summary.rightText}</span>
+        </div>
+        <div className="spc-band-stack">
+          <StructureBand
+            spot={summary.spot}
+            support={summary.support}
+            resistance={summary.resistance}
+            previousSupport={summary.prevS ?? undefined}
+            previousResistance={summary.prevR ?? undefined}
+            supportBroken={summary.brokenS}
+            resistanceBroken={summary.brokenR}
+            isNearSupport={summary.nearS}
+            isNearResistance={summary.nearR}
+            materialBreachConfirmed={props.materialBreachConfirmed}
+            confirmationType={props.confirmationType}
+            trapProbability={props.trapProbability ?? undefined}
+            trapDirection={props.trapDirection}
+            trapAffectedLevel={
+              props.trapDirection === "downside"
+                ? summary.resistance
+                : props.trapDirection === "upside"
+                  ? summary.support
+                  : undefined
+            }
+            embedded
+            className="spc-embedded-band"
+          />
+          <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
+            <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
+          </div>
+        </div>
+        {breachBanner ? <div className={breachBanner.className}><span className="spc-breach-dot" /><span>{breachBanner.text}</span></div> : null}
+        <div className="spc-range-foot spc-range-foot-dense">
+          <div className="spc-foot-col spc-foot-col-left">
+            <span>{trapSummary(props.trapProbability, props.trapDirection)}</span>
+          </div>
+          <div className="spc-foot-col spc-foot-col-center" />
+          <div className="spc-foot-col spc-foot-col-right">
+            <span>Breakout needs +50 pts</span>
+          </div>
+        </div>
+        <div className="spc-range-subfoot">
+          <span className="spc-range-foot-range-label">Today's Expected Range</span>
+          <span className="spc-range-foot-range">{rangeText}</span>
+        </div>
       </div>
       <div className={`spc-chart-wrap ${showChart ? "spc-chart-wrap-open" : "spc-chart-wrap-closed"}`}>
-        {showChart ? (ohlc && props.spotPrice !== null ? (
+        {showChart ? ohlc && props.spotPrice !== null ? (
           <SingleStructureCandleCard
             open={ohlc.open}
             high={ohlc.high}
@@ -614,20 +425,10 @@ export default function StructuralPriceContextCard(props: StructuralPriceContext
             resistanceEnd={props.resistanceEnd}
             target1={props.target1}
             target2={props.target2}
-            height={isCompactViewport ? 240 : 260}
+            height={compact ? 240 : 260}
           />
-        ) : (
-          <div className="spc-empty">Waiting for today OHLC data...</div>
-        )) : null}
-        {props.showPremiumOverlay ? (
-          <div className="spc-overlay">
-            <div className="spc-overlay-panel">
-              <h4>Premium Feature - Structural Price Context</h4>
-              <p>See structure in price, not just numbers.</p>
-              <button type="button">Upgrade to Pro</button>
-            </div>
-          </div>
-        ) : null}
+        ) : <div className="spc-empty">Waiting for today OHLC data...</div> : null}
+        {props.showPremiumOverlay ? <div className="spc-overlay"><div className="spc-overlay-panel"><h4>Premium Feature - Structural Price Context</h4><p>See structure in price, not just numbers.</p><button type="button">Upgrade to Pro</button></div></div> : null}
       </div>
     </div>
   );

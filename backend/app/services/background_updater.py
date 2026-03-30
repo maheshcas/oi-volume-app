@@ -154,7 +154,7 @@ def _session_phase_session_key(timestamp: datetime | None) -> str | None:
     return timestamp.astimezone(IST).date().isoformat()
 
 
-def _reset_state_for_new_session(
+def _reset_spc_intraday_state(
     previous_state: dict[str, Any] | None,
     *,
     timestamp: datetime | None,
@@ -162,50 +162,61 @@ def _reset_state_for_new_session(
     if not isinstance(previous_state, dict):
         return previous_state
     session_key = _session_phase_session_key(timestamp)
-    prev_session_key = str(previous_state.get("session_date") or "").strip() or None
+    prev_session_key = (
+        str(previous_state.get("spc_session_key") or "").strip()
+        or str(previous_state.get("session_date") or "").strip()
+        or None
+    )
     if not session_key or prev_session_key == session_key:
         return previous_state
 
+    # SPC is intraday-only structure memory. A new IST session must start clean so
+    # yesterday's support/resistance shifts, breach anchors, and transition markers
+    # do not leak into the next day's structure bar. This uses an IST session-date
+    # key instead of exact 09:15 matching so it stays correct across restarts,
+    # delayed fetches, and missed polling windows.
     reset_state = dict(previous_state)
-    prev_levels = previous_state.get("levels", {}) if isinstance(previous_state, dict) else {}
-    prev_support_obj = prev_levels.get("support", {}) if isinstance(prev_levels, dict) else {}
-    prev_resistance_obj = prev_levels.get("resistance", {}) if isinstance(prev_levels, dict) else {}
-    closing_support = _safe_float(previous_state.get("support_level"))
-    if closing_support is None:
-        closing_support = _safe_float(prev_support_obj.get("immediate"))
-    closing_resistance = _safe_float(previous_state.get("resistance_level"))
-    if closing_resistance is None:
-        closing_resistance = _safe_float(prev_resistance_obj.get("immediate"))
-
-    reset_state["support_level"] = closing_support
-    reset_state["resistance_level"] = closing_resistance
-    reset_state["previous_support"] = closing_support
-    reset_state["previous_resistance"] = closing_resistance
-    reset_state["current_support"] = closing_support
-    reset_state["current_resistance"] = closing_resistance
-    reset_state["absorption_reference_level"] = closing_support
-    # Negative cycle means "carry yesterday's closing anchor for the first live cycle only".
-    reset_state["support_shift_cycle"] = -1
+    reset_state["support_level"] = None
+    reset_state["resistance_level"] = None
+    reset_state["previous_support"] = None
+    reset_state["previous_resistance"] = None
+    reset_state["current_support"] = None
+    reset_state["current_resistance"] = None
+    reset_state["absorption_reference_level"] = None
+    reset_state["support_shift_cycle"] = 0
+    reset_state["resistance_shift_cycle"] = 0
+    reset_state["spc_shift_cooldown_remaining"] = 0
+    reset_state["regime_hold_cycles"] = 0
+    reset_state["regime_candidate"] = ""
+    reset_state["regime_candidate_streak"] = 0
+    reset_state["regime_family"] = ""
+    reset_state["support_transition_active"] = False
+    reset_state["support_transition_badge"] = False
+    reset_state["resistance_transition_active"] = False
+    reset_state["resistance_transition_badge"] = False
     reset_state["session_phase"] = "Transition"
     reset_state["session_phase_confidence"] = 0.45
     reset_state["session_phase_session_key"] = session_key
     reset_state["session_date"] = session_key
+    reset_state["spc_session_key"] = session_key
     reset_state["signal_history"] = []
     reset_levels = dict(reset_state.get("levels") or {})
     reset_support_levels = dict(reset_levels.get("support") or {})
     reset_resistance_levels = dict(reset_levels.get("resistance") or {})
-    reset_support_levels["immediate"] = closing_support
-    reset_support_levels["major"] = closing_support
-    reset_resistance_levels["immediate"] = closing_resistance
-    reset_resistance_levels["major"] = closing_resistance
+    reset_support_levels["immediate"] = None
+    reset_support_levels["major"] = None
+    reset_support_levels["immediate_score"] = None
+    reset_resistance_levels["immediate"] = None
+    reset_resistance_levels["major"] = None
+    reset_resistance_levels["immediate_score"] = None
     reset_levels["support"] = reset_support_levels
     reset_levels["resistance"] = reset_resistance_levels
     reset_state["levels"] = reset_levels
     logger.debug(
-        "Session reset anchor seeded: session=%s previous_support=%s previous_resistance=%s",
+        "SPC intraday state reset: session=%s previous_support=%s previous_resistance=%s",
         session_key,
-        closing_support,
-        closing_resistance,
+        reset_state.get("previous_support"),
+        reset_state.get("previous_resistance"),
     )
     return reset_state
 
@@ -529,6 +540,195 @@ def _resolve_absorption_reference_level(
 def _is_support_transition_active(support_shift_cycle: Any) -> bool:
     cycle = int(support_shift_cycle or 0)
     return cycle == 1
+
+
+SHIFT_COOLDOWN_CYCLES = 3
+REGIME_MIN_HOLD_CYCLES = 3
+REGIME_SWITCH_CONFIRM_CYCLES = 2
+
+REGIME_FAMILY_MAP = {
+    "Range Play": "RANGE",
+    "Balanced / Wait": "RANGE",
+    "Balanced Structure": "RANGE",
+    "Standby": "RANGE",
+    "Range Day": "RANGE",
+    "Transition": "TRANSITION",
+    "Transition Phase": "TRANSITION",
+    "Opening Drive": "TREND",
+    "Trend Expansion": "TREND",
+    "Trend Day": "TREND",
+    "Aggressive Trend": "TREND",
+    "Cautious Trend": "TREND",
+    "Breakout Setup": "BREAKOUT",
+    "Breakdown Setup": "BREAKOUT",
+    "Upside Breakout": "BREAKOUT",
+    "Downside Breakout": "BREAKOUT",
+}
+
+
+def _apply_spc_structural_guard(
+    *,
+    raw_bias: str,
+    trade_action: str,
+    trade_readiness: float,
+    trap_probability: float,
+    support_transition_active: bool,
+    resistance_transition_active: bool,
+    support_shift_cycle: int,
+    resistance_shift_cycle: int,
+    absorption_detected: bool,
+    just_shifted_support: bool,
+    just_shifted_resistance: bool,
+    breach_confirmed: bool,
+    confirmation_type: str | None,
+    previous_cooldown_remaining: int,
+) -> dict[str, Any]:
+    prev_cooldown = max(0, int(previous_cooldown_remaining or 0))
+    if just_shifted_support or just_shifted_resistance:
+        cooldown_remaining = SHIFT_COOLDOWN_CYCLES
+    elif prev_cooldown > 0:
+        cooldown_remaining = prev_cooldown - 1
+    else:
+        cooldown_remaining = 0
+
+    is_structure_unstable = bool(
+        support_transition_active
+        or resistance_transition_active
+        or int(support_shift_cycle or 0) > 0
+        or int(resistance_shift_cycle or 0) > 0
+        or cooldown_remaining > 0
+    )
+
+    trap_value = float(trap_probability or 0.0)
+    if trap_value >= 75.0:
+        structural_state = "TRAP_RISK"
+    elif is_structure_unstable:
+        structural_state = "TRANSITION"
+    elif absorption_detected or just_shifted_support or just_shifted_resistance:
+        structural_state = "ABSORPTION"
+    else:
+        structural_state = "STABLE"
+
+    breakout_ready = bool(breach_confirmed and str(confirmation_type or "").strip())
+    can_promote_direction = bool(
+        structural_state == "STABLE"
+        and float(trade_readiness or 0.0) >= 55.0
+        and trap_value < 65.0
+        and breakout_ready
+    )
+
+    capped_readiness = float(trade_readiness or 0.0)
+    if structural_state in {"TRANSITION", "ABSORPTION"} or cooldown_remaining > 0:
+        capped_readiness = min(capped_readiness, 45.0)
+    if structural_state == "TRAP_RISK":
+        capped_readiness = min(capped_readiness, 40.0)
+
+    normalized_bias = str(raw_bias or "Neutral")
+    final_bias = normalized_bias if can_promote_direction and normalized_bias in {"Bullish", "Bearish"} else "Neutral"
+
+    final_trade_action = str(trade_action or "WAIT")
+    if structural_state in {"TRAP_RISK", "TRANSITION", "ABSORPTION"} or trap_value >= 65.0 or not can_promote_direction:
+        final_trade_action = "WAIT"
+
+    return {
+        "structural_state": structural_state,
+        "final_bias": final_bias,
+        "trade_action": final_trade_action,
+        "trade_readiness": round(max(0.0, min(100.0, capped_readiness)), 2),
+        "cooldown_remaining": int(cooldown_remaining),
+        "is_structure_unstable": is_structure_unstable,
+        "can_promote_direction": can_promote_direction,
+        "breakout_ready": breakout_ready,
+    }
+
+
+def _regime_family(regime_label: str | None) -> str:
+    label = str(regime_label or "").strip()
+    if not label:
+        return "RANGE"
+    return REGIME_FAMILY_MAP.get(label, "RANGE")
+
+
+def _apply_regime_stabilizer(
+    *,
+    raw_candidate_regime: str,
+    current_regime: str,
+    regime_hold_cycles: int,
+    regime_candidate: str | None,
+    regime_candidate_streak: int,
+    structural_state: str,
+) -> dict[str, Any]:
+    raw_regime = str(raw_candidate_regime or "").strip() or "Balanced Structure"
+    committed_regime = str(current_regime or "").strip() or raw_regime
+    raw_family = _regime_family(raw_regime)
+    current_family = _regime_family(committed_regime)
+    hold_cycles = max(0, int(regime_hold_cycles or 0))
+    candidate = str(regime_candidate or "").strip() or None
+    candidate_streak = max(0, int(regime_candidate_streak or 0))
+    structural = str(structural_state or "").strip().upper()
+
+    if structural == "TRANSITION":
+        return {
+            "final_regime": "Transition Phase",
+            "final_family": "TRANSITION",
+            "regime_hold_cycles": 0,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+            "regime_stabilizer_applied": True,
+        }
+
+    if structural in {"ABSORPTION", "TRAP_RISK"}:
+        fallback_regime = committed_regime if current_family in {"RANGE", "TRANSITION"} else "Balanced Structure"
+        return {
+            "final_regime": fallback_regime,
+            "final_family": _regime_family(fallback_regime),
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+            "regime_stabilizer_applied": True,
+        }
+
+    if raw_family == current_family:
+        return {
+            "final_regime": committed_regime,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+            "regime_stabilizer_applied": True,
+        }
+
+    next_candidate = raw_regime
+    next_streak = candidate_streak + 1 if candidate == raw_regime else 1
+
+    if hold_cycles < REGIME_MIN_HOLD_CYCLES:
+        return {
+            "final_regime": committed_regime,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": next_candidate,
+            "regime_candidate_streak": next_streak,
+            "regime_stabilizer_applied": True,
+        }
+
+    if next_streak >= REGIME_SWITCH_CONFIRM_CYCLES:
+        return {
+            "final_regime": raw_regime,
+            "final_family": raw_family,
+            "regime_hold_cycles": 0,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+            "regime_stabilizer_applied": True,
+        }
+
+    return {
+        "final_regime": committed_regime,
+        "final_family": current_family,
+        "regime_hold_cycles": hold_cycles + 1,
+        "regime_candidate": next_candidate,
+        "regime_candidate_streak": next_streak,
+        "regime_stabilizer_applied": True,
+    }
 
 
 def _canonicalize_trap_reference(
@@ -1548,7 +1748,7 @@ def _build_v2_intelligence(
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
     session_eval_time = evaluation_time or _parse_timestamp_utc(timestamp)
-    previous_state = _reset_state_for_new_session(
+    previous_state = _reset_spc_intraday_state(
         previous_state,
         timestamp=session_eval_time,
     )
@@ -2304,7 +2504,24 @@ def _build_v2_intelligence(
         state=str(decision.get("state", "")),
         conflict_flags=list(decision.get("conflict_flags", []) or []),
     )
-    decision["state"] = mss_conflict["state"]
+    raw_candidate_regime = str(mss_conflict["state"] or "Balanced Structure")
+    regime_stabilizer = _apply_regime_stabilizer(
+        raw_candidate_regime=raw_candidate_regime,
+        current_regime=str((previous_state or {}).get("regime_state") or raw_candidate_regime),
+        regime_hold_cycles=int((previous_state or {}).get("regime_hold_cycles", 0) or 0),
+        regime_candidate=(previous_state or {}).get("regime_candidate"),
+        regime_candidate_streak=int((previous_state or {}).get("regime_candidate_streak", 0) or 0),
+        structural_state=str(decision.get("structural_state") or ""),
+    )
+    decision["raw_candidate_regime"] = raw_candidate_regime
+    decision["state"] = regime_stabilizer["final_regime"]
+    decision["regime_family"] = regime_stabilizer["final_family"]
+    decision["regime_hold_cycles"] = int(regime_stabilizer["regime_hold_cycles"])
+    decision["regime_candidate"] = str(regime_stabilizer.get("regime_candidate") or "")
+    decision["regime_candidate_streak"] = int(regime_stabilizer["regime_candidate_streak"])
+    decision["regime_stabilizer_applied"] = bool(regime_stabilizer.get("regime_stabilizer_applied", False))
+    decision["regime_hold_count"] = int(regime_stabilizer["regime_hold_cycles"])
+    decision["regime_zone"] = _map_regime_zone(str(decision.get("state") or ""))
     decision["structure_bias"] = mss_conflict["structure_bias"]
     decision["transition_phase"] = bool(mss_conflict["transition_phase"])
     decision["conflict_flags"] = list(mss_conflict["conflict_flags"])
@@ -2646,26 +2863,6 @@ def _build_v2_intelligence(
         len(prioritized.get("prioritized_signals", [])),
         suppression_reason_map,
     )
-    summary_line = (
-        f"Put writers defending {support_level}; upside momentum building."
-        if stable_bias == "Bullish"
-        else f"Call writers active near {resistance_level}; downside pressure holding."
-        if stable_bias == "Bearish"
-        else f"Price balancing between {support_level} and {resistance_level}; wait for cleaner move."
-    )
-    decision_explanation = (
-        "Price has moved materially below support. Breakdown confirmation in progress."
-        if bool(material_breach.get("support_broken"))
-        else "Price has moved materially above resistance. Breakout confirmation in progress."
-        if bool(material_breach.get("resistance_broken"))
-        else "Trap risk elevated near key levels."
-        if trap_probability_pct >= 60
-        else summary_line
-    )
-    if momentum_score > 0.7:
-        decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
-    if decision.get("momentum_override_explanation"):
-        decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
     support_transition_badge = _is_support_transition_active(
         support_reference_state.get("support_shift_cycle", 0)
@@ -2682,6 +2879,63 @@ def _build_v2_intelligence(
         and current_cycle_resistance is not None
         and abs(previous_cycle_resistance - current_cycle_resistance) > 1e-6
     )
+    support_shift_cycle = int(support_reference_state.get("support_shift_cycle", 0) or 0)
+    resistance_shift_cycle = 1 if resistance_transition_badge else int((previous_state or {}).get("resistance_shift_cycle", 0) or 0)
+    just_shifted_support = support_shift_cycle == 1
+    just_shifted_resistance = resistance_transition_badge
+    structural_guard = _apply_spc_structural_guard(
+        raw_bias=stable_bias,
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        trap_probability=trap_probability,
+        support_transition_active=support_transition_badge,
+        resistance_transition_active=resistance_transition_badge,
+        support_shift_cycle=support_shift_cycle,
+        resistance_shift_cycle=resistance_shift_cycle,
+        absorption_detected=absorption_detected,
+        just_shifted_support=just_shifted_support,
+        just_shifted_resistance=just_shifted_resistance,
+        breach_confirmed=material_breach_confirmed,
+        confirmation_type=confirmation_type,
+        previous_cooldown_remaining=int((previous_state or {}).get("spc_shift_cooldown_remaining", 0) or 0),
+    )
+    stable_bias = str(structural_guard["final_bias"])
+    decision["bias"] = stable_bias
+    decision["primary_bias"] = stable_bias
+    decision["trade_action"] = structural_guard["trade_action"]
+    decision["trade_readiness"] = structural_guard["trade_readiness"]
+    decision["readiness_active"] = bool(
+        float(decision.get("trade_readiness", 0.0) or 0.0) >= 55.0
+        and structural_guard["trade_action"] != "WAIT"
+    )
+    decision["structural_state"] = structural_guard["structural_state"]
+    decision["spc_shift_cooldown_remaining"] = structural_guard["cooldown_remaining"]
+    if structural_guard["structural_state"] in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}:
+        decision["readiness_state"] = "Low"
+    summary_line = (
+        "Structure shifting; waiting for stability."
+        if structural_guard["structural_state"] == "TRANSITION"
+        else "Absorption active near structure; waiting for clean confirmation."
+        if structural_guard["structural_state"] == "ABSORPTION"
+        else "Trap risk elevated near key levels."
+        if structural_guard["structural_state"] == "TRAP_RISK"
+        else f"Put writers defending {support_level}; upside momentum building."
+        if stable_bias == "Bullish"
+        else f"Call writers active near {resistance_level}; downside pressure holding."
+        if stable_bias == "Bearish"
+        else f"Price balancing between {support_level} and {resistance_level}; wait for cleaner move."
+    )
+    decision_explanation = (
+        "Price has moved materially below support. Breakdown confirmation in progress."
+        if bool(material_breach.get("support_broken")) and structural_guard["structural_state"] == "STABLE"
+        else "Price has moved materially above resistance. Breakout confirmation in progress."
+        if bool(material_breach.get("resistance_broken")) and structural_guard["structural_state"] == "STABLE"
+        else summary_line
+    )
+    if momentum_score > 0.7 and structural_guard["structural_state"] == "STABLE":
+        decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
+    if decision.get("momentum_override_explanation") and structural_guard["structural_state"] == "STABLE":
+        decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
     blocking_reason = _determine_blocking_reason(
         trade_action=str(decision.get("trade_action", "WAIT")),
         readiness_active=bool(decision.get("readiness_active", False)),
@@ -2959,6 +3213,12 @@ def _build_v2_intelligence(
         "decision_confidence": decision_confidence,
         "support_transition_badge": support_transition_badge,
         "resistance_transition_badge": resistance_transition_badge,
+        "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
+        "raw_candidate_regime": decision.get("raw_candidate_regime"),
+        "stabilized_regime_family": decision.get("regime_family"),
+        "regime_hold_cycles": decision.get("regime_hold_cycles", 0),
+        "regime_candidate_streak": decision.get("regime_candidate_streak", 0),
+        "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
         "regime_state": decision.get("state"),
         "regime_candidate": decision.get("regime_candidate"),
         "regime_hold_count": decision.get("regime_hold_count"),
@@ -2968,7 +3228,7 @@ def _build_v2_intelligence(
         "market_structure_score": mss.get("market_structure_score"),
         "mss_score": mss.get("market_structure_score"),
         "structure_state": mss.get("structure_state"),
-        "structural_state": decision.get("state") or mss.get("structure_state"),
+        "structural_state": decision.get("structural_state") or decision.get("state") or mss.get("structure_state"),
         "structure_bias": decision.get("structure_bias"),
         "breakout_probability": breakout_probability,
         "validation_warnings": validation_warnings,
@@ -3014,6 +3274,7 @@ def _build_v2_intelligence(
         "previous_resistance": support_reference_state.get("previous_resistance"),
         "current_resistance": support_reference_state.get("current_resistance"),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
+        "spc_session_key": session_phase_payload.get("session_key"),
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },
@@ -3049,6 +3310,11 @@ def _build_v2_intelligence(
             "regime_state": str(decision.get("state", "")),
             "regime_candidate": str(decision.get("regime_candidate", "")),
             "regime_hold_count": int(decision.get("regime_hold_count", 0) or 0),
+            "raw_candidate_regime": str(decision.get("raw_candidate_regime", "")),
+            "stabilized_regime_family": str(decision.get("regime_family", "")),
+            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
+            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
+            "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
             "regime_zone": str(decision.get("regime_zone", "")),
             "bias_stability_cycles": int(bias_stability_cycles),
             "bias_change_counter": int(bias_change_counter),
@@ -3080,11 +3346,14 @@ def _build_v2_intelligence(
             "current_resistance": support_reference_state.get("current_resistance"),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
+            "spc_session_key": session_phase_payload.get("session_key"),
             "support_transition_active": _is_support_transition_active(
                 support_reference_state.get("support_shift_cycle", 0)
             ),
+            "resistance_transition_active": resistance_transition_badge,
             "support_transition_badge": support_transition_badge,
             "resistance_transition_badge": resistance_transition_badge,
+            "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
             "absorption_detected": bool(support_absorption.get("absorption_detected")),
             "absorption_level": support_absorption.get("level"),
             "absorption_message": support_absorption.get("message"),
@@ -3118,12 +3387,18 @@ def _build_v2_intelligence(
             "market_structure_score": mss.get("market_structure_score"),
             "mss_score": mss.get("market_structure_score"),
             "structure_state": mss.get("structure_state"),
-            "structural_state": decision.get("state") or mss.get("structure_state"),
+            "structural_state": decision.get("structural_state") or decision.get("state") or mss.get("structure_state"),
             "structure_bias": decision.get("structure_bias"),
             "breakout_probability": breakout_probability,
+            "resistance_shift_cycle": resistance_shift_cycle,
             "regime_state": str(decision.get("state", "")),
             "regime_candidate": str(decision.get("regime_candidate", "")),
             "regime_hold_count": int(decision.get("regime_hold_count", 0) or 0),
+            "raw_candidate_regime": str(decision.get("raw_candidate_regime", "")),
+            "stabilized_regime_family": str(decision.get("regime_family", "")),
+            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
+            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
+            "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
             "regime_zone": str(decision.get("regime_zone", "")),
             "signal_history": signal_history,
         },
@@ -3253,12 +3528,16 @@ def _build_v2_intelligence(
             "current_resistance": support_reference_state.get("current_resistance"),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
+            "resistance_shift_cycle": resistance_shift_cycle,
             "blocking_reason": blocking_reason,
             "winning_engine": winning_engine,
             "decision_confidence": decision_confidence,
             "resolved_reason": resolved_reason,
+            "support_transition_active": support_transition_badge,
             "support_transition_badge": support_transition_badge,
+            "resistance_transition_active": resistance_transition_badge,
             "resistance_transition_badge": resistance_transition_badge,
+            "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
             "signal_history": signal_history,
             "wick_zero_streak": int(wick_zero_streak),
             "oi_near_one_streak": int(oi_near_one_streak),
@@ -3268,6 +3547,11 @@ def _build_v2_intelligence(
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "session_phase_session_key": session_phase_payload.get("session_key"),
             "session_date": session_phase_payload.get("session_key"),
+            "spc_session_key": session_phase_payload.get("session_key"),
+            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
+            "regime_candidate": str(decision.get("regime_candidate", "")),
+            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
+            "regime_family": str(decision.get("regime_family", "")),
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),

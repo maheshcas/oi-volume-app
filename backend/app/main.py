@@ -78,7 +78,15 @@ async def on_startup() -> None:
         _updater_stop_event = asyncio.Event()
         _updater_task = asyncio.create_task(background_update_loop(_updater_stop_event))
         logger.info("Background updater task started")
-    logger.info("Stability logger startup disabled")
+    if _stability_logger.enabled:
+        if _stability_task and not _stability_task.done():
+            logger.info("Stability logger already running")
+        else:
+            _stability_stop_event = asyncio.Event()
+            _stability_task = asyncio.create_task(_stability_logger.run(_stability_stop_event))
+            logger.info("Stability logger task started")
+    else:
+        logger.info("Stability logger disabled")
 
 
 

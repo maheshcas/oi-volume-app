@@ -1,9 +1,7 @@
 import {
   confidenceLabel,
-  formatDecisionTime,
   friendlyBlockingReason,
   friendlyWinningEngine,
-  type SignalHistoryItem,
 } from "../decisionUx";
 
 type PrimarySignalCardProps = {
@@ -19,7 +17,6 @@ type PrimarySignalCardProps = {
   decisionConfidence?: number | null;
   supportTransitionBadge?: boolean;
   resistanceTransitionBadge?: boolean;
-  signalHistory?: SignalHistoryItem[];
 };
 
 function actionTone(action: string) {
@@ -56,7 +53,6 @@ export default function PrimarySignalCard({
   decisionConfidence = null,
   supportTransitionBadge = false,
   resistanceTransitionBadge = false,
-  signalHistory = [],
 }: PrimarySignalCardProps) {
   const readiness = typeof readinessScore === "number" ? Math.max(0, Math.min(100, readinessScore)) : 0;
   const confidence = typeof decisionConfidence === "number" ? Math.max(0, Math.min(100, decisionConfidence)) : 0;
@@ -66,8 +62,6 @@ export default function PrimarySignalCard({
     : resistanceTransitionBadge
       ? "Resistance Transition Active"
       : null;
-  const timelineItems = signalHistory.slice(-5).reverse();
-
   return (
     <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-4">
       <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.07em] text-slate-600">Trade signal</div>
@@ -138,27 +132,6 @@ export default function PrimarySignalCard({
         ))}
       </div>
 
-      {timelineItems.length ? (
-        <div className="mt-3 rounded-xl border border-white/8 bg-[#0f1a27] px-3 py-2.5">
-          <div className="mb-2 text-[10px] uppercase tracking-[0.07em] text-slate-600">Recent signal flow</div>
-          <div className="space-y-1.5">
-            {timelineItems.map((item, index) => (
-              <div
-                key={`${item.timestamp ?? "na"}-${item.trade_action ?? "na"}-${index}`}
-                className="flex items-start gap-2 text-[11px] leading-5 text-slate-300"
-              >
-                <span className="min-w-[40px] font-mono text-slate-500">{formatDecisionTime(item.timestamp)}</span>
-                <span className="min-w-[72px] font-medium text-slate-100">{item.trade_action || "-"}</span>
-                <span className="text-slate-400">
-                  {item.blocking_reason && item.blocking_reason !== "NONE"
-                    ? friendlyBlockingReason(item.blocking_reason)
-                    : item.resolved_reason || "-"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }

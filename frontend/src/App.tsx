@@ -2887,9 +2887,6 @@ export default function App() {
   const decisionConfidence = intelligence?.market_state?.decision_confidence ?? null;
   const decisionSupportTransitionBadge = Boolean(intelligence?.market_state?.support_transition_badge);
   const decisionResistanceTransitionBadge = Boolean(intelligence?.market_state?.resistance_transition_badge);
-  const decisionSignalHistory = Array.isArray(intelligence?.market_state?.signal_history)
-    ? intelligence?.market_state?.signal_history
-    : [];
 
   const mobileDashboardData = {
     symbol,
@@ -2967,7 +2964,6 @@ export default function App() {
     },
     alerts: displayAlerts.map((item) => ({ message: item.message, severity: item.severity })),
     ladderRows: mobileStrikeRows,
-    signalHistory: decisionSignalHistory,
   };
 
   return (
@@ -3130,7 +3126,6 @@ export default function App() {
             decisionConfidence,
             supportTransitionBadge: decisionSupportTransitionBadge,
             resistanceTransitionBadge: decisionResistanceTransitionBadge,
-            signalHistory: decisionSignalHistory,
           }}
           keyLevels={{
             support: formatNumber(displaySupport),
@@ -3169,6 +3164,17 @@ export default function App() {
             materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
             confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
             sessionPhase: displaySessionPhase,
+            tradeAction: intelligence?.market_state?.trade_action ?? "WAIT",
+            resolvedReason: intelligence?.market_state?.resolved_reason ?? null,
+            decisionExplanation: intelligence?.market_state?.decision_explanation ?? null,
+            decisionConfidence: intelligence?.market_state?.decision_confidence ?? null,
+            readinessState: intelligence?.market_state?.readiness_state ?? null,
+            supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
+            supportTransitionBadge: Boolean(
+              intelligence?.market_state?.support_transition_badge ??
+              intelligence?.market_state?.support_transition_active
+            ),
+            resistanceTransitionBadge: Boolean(intelligence?.market_state?.resistance_transition_badge),
             bias: String(displayPrimaryBias ?? displayBias),
             biasStrength: biasStrengthLabel,
             regime: displayRegime,

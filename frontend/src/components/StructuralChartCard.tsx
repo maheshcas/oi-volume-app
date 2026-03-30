@@ -30,6 +30,14 @@ type StructuralChartCardProps = {
   materialBreachConfirmed?: boolean;
   confirmationType?: string | null;
   sessionPhase?: string | null;
+  tradeAction?: string | null;
+  resolvedReason?: string | null;
+  decisionExplanation?: string | null;
+  decisionConfidence?: number | null;
+  readinessState?: string | null;
+  supportTransitionActive?: boolean;
+  supportTransitionBadge?: boolean;
+  resistanceTransitionBadge?: boolean;
   bias: string;
   biasStrength: string;
   regime: string;
@@ -66,6 +74,14 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         materialBreachConfirmed={props.materialBreachConfirmed}
         confirmationType={props.confirmationType}
         sessionPhase={props.sessionPhase}
+        tradeAction={props.tradeAction}
+        resolvedReason={props.resolvedReason}
+        decisionExplanation={props.decisionExplanation}
+        decisionConfidence={props.decisionConfidence}
+        readinessState={props.readinessState}
+        supportTransitionActive={props.supportTransitionActive}
+        supportTransitionBadge={props.supportTransitionBadge}
+        resistanceTransitionBadge={props.resistanceTransitionBadge}
         bias={props.bias}
         biasStrength={props.biasStrength}
         regime={props.regime}

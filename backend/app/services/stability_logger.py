@@ -73,7 +73,7 @@ class _StreamState:
 class StabilityLoggerService:
     def __init__(self) -> None:
         self.logger = logging.getLogger(LOGGER_NAME)
-        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "false").strip().lower() in {
+        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "true").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -88,11 +88,34 @@ class StabilityLoggerService:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     async def run(self, stop_event: asyncio.Event) -> None:
-        self.logger.info("Stability logger disabled")
-        return
+        if not self.enabled:
+            self.logger.info("Stability logger disabled")
+            return
+        if not self._acquire_process_lock():
+            self.logger.info("Stability logger already active in another process")
+            return
+        self.logger.info(
+            "Stability logger started",
+            extra={
+                "symbol": self.symbol,
+                "interval_seconds": self.interval_seconds,
+            },
+        )
+        try:
+            while not stop_event.is_set():
+                try:
+                    await self._log_once()
+                except Exception:
+                    self.logger.exception("Stability logger cycle failed")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            self._release_process_lock()
+            self.logger.info("Stability logger stopped")
 
     async def _log_once(self) -> None:
-        return
         data = await cache.get_cached_data()
         if not data.get("summary_data"):
             return
