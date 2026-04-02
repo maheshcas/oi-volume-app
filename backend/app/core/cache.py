@@ -33,9 +33,9 @@ class OptionLensCache:
         self.score_history: dict[str, list[float]] = {}
         self.previous_states: dict[str, Any] = {}
 
-    async def get_cached_data(self) -> dict[str, Any]:
+    async def get_cached_data(self, *, include_internal: bool = False) -> dict[str, Any]:
         async with self._lock:
-            return {
+            payload = {
                 "last_update": self.last_update,
                 "option_chain_data": deepcopy(self.option_chain_data),
                 "summary_data": deepcopy(self.summary_data),
@@ -43,10 +43,12 @@ class OptionLensCache:
                 "is_fetching": self.is_fetching,
                 "stale_data": self.stale_data,
                 "metrics": deepcopy(self.metrics),
-                "previous_scores": deepcopy(self.previous_scores),
-                "score_history": deepcopy(self.score_history),
-                "previous_states": deepcopy(self.previous_states),
             }
+            if include_internal:
+                payload["previous_scores"] = deepcopy(self.previous_scores)
+                payload["score_history"] = deepcopy(self.score_history)
+                payload["previous_states"] = deepcopy(self.previous_states)
+            return payload
 
     async def update_cache(self, new_option_chain: dict[str, Any], new_summary: dict[str, Any]) -> None:
         now = utc_now()

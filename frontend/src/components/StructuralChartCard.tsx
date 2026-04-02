@@ -25,6 +25,8 @@ type StructuralChartCardProps = {
   resistanceEnd: number | null;
   target1: number | null;
   target2: number | null;
+  breakBelowPrimary?: string | null;
+  breakAbovePrimary?: string | null;
   previousSupport?: number | null;
   previousResistance?: number | null;
   materialBreachConfirmed?: boolean;
@@ -35,6 +37,7 @@ type StructuralChartCardProps = {
   decisionExplanation?: string | null;
   decisionConfidence?: number | null;
   readinessState?: string | null;
+  readinessExplainability?: string | null;
   supportTransitionActive?: boolean;
   supportTransitionBadge?: boolean;
   resistanceTransitionBadge?: boolean;
@@ -69,6 +72,8 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         resistanceEnd={props.resistanceEnd}
         target1={props.target1}
         target2={props.target2}
+        breakBelowPrimary={props.breakBelowPrimary}
+        breakAbovePrimary={props.breakAbovePrimary}
         previousSupport={props.previousSupport}
         previousResistance={props.previousResistance}
         materialBreachConfirmed={props.materialBreachConfirmed}
@@ -79,6 +84,7 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         decisionExplanation={props.decisionExplanation}
         decisionConfidence={props.decisionConfidence}
         readinessState={props.readinessState}
+        readinessExplainability={props.readinessExplainability}
         supportTransitionActive={props.supportTransitionActive}
         supportTransitionBadge={props.supportTransitionBadge}
         resistanceTransitionBadge={props.resistanceTransitionBadge}

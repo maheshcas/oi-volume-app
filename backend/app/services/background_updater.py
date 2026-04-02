@@ -41,6 +41,7 @@ from app.engines.wall_break_engine import detect_wall_break
 from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
 from app.services.decision_engine import build_decision_input, master_decision_engine
+from app.services.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
 from app.services.nse_client import fetch_index_data, fetch_option_chain, fetch_option_chain_contract_info
 from app.services.parser import build_oi_volume_summary, build_target_projection
@@ -76,6 +77,35 @@ ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lowe
 }
 STATE_SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "logs" / "state_snapshots"
 IST = timezone(timedelta(hours=5, minutes=30))
+
+REGIME_MIN_HOLD_CYCLES = 3
+REGIME_SWITCH_CONFIRM_CYCLES = 2
+RANGE_LOCK_TRAP_MIN = 55
+RANGE_LOCK_READINESS_MAX = 45
+NO_EDGE_TRAP_MIN = 55
+NO_EDGE_READINESS_CENTER = 50
+NO_EDGE_READINESS_BAND = 15
+TRAP_HYSTERESIS_DEADBAND = 3.0
+TRAP_SMOOTH_PREV_WEIGHT = 0.7
+TRAP_SMOOTH_NEW_WEIGHT = 0.3
+TRAP_STABLE_MID_MIN = 55.0
+TRAP_STABLE_MID_MAX = 65.0
+
+REGIME_FAMILY_MAP: dict[str, str] = {
+    "Range Play": "RANGE",
+    "Balanced / Wait": "RANGE",
+    "Balanced Structure": "RANGE",
+    "Range Day": "RANGE",
+    "Transition Phase": "TRANSITION",
+    "Transition": "TRANSITION",
+    "Opening Drive": "TREND",
+    "Trend Expansion": "TREND",
+    "Trend Day": "TREND",
+    "Breakout Setup": "BREAKOUT",
+    "Breakdown Setup": "BREAKOUT",
+    "Breakdown Day": "BREAKOUT",
+    "Trap Day": "TRAP",
+}
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
@@ -148,13 +178,26 @@ _SESSION_PHASE_ORDER: dict[str, int] = {
 }
 
 
-def _session_phase_session_key(timestamp: datetime | None) -> str | None:
-    if timestamp is None:
+def _current_ist_trading_session_key(now_utc: datetime | None = None) -> str | None:
+    """
+    Use the wall-clock IST trading day, not fetched market timestamps, for SPC/session resets.
+    This prevents stale API/meta timestamps from leaking a previous day's SPC memory forward.
+    Reset becomes eligible only from 09:00 IST on Monday-Friday.
+    """
+    current_utc = now_utc or datetime.now(timezone.utc)
+    current_ist = current_utc.astimezone(IST)
+    if current_ist.weekday() >= 5:
         return None
-    return timestamp.astimezone(IST).date().isoformat()
+    if (current_ist.hour, current_ist.minute) < (9, 0):
+        return None
+    return current_ist.date().isoformat()
 
 
-def _reset_spc_intraday_state(
+def _session_phase_session_key(timestamp: datetime | None) -> str | None:
+    return _current_ist_trading_session_key()
+
+
+def _reset_state_for_new_session(
     previous_state: dict[str, Any] | None,
     *,
     timestamp: datetime | None,
@@ -162,61 +205,57 @@ def _reset_spc_intraday_state(
     if not isinstance(previous_state, dict):
         return previous_state
     session_key = _session_phase_session_key(timestamp)
-    prev_session_key = (
-        str(previous_state.get("spc_session_key") or "").strip()
-        or str(previous_state.get("session_date") or "").strip()
-        or None
-    )
+    prev_session_key = str(previous_state.get("session_date") or "").strip() or None
     if not session_key or prev_session_key == session_key:
         return previous_state
 
-    # SPC is intraday-only structure memory. A new IST session must start clean so
-    # yesterday's support/resistance shifts, breach anchors, and transition markers
-    # do not leak into the next day's structure bar. This uses an IST session-date
-    # key instead of exact 09:15 matching so it stays correct across restarts,
-    # delayed fetches, and missed polling windows.
     reset_state = dict(previous_state)
-    reset_state["support_level"] = None
-    reset_state["resistance_level"] = None
-    reset_state["previous_support"] = None
-    reset_state["previous_resistance"] = None
-    reset_state["current_support"] = None
-    reset_state["current_resistance"] = None
-    reset_state["absorption_reference_level"] = None
-    reset_state["support_shift_cycle"] = 0
-    reset_state["resistance_shift_cycle"] = 0
-    reset_state["spc_shift_cooldown_remaining"] = 0
-    reset_state["regime_hold_cycles"] = 0
-    reset_state["regime_candidate"] = ""
-    reset_state["regime_candidate_streak"] = 0
-    reset_state["regime_family"] = ""
-    reset_state["support_transition_active"] = False
-    reset_state["support_transition_badge"] = False
-    reset_state["resistance_transition_active"] = False
-    reset_state["resistance_transition_badge"] = False
+    prev_levels = previous_state.get("levels", {}) if isinstance(previous_state, dict) else {}
+    prev_support_obj = prev_levels.get("support", {}) if isinstance(prev_levels, dict) else {}
+    prev_resistance_obj = prev_levels.get("resistance", {}) if isinstance(prev_levels, dict) else {}
+    closing_support = _safe_float(previous_state.get("support_level"))
+    if closing_support is None:
+        closing_support = _safe_float(prev_support_obj.get("immediate"))
+    closing_resistance = _safe_float(previous_state.get("resistance_level"))
+    if closing_resistance is None:
+        closing_resistance = _safe_float(prev_resistance_obj.get("immediate"))
+
+    reset_state["support_level"] = closing_support
+    reset_state["resistance_level"] = closing_resistance
+    reset_state["previous_support"] = closing_support
+    reset_state["previous_resistance"] = closing_resistance
+    reset_state["current_support"] = closing_support
+    reset_state["current_resistance"] = closing_resistance
+    reset_state["absorption_reference_level"] = closing_support
+    # Negative cycle means "carry yesterday's closing anchor for the first live cycle only".
+    reset_state["support_shift_cycle"] = -1
+    reset_state["sr_first_cycle_after_reset"] = True
     reset_state["session_phase"] = "Transition"
     reset_state["session_phase_confidence"] = 0.45
     reset_state["session_phase_session_key"] = session_key
     reset_state["session_date"] = session_key
-    reset_state["spc_session_key"] = session_key
     reset_state["signal_history"] = []
+    reset_state["regime_hold_cycles"] = 0
+    reset_state["regime_candidate"] = None
+    reset_state["regime_candidate_streak"] = 0
+    reset_state["regime_family"] = None
+    reset_state["range_locked"] = False
+    reset_state["no_edge"] = False
     reset_levels = dict(reset_state.get("levels") or {})
     reset_support_levels = dict(reset_levels.get("support") or {})
     reset_resistance_levels = dict(reset_levels.get("resistance") or {})
-    reset_support_levels["immediate"] = None
-    reset_support_levels["major"] = None
-    reset_support_levels["immediate_score"] = None
-    reset_resistance_levels["immediate"] = None
-    reset_resistance_levels["major"] = None
-    reset_resistance_levels["immediate_score"] = None
+    reset_support_levels["immediate"] = closing_support
+    reset_support_levels["major"] = closing_support
+    reset_resistance_levels["immediate"] = closing_resistance
+    reset_resistance_levels["major"] = closing_resistance
     reset_levels["support"] = reset_support_levels
     reset_levels["resistance"] = reset_resistance_levels
     reset_state["levels"] = reset_levels
     logger.debug(
-        "SPC intraday state reset: session=%s previous_support=%s previous_resistance=%s",
+        "Session reset anchor seeded: session=%s previous_support=%s previous_resistance=%s",
         session_key,
-        reset_state.get("previous_support"),
-        reset_state.get("previous_resistance"),
+        closing_support,
+        closing_resistance,
     )
     return reset_state
 
@@ -542,195 +581,6 @@ def _is_support_transition_active(support_shift_cycle: Any) -> bool:
     return cycle == 1
 
 
-SHIFT_COOLDOWN_CYCLES = 3
-REGIME_MIN_HOLD_CYCLES = 3
-REGIME_SWITCH_CONFIRM_CYCLES = 2
-
-REGIME_FAMILY_MAP = {
-    "Range Play": "RANGE",
-    "Balanced / Wait": "RANGE",
-    "Balanced Structure": "RANGE",
-    "Standby": "RANGE",
-    "Range Day": "RANGE",
-    "Transition": "TRANSITION",
-    "Transition Phase": "TRANSITION",
-    "Opening Drive": "TREND",
-    "Trend Expansion": "TREND",
-    "Trend Day": "TREND",
-    "Aggressive Trend": "TREND",
-    "Cautious Trend": "TREND",
-    "Breakout Setup": "BREAKOUT",
-    "Breakdown Setup": "BREAKOUT",
-    "Upside Breakout": "BREAKOUT",
-    "Downside Breakout": "BREAKOUT",
-}
-
-
-def _apply_spc_structural_guard(
-    *,
-    raw_bias: str,
-    trade_action: str,
-    trade_readiness: float,
-    trap_probability: float,
-    support_transition_active: bool,
-    resistance_transition_active: bool,
-    support_shift_cycle: int,
-    resistance_shift_cycle: int,
-    absorption_detected: bool,
-    just_shifted_support: bool,
-    just_shifted_resistance: bool,
-    breach_confirmed: bool,
-    confirmation_type: str | None,
-    previous_cooldown_remaining: int,
-) -> dict[str, Any]:
-    prev_cooldown = max(0, int(previous_cooldown_remaining or 0))
-    if just_shifted_support or just_shifted_resistance:
-        cooldown_remaining = SHIFT_COOLDOWN_CYCLES
-    elif prev_cooldown > 0:
-        cooldown_remaining = prev_cooldown - 1
-    else:
-        cooldown_remaining = 0
-
-    is_structure_unstable = bool(
-        support_transition_active
-        or resistance_transition_active
-        or int(support_shift_cycle or 0) > 0
-        or int(resistance_shift_cycle or 0) > 0
-        or cooldown_remaining > 0
-    )
-
-    trap_value = float(trap_probability or 0.0)
-    if trap_value >= 75.0:
-        structural_state = "TRAP_RISK"
-    elif is_structure_unstable:
-        structural_state = "TRANSITION"
-    elif absorption_detected or just_shifted_support or just_shifted_resistance:
-        structural_state = "ABSORPTION"
-    else:
-        structural_state = "STABLE"
-
-    breakout_ready = bool(breach_confirmed and str(confirmation_type or "").strip())
-    can_promote_direction = bool(
-        structural_state == "STABLE"
-        and float(trade_readiness or 0.0) >= 55.0
-        and trap_value < 65.0
-        and breakout_ready
-    )
-
-    capped_readiness = float(trade_readiness or 0.0)
-    if structural_state in {"TRANSITION", "ABSORPTION"} or cooldown_remaining > 0:
-        capped_readiness = min(capped_readiness, 45.0)
-    if structural_state == "TRAP_RISK":
-        capped_readiness = min(capped_readiness, 40.0)
-
-    normalized_bias = str(raw_bias or "Neutral")
-    final_bias = normalized_bias if can_promote_direction and normalized_bias in {"Bullish", "Bearish"} else "Neutral"
-
-    final_trade_action = str(trade_action or "WAIT")
-    if structural_state in {"TRAP_RISK", "TRANSITION", "ABSORPTION"} or trap_value >= 65.0 or not can_promote_direction:
-        final_trade_action = "WAIT"
-
-    return {
-        "structural_state": structural_state,
-        "final_bias": final_bias,
-        "trade_action": final_trade_action,
-        "trade_readiness": round(max(0.0, min(100.0, capped_readiness)), 2),
-        "cooldown_remaining": int(cooldown_remaining),
-        "is_structure_unstable": is_structure_unstable,
-        "can_promote_direction": can_promote_direction,
-        "breakout_ready": breakout_ready,
-    }
-
-
-def _regime_family(regime_label: str | None) -> str:
-    label = str(regime_label or "").strip()
-    if not label:
-        return "RANGE"
-    return REGIME_FAMILY_MAP.get(label, "RANGE")
-
-
-def _apply_regime_stabilizer(
-    *,
-    raw_candidate_regime: str,
-    current_regime: str,
-    regime_hold_cycles: int,
-    regime_candidate: str | None,
-    regime_candidate_streak: int,
-    structural_state: str,
-) -> dict[str, Any]:
-    raw_regime = str(raw_candidate_regime or "").strip() or "Balanced Structure"
-    committed_regime = str(current_regime or "").strip() or raw_regime
-    raw_family = _regime_family(raw_regime)
-    current_family = _regime_family(committed_regime)
-    hold_cycles = max(0, int(regime_hold_cycles or 0))
-    candidate = str(regime_candidate or "").strip() or None
-    candidate_streak = max(0, int(regime_candidate_streak or 0))
-    structural = str(structural_state or "").strip().upper()
-
-    if structural == "TRANSITION":
-        return {
-            "final_regime": "Transition Phase",
-            "final_family": "TRANSITION",
-            "regime_hold_cycles": 0,
-            "regime_candidate": None,
-            "regime_candidate_streak": 0,
-            "regime_stabilizer_applied": True,
-        }
-
-    if structural in {"ABSORPTION", "TRAP_RISK"}:
-        fallback_regime = committed_regime if current_family in {"RANGE", "TRANSITION"} else "Balanced Structure"
-        return {
-            "final_regime": fallback_regime,
-            "final_family": _regime_family(fallback_regime),
-            "regime_hold_cycles": hold_cycles + 1,
-            "regime_candidate": None,
-            "regime_candidate_streak": 0,
-            "regime_stabilizer_applied": True,
-        }
-
-    if raw_family == current_family:
-        return {
-            "final_regime": committed_regime,
-            "final_family": current_family,
-            "regime_hold_cycles": hold_cycles + 1,
-            "regime_candidate": None,
-            "regime_candidate_streak": 0,
-            "regime_stabilizer_applied": True,
-        }
-
-    next_candidate = raw_regime
-    next_streak = candidate_streak + 1 if candidate == raw_regime else 1
-
-    if hold_cycles < REGIME_MIN_HOLD_CYCLES:
-        return {
-            "final_regime": committed_regime,
-            "final_family": current_family,
-            "regime_hold_cycles": hold_cycles + 1,
-            "regime_candidate": next_candidate,
-            "regime_candidate_streak": next_streak,
-            "regime_stabilizer_applied": True,
-        }
-
-    if next_streak >= REGIME_SWITCH_CONFIRM_CYCLES:
-        return {
-            "final_regime": raw_regime,
-            "final_family": raw_family,
-            "regime_hold_cycles": 0,
-            "regime_candidate": None,
-            "regime_candidate_streak": 0,
-            "regime_stabilizer_applied": True,
-        }
-
-    return {
-        "final_regime": committed_regime,
-        "final_family": current_family,
-        "regime_hold_cycles": hold_cycles + 1,
-        "regime_candidate": next_candidate,
-        "regime_candidate_streak": next_streak,
-        "regime_stabilizer_applied": True,
-    }
-
-
 def _canonicalize_trap_reference(
     *,
     trap: dict[str, Any],
@@ -980,6 +830,369 @@ def _compute_trade_readiness(
     return {
         "trade_readiness": round(readiness, 2),
         "readiness_state": readiness_state,
+    }
+
+
+def _clamp_score_0_100(value: float) -> float:
+    return max(0.0, min(100.0, float(value or 0.0)))
+
+
+def _score_readiness_structure_quality(
+    *,
+    committed_regime: str,
+    regime_hold_cycles: int,
+    support_transition_badge: bool,
+    resistance_transition_badge: bool,
+    support_shift_cycle: int,
+    candidate_regime_count: int,
+    structural_state: str,
+    material_breach_confirmed: bool,
+    support_unchanged: bool,
+    resistance_unchanged: bool,
+) -> float:
+    score = 50.0
+    if regime_hold_cycles >= 3:
+        score += 20.0
+    if support_unchanged and resistance_unchanged:
+        score += 15.0
+    if structural_state in {"STABLE"}:
+        score += 10.0
+    if material_breach_confirmed:
+        score += 10.0
+    if support_transition_badge:
+        score -= 20.0
+    if resistance_transition_badge:
+        score -= 15.0
+    if support_shift_cycle > 0:
+        score -= 10.0
+    if candidate_regime_count > 0:
+        score -= 15.0
+    if structural_state in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}:
+        score -= 15.0
+    if str(committed_regime or "").strip() in {"Range Day", "Balanced Structure"} and structural_state == "STABLE":
+        score += 5.0
+    return _clamp_score_0_100(score)
+
+
+def _score_readiness_directional_alignment(
+    *,
+    bias: str,
+    breakout_probability_up: float,
+    breakout_probability_down: float,
+    support_zone_pressure: float,
+    resistance_zone_pressure: float,
+    winning_engine: str,
+    conflict_market_state: str,
+) -> float:
+    score = 50.0
+    bias_text = str(bias or "Neutral").strip().lower()
+    prob_up = _clamp_score_0_100(breakout_probability_up)
+    prob_down = _clamp_score_0_100(breakout_probability_down)
+    prob_gap = prob_up - prob_down
+
+    if bias_text == "bullish":
+        score += 20.0
+        if prob_gap >= 8.0:
+            score += 15.0
+        if float(support_zone_pressure or 0.0) >= 60.0:
+            score += 10.0
+    elif bias_text == "bearish":
+        score += 20.0
+        if prob_gap <= -8.0:
+            score += 15.0
+        if float(resistance_zone_pressure or 0.0) >= 60.0:
+            score += 10.0
+
+    if winning_engine in {"material_breach_engine", "promotion_guard"} and bias_text in {"bullish", "bearish"}:
+        score += 10.0
+    if str(conflict_market_state or "").strip().lower() in {"range conflict", "balanced", "compression", "no_edge"}:
+        score -= 20.0
+    if winning_engine == "trap_engine" and bias_text in {"bullish", "bearish"}:
+        score -= 15.0
+    if bias_text in {"bullish", "bearish"} and abs(prob_gap) < 8.0:
+        score -= 10.0
+    if bias_text == "bullish" and float(resistance_zone_pressure or 0.0) > float(support_zone_pressure or 0.0) + 10.0:
+        score -= 10.0
+    if bias_text == "bearish" and float(support_zone_pressure or 0.0) > float(resistance_zone_pressure or 0.0) + 10.0:
+        score -= 10.0
+    return _clamp_score_0_100(score)
+
+
+def _score_readiness_execution_quality(
+    *,
+    spot: float | None,
+    support: float | None,
+    resistance: float | None,
+    bias: str,
+    session_phase: str,
+    structural_state: str,
+    material_breach_confirmed: bool,
+) -> float:
+    score = 45.0
+    spot_value = _safe_float(spot)
+    support_value = _safe_float(support)
+    resistance_value = _safe_float(resistance)
+    bias_text = str(bias or "Neutral").strip().lower()
+    phase_text = str(session_phase or "").strip()
+
+    if material_breach_confirmed:
+        score += 30.0
+    elif structural_state in {"STABLE"}:
+        score += 6.0
+
+    if (
+        spot_value is not None
+        and support_value is not None
+        and resistance_value is not None
+        and resistance_value > support_value
+    ):
+        band_width = max(1.0, resistance_value - support_value)
+        relative_pos = (spot_value - support_value) / band_width
+        dist_support = abs(spot_value - support_value)
+        dist_resistance = abs(resistance_value - spot_value)
+        near_threshold = band_width * 0.15
+
+        if dist_support <= near_threshold and bias_text in {"bullish", "neutral"}:
+            score += 15.0
+        if dist_resistance <= near_threshold and bias_text in {"bearish", "neutral"}:
+            score += 15.0
+        if material_breach_confirmed and (spot_value > resistance_value or spot_value < support_value):
+            score += 12.0
+        if bias_text == "bullish" and 0.65 <= relative_pos <= 0.90:
+            score += 8.0
+        if bias_text == "bearish" and 0.10 <= relative_pos <= 0.35:
+            score += 8.0
+        if 0.40 <= relative_pos <= 0.60:
+            score -= 15.0
+        if min(dist_support, dist_resistance) > 50.0 and not material_breach_confirmed:
+            score -= 12.0
+        if (spot_value > resistance_value + (band_width * 0.35)) or (spot_value < support_value - (band_width * 0.35)):
+            score -= 10.0
+
+    if phase_text == "Expansion Window":
+        score += 10.0
+    elif phase_text == "Position Build Phase":
+        score += 8.0
+    elif phase_text == "Structure Formation":
+        score += 5.0
+    elif phase_text == "Transition":
+        score -= 8.0
+    elif phase_text == "Compression Phase":
+        score -= 10.0
+    elif phase_text == "Opening Drive":
+        score -= 12.0
+
+    return _clamp_score_0_100(score)
+
+
+def _score_readiness_risk_friction(
+    *,
+    trap_probability: float,
+    support_transition_badge: bool,
+    resistance_transition_badge: bool,
+    blocking_reason: str,
+    trap_type: str,
+    absorption_wins: bool,
+) -> float:
+    trap_value = _clamp_score_0_100(trap_probability)
+    score = 100.0
+
+    if trap_value > 60.0:
+        score -= (15.0 * 0.6) + ((trap_value - 60.0) * 1.0)
+    elif trap_value > 45.0:
+        score -= (trap_value - 45.0) * 0.6
+
+    if support_transition_badge:
+        score -= 18.0
+    if resistance_transition_badge:
+        score -= 18.0
+
+    blocker = str(blocking_reason or "").strip().upper()
+    if blocker == "ABSORPTION_ACTIVE":
+        score -= 20.0
+    elif blocker == "NO_BREAK_CONFIRMATION":
+        score -= 15.0
+    elif blocker == "RANGE_CONFLICT":
+        score -= 12.0
+    elif blocker == "LOW_READINESS":
+        score -= 10.0
+
+    trap_type_text = str(trap_type or "").lower()
+    if "failure" in trap_type_text:
+        score -= 10.0
+    if "rejection" in trap_type_text:
+        score -= 15.0
+
+    score = _clamp_score_0_100(score)
+    if absorption_wins:
+        score = max(35.0, score)
+    return score
+
+
+def _readiness_v2_state(score: float) -> str:
+    value = float(score or 0.0)
+    if value >= 75.0:
+        return "High"
+    if value >= 58.0:
+        return "Moderate"
+    if value >= 42.0:
+        return "Low"
+    return "Not Ready"
+
+
+def _compute_readiness_v2(
+    *,
+    previous_state: dict[str, Any] | None,
+    committed_regime: str,
+    regime_hold_cycles: int,
+    candidate_regime_count: int,
+    support_transition_badge: bool,
+    resistance_transition_badge: bool,
+    support_shift_cycle: int,
+    structural_state: str,
+    material_breach_confirmed: bool,
+    confirmation_type: str,
+    no_edge: bool,
+    spot: float | None,
+    support_level: float | None,
+    resistance_level: float | None,
+    bias: str,
+    session_phase: str,
+    breakout_probability_up: float,
+    breakout_probability_down: float,
+    support_zone_pressure: float,
+    resistance_zone_pressure: float,
+    trap_probability: float,
+    trap_type: str,
+    blocking_reason: str,
+    winning_engine: str,
+    conflict_market_state: str,
+    absorption_wins: bool,
+) -> dict[str, Any]:
+    prev_support = _safe_float((previous_state or {}).get("current_support"))
+    prev_resistance = _safe_float((previous_state or {}).get("current_resistance"))
+    support_now = _safe_float(support_level)
+    resistance_now = _safe_float(resistance_level)
+    support_unchanged = (
+        support_now is not None and prev_support is not None and abs(support_now - prev_support) < 1e-6
+    )
+    resistance_unchanged = (
+        resistance_now is not None and prev_resistance is not None and abs(resistance_now - prev_resistance) < 1e-6
+    )
+
+    structure_quality = _score_readiness_structure_quality(
+        committed_regime=committed_regime,
+        regime_hold_cycles=int(regime_hold_cycles or 0),
+        support_transition_badge=bool(support_transition_badge),
+        resistance_transition_badge=bool(resistance_transition_badge),
+        support_shift_cycle=int(support_shift_cycle or 0),
+        candidate_regime_count=int(candidate_regime_count or 0),
+        structural_state=structural_state,
+        material_breach_confirmed=bool(material_breach_confirmed),
+        support_unchanged=support_unchanged,
+        resistance_unchanged=resistance_unchanged,
+    )
+    directional_alignment = _score_readiness_directional_alignment(
+        bias=bias,
+        breakout_probability_up=breakout_probability_up,
+        breakout_probability_down=breakout_probability_down,
+        support_zone_pressure=support_zone_pressure,
+        resistance_zone_pressure=resistance_zone_pressure,
+        winning_engine=winning_engine,
+        conflict_market_state=conflict_market_state,
+    )
+    execution_quality = _score_readiness_execution_quality(
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
+        bias=bias,
+        session_phase=session_phase,
+        structural_state=structural_state,
+        material_breach_confirmed=material_breach_confirmed,
+    )
+    risk_friction = _score_readiness_risk_friction(
+        trap_probability=trap_probability,
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        blocking_reason=blocking_reason,
+        trap_type=trap_type,
+        absorption_wins=absorption_wins,
+    )
+
+    raw_score = (
+        (structure_quality * 0.30)
+        + (directional_alignment * 0.30)
+        + (execution_quality * 0.25)
+        + (risk_friction * 0.15)
+    )
+    final_score = _clamp_score_0_100(raw_score)
+    cap_reason = None
+    floor_reason = None
+
+    # Caps
+    if support_transition_badge or resistance_transition_badge:
+        if final_score > 62.0:
+            final_score = 62.0
+            cap_reason = "TRANSITION_CAP"
+    if str(blocking_reason or "").upper() == "NO_BREAK_CONFIRMATION":
+        if final_score > 59.0:
+            final_score = 59.0
+            cap_reason = "NO_BREACH_CONFIRMATION_CAP"
+    if float(trap_probability or 0.0) >= 72.0 and not material_breach_confirmed:
+        if final_score > 52.0:
+            final_score = 52.0
+            cap_reason = "HIGH_TRAP_NO_BREACH_CAP"
+
+    spot_value = _safe_float(spot)
+    support_value = _safe_float(support_level)
+    resistance_value = _safe_float(resistance_level)
+    if (
+        str(committed_regime or "").strip() == "Range Day"
+        and spot_value is not None
+        and support_value is not None
+        and resistance_value is not None
+        and resistance_value > support_value
+    ):
+        relative_pos = (spot_value - support_value) / max(1.0, resistance_value - support_value)
+        if 0.40 <= relative_pos <= 0.60:
+            if final_score > 48.0:
+                final_score = 48.0
+                cap_reason = "RANGE_DAY_MID_BAND_CAP"
+
+    if no_edge and final_score > 52.0:
+        final_score = 52.0
+        cap_reason = "NO_EDGE_CAP"
+
+    # Floors
+    if material_breach_confirmed and confirmation_type in {"support_abandonment", "resistance_abandonment"}:
+        if final_score < 68.0:
+            final_score = 68.0
+            floor_reason = "CONFIRMED_BREACH_FLOOR"
+    if material_breach_confirmed and float(trap_probability or 0.0) < 55.0:
+        if final_score < 72.0:
+            final_score = 72.0
+            floor_reason = "CONFIRMED_EXPANSION_LOW_TRAP_FLOOR"
+
+    final_score = _clamp_score_0_100(final_score)
+    readiness_state_v2 = _readiness_v2_state(final_score)
+    prev_active_v2 = bool((previous_state or {}).get("readiness_active_v2", False))
+    if not prev_active_v2 and final_score >= 60.0:
+        readiness_active_v2 = True
+    elif prev_active_v2 and final_score < 55.0:
+        readiness_active_v2 = False
+    else:
+        readiness_active_v2 = prev_active_v2
+
+    return {
+        "trade_readiness_v2": round(final_score, 2),
+        "readiness_state_v2": readiness_state_v2,
+        "readiness_active_v2": readiness_active_v2,
+        "readiness_structure_quality": round(structure_quality, 2),
+        "readiness_directional_alignment": round(directional_alignment, 2),
+        "readiness_execution_quality": round(execution_quality, 2),
+        "readiness_risk_friction": round(risk_friction, 2),
+        "readiness_cap_reason": cap_reason,
+        "readiness_floor_reason": floor_reason,
     }
 
 
@@ -1269,6 +1482,27 @@ def _map_regime_zone(state: str) -> str:
     return "WATCH_ZONE"
 
 
+def _regime_family(regime: str | None) -> str:
+    text = str(regime or "").strip()
+    if not text:
+        return "RANGE"
+    return REGIME_FAMILY_MAP.get(text, "RANGE")
+
+
+def _is_range_like_session(
+    committed_regime: str | None,
+    stabilized_regime_family: str | None,
+    range_locked: bool,
+    no_edge: bool,
+) -> bool:
+    return (
+        str(stabilized_regime_family or "").strip().upper() == "RANGE"
+        or _regime_family(committed_regime) == "RANGE"
+        or bool(range_locked)
+        or bool(no_edge)
+    )
+
+
 def _derive_committed_regime_label(*, state: str, engine_regime: str) -> str:
     text = str(state or "").strip().lower()
     if "breakdown" in text:
@@ -1293,6 +1527,192 @@ def _readiness_regime_state(*, committed_regime: str, backend_state: str) -> str
     if "transition" in text:
         return "Transition Phase"
     return str(backend_state or "")
+
+
+def _is_range_lock_condition(
+    trap_probability: float,
+    trade_readiness: float,
+    breach_confirmed: bool,
+    structural_state: str | None,
+) -> bool:
+    return (
+        float(trap_probability or 0.0) >= RANGE_LOCK_TRAP_MIN
+        and float(trade_readiness or 0.0) <= RANGE_LOCK_READINESS_MAX
+        and not bool(breach_confirmed)
+        and str(structural_state or "").strip().upper() not in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}
+    )
+
+
+def _is_no_edge_condition(
+    trap_probability: float,
+    trade_readiness: float,
+    pressure_state: str | None,
+    breach_confirmed: bool,
+    structural_state: str | None,
+) -> bool:
+    pressure_text = str(pressure_state or "").strip().lower()
+    return (
+        abs(float(trade_readiness or 0.0) - NO_EDGE_READINESS_CENTER) <= NO_EDGE_READINESS_BAND
+        and float(trap_probability or 0.0) >= NO_EDGE_TRAP_MIN
+        and "balanced" in pressure_text
+        and not bool(breach_confirmed)
+        and str(structural_state or "").strip().upper() not in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}
+    )
+
+
+def _apply_range_lock_and_no_edge(
+    raw_candidate_regime: str | None,
+    structural_state: str | None,
+    trap_probability: float,
+    trade_readiness: float,
+    breach_confirmed: bool,
+    pressure_state: str | None,
+    current_regime: str | None,
+) -> dict[str, Any]:
+    structural_text = str(structural_state or "").strip().upper()
+    if structural_text in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}:
+        return {
+            "candidate_regime": str(raw_candidate_regime or "Range Play"),
+            "range_locked": False,
+            "no_edge": False,
+            "market_state": None,
+        }
+
+    range_locked = _is_range_lock_condition(
+        trap_probability=trap_probability,
+        trade_readiness=trade_readiness,
+        breach_confirmed=breach_confirmed,
+        structural_state=structural_state,
+    )
+    no_edge = _is_no_edge_condition(
+        trap_probability=trap_probability,
+        trade_readiness=trade_readiness,
+        pressure_state=pressure_state,
+        breach_confirmed=breach_confirmed,
+        structural_state=structural_state,
+    )
+    current_text = str(current_regime or "").strip()
+    current_family = _regime_family(current_text)
+    preferred_range_regime = current_text if current_family == "RANGE" else "Range Play"
+
+    if no_edge:
+        return {
+            "candidate_regime": preferred_range_regime,
+            "range_locked": True,
+            "no_edge": True,
+            "market_state": "NO_EDGE",
+        }
+
+    if range_locked:
+        return {
+            "candidate_regime": preferred_range_regime,
+            "range_locked": True,
+            "no_edge": False,
+            "market_state": None,
+        }
+
+    return {
+        "candidate_regime": str(raw_candidate_regime or "Range Play"),
+        "range_locked": False,
+        "no_edge": False,
+        "market_state": None,
+    }
+
+
+def _derive_spc_structural_state(
+    *,
+    trap_probability: float,
+    support_transition_active: bool,
+    resistance_transition_active: bool,
+    support_shift_cycle: int,
+    absorption_detected: bool,
+) -> str:
+    if float(trap_probability or 0.0) >= 75.0:
+        return "TRAP_RISK"
+    if support_transition_active or resistance_transition_active or int(support_shift_cycle or 0) > 0:
+        return "TRANSITION"
+    if absorption_detected:
+        return "ABSORPTION"
+    return "STABLE"
+
+
+def _apply_regime_stabilizer(
+    raw_candidate_regime: str | None,
+    current_regime: str | None,
+    regime_hold_cycles: int,
+    regime_candidate: str | None,
+    regime_candidate_streak: int,
+    structural_state: str | None,
+) -> dict[str, Any]:
+    raw_regime = str(raw_candidate_regime or "Range Play")
+    current_text = str(current_regime or "").strip()
+    current_regime_text = current_text or raw_regime
+    raw_family = _regime_family(raw_regime)
+    current_family = _regime_family(current_regime_text)
+    structural_text = str(structural_state or "").strip().upper()
+    hold_cycles = int(regime_hold_cycles or 0)
+    candidate_text = str(regime_candidate or "").strip() or None
+    candidate_streak = int(regime_candidate_streak or 0)
+
+    if structural_text == "TRANSITION":
+        return {
+            "final_regime": "Transition Phase",
+            "final_family": "TRANSITION",
+            "regime_hold_cycles": 0,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+        }
+
+    if structural_text in {"ABSORPTION", "TRAP_RISK"}:
+        return {
+            "final_regime": current_regime_text,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+        }
+
+    if raw_family == current_family:
+        return {
+            "final_regime": current_regime_text,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+        }
+
+    if hold_cycles < REGIME_MIN_HOLD_CYCLES:
+        next_streak = (candidate_streak + 1) if candidate_text == raw_regime else 1
+        return {
+            "final_regime": current_regime_text,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": raw_regime,
+            "regime_candidate_streak": next_streak,
+        }
+
+    if candidate_text == raw_regime:
+        candidate_streak += 1
+    else:
+        candidate_text = raw_regime
+        candidate_streak = 1
+
+    if candidate_streak >= REGIME_SWITCH_CONFIRM_CYCLES:
+        return {
+            "final_regime": raw_regime,
+            "final_family": raw_family,
+            "regime_hold_cycles": 0,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+        }
+
+    return {
+        "final_regime": current_regime_text,
+        "final_family": current_family,
+        "regime_hold_cycles": hold_cycles + 1,
+        "regime_candidate": candidate_text,
+        "regime_candidate_streak": candidate_streak,
+    }
 
 
 def _apply_committed_regime_hysteresis(
@@ -1536,6 +1956,159 @@ async def _fetch_index_data_async() -> dict[str, Any]:
     return await asyncio.to_thread(fetch_index_data)
 
 
+def _resolve_sr_anchor(previous_state: dict[str, Any] | None, side: str) -> tuple[float | None, str | None]:
+    """
+    Resolve the last known active structural anchor from persisted state.
+    Prefer current active top-level fields, then support/resistance level,
+    then nested immediate/major fields, then previous_* as last resort.
+    """
+    state = previous_state or {}
+    levels = state.get("levels", {}) if isinstance(state.get("levels"), dict) else {}
+
+    if side == "support":
+        support_levels = levels.get("support", {}) if isinstance(levels.get("support"), dict) else {}
+        candidates = [
+            ("current_support", state.get("current_support")),
+            ("support_level", state.get("support_level")),
+            ("levels.support.immediate", support_levels.get("immediate")),
+            ("levels.support.major", support_levels.get("major")),
+            ("previous_support", state.get("previous_support")),
+        ]
+    else:
+        resistance_levels = levels.get("resistance", {}) if isinstance(levels.get("resistance"), dict) else {}
+        candidates = [
+            ("current_resistance", state.get("current_resistance")),
+            ("resistance_level", state.get("resistance_level")),
+            ("levels.resistance.immediate", resistance_levels.get("immediate")),
+            ("levels.resistance.major", resistance_levels.get("major")),
+            ("previous_resistance", state.get("previous_resistance")),
+        ]
+
+    for source, raw in candidates:
+        value = _safe_float(raw)
+        if value is not None and value > 0:
+            return value, source
+    return None, None
+
+
+def _apply_first_cycle_sr_buffer_guard(
+    *,
+    sr: dict[str, Any],
+    spot: float | None,
+    previous_state: dict[str, Any] | None,
+    buffer_points: float = 25.0,
+) -> dict[str, Any]:
+    """
+    Enforce restart/reset-safe structural buffers using persisted anchors.
+
+    Support rule:
+      Do not allow support demotion if spot is still above old_support - 25.
+
+    Resistance rule:
+      Do not allow upward resistance promotion if spot is still below old_resistance + 25.
+
+    This runs after SR engine selection, so even if the first OI read misses
+    previous immediate state internally, downstream engines still receive guarded SR.
+    """
+    sr_out = dict(sr or {})
+    support_obj = dict(sr_out.get("support") or {})
+    resistance_obj = dict(sr_out.get("resistance") or {})
+
+    support_range = list(sr_out.get("support_range") or [])
+    resistance_range = list(sr_out.get("resistance_range") or [])
+
+    spot_value = _safe_float(spot)
+
+    prev_support_anchor, prev_support_source = _resolve_sr_anchor(previous_state, "support")
+    prev_resistance_anchor, prev_resistance_source = _resolve_sr_anchor(previous_state, "resistance")
+
+    current_support_strike = _safe_float(support_obj.get("strike"))
+    current_support_immediate = _safe_float(support_obj.get("immediate"))
+    current_support_major = _safe_float(support_obj.get("major"))
+
+    current_resistance_strike = _safe_float(resistance_obj.get("strike"))
+    current_resistance_immediate = _safe_float(resistance_obj.get("immediate"))
+    current_resistance_major = _safe_float(resistance_obj.get("major"))
+
+    support_buffer_blocked = False
+    resistance_buffer_blocked = False
+    guard_applied = False
+
+    if (
+        spot_value is not None
+        and prev_support_anchor is not None
+        and (
+            (current_support_strike is not None and current_support_strike < prev_support_anchor)
+            or (current_support_immediate is not None and current_support_immediate < prev_support_anchor)
+            or (current_support_major is not None and current_support_major < prev_support_anchor)
+        )
+        and spot_value > (prev_support_anchor - buffer_points)
+    ):
+        support_buffer_blocked = True
+        guard_applied = True
+
+        if current_support_strike is None or current_support_strike < prev_support_anchor:
+            support_obj["strike"] = prev_support_anchor
+        if current_support_immediate is None or current_support_immediate < prev_support_anchor:
+            support_obj["immediate"] = prev_support_anchor
+        if current_support_major is None or current_support_major < prev_support_anchor:
+            support_obj["major"] = prev_support_anchor
+
+        if support_range:
+            guarded_range: list[Any] = []
+            for item in support_range:
+                value = _safe_float(item)
+                if value is None:
+                    guarded_range.append(item)
+                else:
+                    guarded_range.append(max(value, prev_support_anchor))
+            sr_out["support_range"] = guarded_range
+
+    if (
+        spot_value is not None
+        and prev_resistance_anchor is not None
+        and (
+            (current_resistance_strike is not None and current_resistance_strike > prev_resistance_anchor)
+            or (current_resistance_immediate is not None and current_resistance_immediate > prev_resistance_anchor)
+            or (current_resistance_major is not None and current_resistance_major > prev_resistance_anchor)
+        )
+        and spot_value < (prev_resistance_anchor + buffer_points)
+    ):
+        resistance_buffer_blocked = True
+        guard_applied = True
+
+        if current_resistance_strike is None or current_resistance_strike > prev_resistance_anchor:
+            resistance_obj["strike"] = prev_resistance_anchor
+        if current_resistance_immediate is None or current_resistance_immediate > prev_resistance_anchor:
+            resistance_obj["immediate"] = prev_resistance_anchor
+        if current_resistance_major is None or current_resistance_major > prev_resistance_anchor:
+            resistance_obj["major"] = prev_resistance_anchor
+
+        if resistance_range:
+            guarded_range: list[Any] = []
+            for item in resistance_range:
+                value = _safe_float(item)
+                if value is None:
+                    guarded_range.append(item)
+                else:
+                    guarded_range.append(min(value, prev_resistance_anchor))
+            sr_out["resistance_range"] = guarded_range
+
+    sr_out["support"] = support_obj
+    sr_out["resistance"] = resistance_obj
+
+    return {
+        "sr": sr_out,
+        "sr_cold_start_guard_applied": guard_applied,
+        "sr_previous_support_anchor_used": prev_support_anchor,
+        "sr_previous_support_anchor_source": prev_support_source,
+        "sr_previous_resistance_anchor_used": prev_resistance_anchor,
+        "sr_previous_resistance_anchor_source": prev_resistance_source,
+        "sr_support_buffer_blocked": support_buffer_blocked,
+        "sr_resistance_buffer_blocked": resistance_buffer_blocked,
+    }
+
+
 def _run_ordered_pipeline(
     *,
     features: dict[str, Any],
@@ -1553,6 +2126,15 @@ def _run_ordered_pipeline(
     # Stage 1: Feature engines
     oi = run_oi_analysis(features, previous_state=previous_state)
     sr = run_sr_engine(features, previous_state=previous_state)
+
+    sr_guard = _apply_first_cycle_sr_buffer_guard(
+        sr=sr,
+        spot=features.get("spot"),
+        previous_state=previous_state,
+        buffer_points=25.0,
+    )
+    sr = sr_guard["sr"]
+
     base_volume = run_volume_analysis(features, previous_state=previous_state)
     base_breakout = run_breakout_engine(features, sr)
     base_trap = run_trap_engine(features, base_breakout, oi, base_volume, previous_state=previous_state)
@@ -1614,6 +2196,7 @@ def _run_ordered_pipeline(
     return {
         "oi": oi,
         "sr": sr,
+        "sr_guard": sr_guard,
         "volume": volume,
         "breakout": breakout,
         "trap": trap,
@@ -1628,6 +2211,76 @@ def _safe_float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _previous_trap_probability(previous_state: dict[str, Any] | None) -> float | None:
+    state = previous_state or {}
+    trap_hist = state.get("trap_probability_history", [])
+    if isinstance(trap_hist, list):
+        for item in reversed(trap_hist):
+            value = _safe_float(item)
+            if value is not None:
+                return max(0.0, min(95.0, value))
+    for key in ("trap_probability", "trap_risk", "expiry_risk"):
+        value = _safe_float(state.get(key))
+        if value is not None:
+            return max(0.0, min(95.0, value))
+    return None
+
+
+def _trap_state_from_probability(probability: float) -> str:
+    value = float(probability or 0.0)
+    if TRAP_STABLE_MID_MIN <= value <= TRAP_STABLE_MID_MAX:
+        return "STABLE_MID"
+    return _trap_level_from_probability(value)
+
+
+def _stabilize_trap_probability(
+    *,
+    new_trap_probability: float,
+    previous_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw_new = max(0.0, min(95.0, float(new_trap_probability or 0.0)))
+    prev_trap = _previous_trap_probability(previous_state)
+    if prev_trap is None:
+        smoothed = raw_new
+        stabilized = raw_new
+        hysteresis_applied = False
+    else:
+        smoothed = max(
+            0.0,
+            min(
+                95.0,
+                (TRAP_SMOOTH_PREV_WEIGHT * float(prev_trap))
+                + (TRAP_SMOOTH_NEW_WEIGHT * raw_new),
+            ),
+        )
+        if abs(raw_new - float(prev_trap)) < TRAP_HYSTERESIS_DEADBAND:
+            stabilized = float(prev_trap)
+            hysteresis_applied = True
+        else:
+            stabilized = smoothed
+            hysteresis_applied = False
+    return {
+        "trap_probability": round(stabilized, 2),
+        "trap_state": _trap_state_from_probability(stabilized),
+        "prev_trap_probability": prev_trap,
+        "smoothed_probability": round(smoothed, 2),
+        "hysteresis_applied": hysteresis_applied,
+    }
+
+
+def _apply_stabilized_trap(trap: dict[str, Any], payload: dict[str, Any]) -> None:
+    trap_probability = float(payload.get("trap_probability", 0.0) or 0.0)
+    trap_state = str(payload.get("trap_state") or _trap_level_from_probability(trap_probability))
+    trap["trap_probability_pct"] = int(round(trap_probability))
+    trap["trap_probability"] = int(round(trap_probability))
+    trap["trap_risk"] = int(round(trap_probability))
+    trap["trap_state"] = trap_state
+    trap["trap_level"] = "Moderate" if trap_state == "STABLE_MID" else _trap_level_from_probability(trap_probability)
+    trap["trap_prev_probability"] = payload.get("prev_trap_probability")
+    trap["trap_smoothed_probability"] = payload.get("smoothed_probability")
+    trap["trap_hysteresis_applied"] = bool(payload.get("hysteresis_applied", False))
 
 
 def _classify_day_trend(
@@ -1748,7 +2401,7 @@ def _build_v2_intelligence(
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
     session_eval_time = evaluation_time or _parse_timestamp_utc(timestamp)
-    previous_state = _reset_spc_intraday_state(
+    previous_state = _reset_state_for_new_session(
         previous_state,
         timestamp=session_eval_time,
     )
@@ -1772,6 +2425,7 @@ def _build_v2_intelligence(
     )
     oi = pipeline["oi"]
     sr = pipeline["sr"]
+    sr_guard = pipeline.get("sr_guard", {}) or {}
     volume = pipeline["volume"]
     breakout = pipeline["breakout"]
     trap = pipeline["trap"]
@@ -2334,12 +2988,25 @@ def _build_v2_intelligence(
         next_candidate_regime = ""
         next_candidate_regime_count = 0
 
-    if committed_regime == "Range Day" and not material_breach_confirmed:
-        trap_probability = min(float(trap_probability or 0.0), 72.0)
-        trap["trap_probability_pct"] = int(trap_probability)
-        trap["trap_probability"] = int(trap_probability)
-        trap["trap_risk"] = int(trap_probability)
-        trap["trap_level"] = _trap_level_from_probability(trap_probability)
+    range_trap_cap_applied = False
+    range_trap_cap_reason: str | None = None
+    range_trap_cap_stage: str | None = None
+    pre_readiness_range_like_session = _is_range_like_session(
+        committed_regime=committed_regime,
+        stabilized_regime_family=(previous_state or {}).get("stabilized_regime_family"),
+        range_locked=bool((previous_state or {}).get("range_locked", False)),
+        no_edge=bool((previous_state or {}).get("no_edge", False)),
+    )
+    if pre_readiness_range_like_session and not material_breach_confirmed:
+        trap_stability_payload = _stabilize_trap_probability(
+            new_trap_probability=min(float(trap_probability or 0.0), 72.0),
+            previous_state=previous_state,
+        )
+        _apply_stabilized_trap(trap, trap_stability_payload)
+        trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+        range_trap_cap_applied = True
+        range_trap_cap_reason = "range_family_cap"
+        range_trap_cap_stage = "pre_readiness"
 
     absorption_wait_override = bool(absorption_detected and str(decision.get("trade_action") or "") == "WAIT")
     trade_readiness = _compute_trade_readiness(
@@ -2404,6 +3071,64 @@ def _build_v2_intelligence(
         decision["trade_action"] = "WAIT"
     elif float(decision.get("trade_readiness", 0.0) or 0.0) < 40.0 and str(decision.get("trade_action")) in {"LONG BIAS", "SHORT BIAS"}:
         decision["trade_action"] = "WAIT"
+
+    support_transition_badge = _is_support_transition_active(
+        support_reference_state.get("support_shift_cycle", 0)
+    )
+    previous_cycle_resistance = _safe_float(
+        (previous_state or {}).get("current_resistance")
+        or (previous_state or {}).get("resistance_level")
+        or (((previous_state or {}).get("levels") or {}).get("resistance", {}) or {}).get("immediate")
+    )
+    current_cycle_resistance = _safe_float(support_reference_state.get("current_resistance"))
+    resistance_transition_badge = (
+        previous_cycle_resistance is not None
+        and current_cycle_resistance is not None
+        and abs(previous_cycle_resistance - current_cycle_resistance) > 1e-6
+    )
+    structural_state = _derive_spc_structural_state(
+        trap_probability=trap_probability,
+        support_transition_active=support_transition_badge,
+        resistance_transition_active=resistance_transition_badge,
+        support_shift_cycle=int(support_reference_state.get("support_shift_cycle", 0) or 0),
+        absorption_detected=absorption_detected,
+    )
+    raw_candidate_regime = detected_committed_regime
+    range_lock_payload = _apply_range_lock_and_no_edge(
+        raw_candidate_regime=raw_candidate_regime,
+        structural_state=structural_state,
+        trap_probability=trap_probability,
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        breach_confirmed=material_breach_confirmed,
+        pressure_state=str(decision.get("pressure_state", "") or ""),
+        current_regime=(previous_state or {}).get("committed_regime") or committed_regime,
+    )
+    candidate_regime_after_range_lock = str(range_lock_payload.get("candidate_regime") or raw_candidate_regime or "Range Play")
+    range_locked = bool(range_lock_payload.get("range_locked", False))
+    no_edge = bool(range_lock_payload.get("no_edge", False))
+    derived_market_state = str(range_lock_payload.get("market_state") or "")
+    regime_stabilizer = _apply_regime_stabilizer(
+        raw_candidate_regime=candidate_regime_after_range_lock,
+        current_regime=(previous_state or {}).get("committed_regime") or committed_regime,
+        regime_hold_cycles=int((previous_state or {}).get("regime_hold_cycles", 0) or 0),
+        regime_candidate=(previous_state or {}).get("regime_candidate"),
+        regime_candidate_streak=int((previous_state or {}).get("regime_candidate_streak", 0) or 0),
+        structural_state=structural_state,
+    )
+    committed_regime = str(regime_stabilizer.get("final_regime") or committed_regime or "Range Play")
+    stabilized_regime_family = str(regime_stabilizer.get("final_family") or _regime_family(committed_regime))
+    next_candidate_regime = str(regime_stabilizer.get("regime_candidate") or "")
+    next_candidate_regime_count = int(regime_stabilizer.get("regime_candidate_streak", 0) or 0)
+    decision["regime_hold_count"] = int(regime_stabilizer.get("regime_hold_cycles", 0) or 0)
+    decision["regime_candidate"] = candidate_regime_after_range_lock
+    decision["regime_zone"] = _map_regime_zone(committed_regime)
+    decision["structural_state_marker"] = structural_state
+    decision["range_locked"] = range_locked
+    decision["no_edge"] = no_edge
+    decision["market_state_marker"] = derived_market_state
+    if no_edge:
+        decision["trade_action"] = "WAIT"
+        decision["projection"] = "No Confirmed Breakout"
     momentum_override = _apply_momentum_override(
         trade_action=str(decision.get("trade_action", "WAIT")),
         spot=spot,
@@ -2504,24 +3229,7 @@ def _build_v2_intelligence(
         state=str(decision.get("state", "")),
         conflict_flags=list(decision.get("conflict_flags", []) or []),
     )
-    raw_candidate_regime = str(mss_conflict["state"] or "Balanced Structure")
-    regime_stabilizer = _apply_regime_stabilizer(
-        raw_candidate_regime=raw_candidate_regime,
-        current_regime=str((previous_state or {}).get("regime_state") or raw_candidate_regime),
-        regime_hold_cycles=int((previous_state or {}).get("regime_hold_cycles", 0) or 0),
-        regime_candidate=(previous_state or {}).get("regime_candidate"),
-        regime_candidate_streak=int((previous_state or {}).get("regime_candidate_streak", 0) or 0),
-        structural_state=str(decision.get("structural_state") or ""),
-    )
-    decision["raw_candidate_regime"] = raw_candidate_regime
-    decision["state"] = regime_stabilizer["final_regime"]
-    decision["regime_family"] = regime_stabilizer["final_family"]
-    decision["regime_hold_cycles"] = int(regime_stabilizer["regime_hold_cycles"])
-    decision["regime_candidate"] = str(regime_stabilizer.get("regime_candidate") or "")
-    decision["regime_candidate_streak"] = int(regime_stabilizer["regime_candidate_streak"])
-    decision["regime_stabilizer_applied"] = bool(regime_stabilizer.get("regime_stabilizer_applied", False))
-    decision["regime_hold_count"] = int(regime_stabilizer["regime_hold_cycles"])
-    decision["regime_zone"] = _map_regime_zone(str(decision.get("state") or ""))
+    decision["state"] = mss_conflict["state"]
     decision["structure_bias"] = mss_conflict["structure_bias"]
     decision["transition_phase"] = bool(mss_conflict["transition_phase"])
     decision["conflict_flags"] = list(mss_conflict["conflict_flags"])
@@ -2554,9 +3262,11 @@ def _build_v2_intelligence(
             smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
             confidence_percent=float(decision.get("confidence", 0) or 0),
         )
-        trap["trap_probability_pct"] = int(trap_conf_adj["trap_probability"])
-        trap["trap_probability"] = int(trap_conf_adj["trap_probability"])
-        trap["trap_risk"] = int(trap_conf_adj["trap_probability"])
+        trap_stability_payload = _stabilize_trap_probability(
+            new_trap_probability=float(trap_conf_adj["trap_probability"]),
+            previous_state=previous_state,
+        )
+        _apply_stabilized_trap(trap, trap_stability_payload)
         trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
     else:
         trap["confidence_factor"] = 1.0
@@ -2733,12 +3443,23 @@ def _build_v2_intelligence(
         )
 
     expiry_trap_risk = float(expiry_adaptive.get("trap_risk", trap.get("trap_probability_pct", 0)) or 0.0)
-    if committed_regime == "Range Day" and not material_breach_confirmed:
+    post_stabilizer_range_like_session = _is_range_like_session(
+        committed_regime=committed_regime,
+        stabilized_regime_family=stabilized_regime_family,
+        range_locked=range_locked,
+        no_edge=no_edge,
+    )
+    if post_stabilizer_range_like_session and not material_breach_confirmed:
         expiry_trap_risk = min(expiry_trap_risk, 72.0)
-    trap["trap_probability_pct"] = int(expiry_trap_risk)
-    trap["trap_probability"] = int(expiry_trap_risk)
-    trap["trap_risk"] = int(expiry_trap_risk)
-    expiry_adaptive["trap_risk"] = round(expiry_trap_risk, 2)
+        range_trap_cap_applied = True
+        range_trap_cap_reason = "range_family_cap"
+        range_trap_cap_stage = "expiry" if range_trap_cap_stage is None else "pre_readiness+expiry"
+    trap_stability_payload = _stabilize_trap_probability(
+        new_trap_probability=expiry_trap_risk,
+        previous_state=previous_state,
+    )
+    _apply_stabilized_trap(trap, trap_stability_payload)
+    expiry_adaptive["trap_risk"] = round(float(trap.get("trap_probability_pct", 0.0) or 0.0), 2)
     reversal_prob = compute_early_reversal_probability(
         momentum_exhaustion=bool(momentum_exhaustion.get("momentum_exhaustion")),
         trap_risk=float(expiry_adaptive.get("trap_risk", trap.get("trap_probability_pct", 0)) or 0),
@@ -2863,63 +3584,14 @@ def _build_v2_intelligence(
         len(prioritized.get("prioritized_signals", [])),
         suppression_reason_map,
     )
-    trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
-    support_transition_badge = _is_support_transition_active(
-        support_reference_state.get("support_shift_cycle", 0)
-    )
-    previous_cycle_resistance = _safe_float(
-        (previous_state or {}).get("current_resistance")
-        or (previous_state or {}).get("resistance_level")
-        or (((previous_state or {}).get("levels") or {}).get("resistance", {}) or {}).get("immediate")
-    )
-    current_cycle_resistance = _safe_float(support_reference_state.get("current_resistance"))
-    # There is no dedicated resistance transition cycle yet, so use current-cycle level divergence.
-    resistance_transition_badge = (
-        previous_cycle_resistance is not None
-        and current_cycle_resistance is not None
-        and abs(previous_cycle_resistance - current_cycle_resistance) > 1e-6
-    )
-    support_shift_cycle = int(support_reference_state.get("support_shift_cycle", 0) or 0)
-    resistance_shift_cycle = 1 if resistance_transition_badge else int((previous_state or {}).get("resistance_shift_cycle", 0) or 0)
-    just_shifted_support = support_shift_cycle == 1
-    just_shifted_resistance = resistance_transition_badge
-    structural_guard = _apply_spc_structural_guard(
-        raw_bias=stable_bias,
-        trade_action=str(decision.get("trade_action", "WAIT")),
-        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
-        trap_probability=trap_probability,
-        support_transition_active=support_transition_badge,
-        resistance_transition_active=resistance_transition_badge,
-        support_shift_cycle=support_shift_cycle,
-        resistance_shift_cycle=resistance_shift_cycle,
-        absorption_detected=absorption_detected,
-        just_shifted_support=just_shifted_support,
-        just_shifted_resistance=just_shifted_resistance,
-        breach_confirmed=material_breach_confirmed,
-        confirmation_type=confirmation_type,
-        previous_cooldown_remaining=int((previous_state or {}).get("spc_shift_cooldown_remaining", 0) or 0),
-    )
-    stable_bias = str(structural_guard["final_bias"])
-    decision["bias"] = stable_bias
-    decision["primary_bias"] = stable_bias
-    decision["trade_action"] = structural_guard["trade_action"]
-    decision["trade_readiness"] = structural_guard["trade_readiness"]
-    decision["readiness_active"] = bool(
-        float(decision.get("trade_readiness", 0.0) or 0.0) >= 55.0
-        and structural_guard["trade_action"] != "WAIT"
-    )
-    decision["structural_state"] = structural_guard["structural_state"]
-    decision["spc_shift_cooldown_remaining"] = structural_guard["cooldown_remaining"]
-    if structural_guard["structural_state"] in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}:
-        decision["readiness_state"] = "Low"
+    if no_edge:
+        stable_bias = "Neutral"
+        decision["primary_bias"] = "Neutral"
+        decision["bias"] = "Neutral"
+        decision["trade_action"] = "WAIT"
+        decision["conflict_market_state"] = "NO_EDGE"
     summary_line = (
-        "Structure shifting; waiting for stability."
-        if structural_guard["structural_state"] == "TRANSITION"
-        else "Absorption active near structure; waiting for clean confirmation."
-        if structural_guard["structural_state"] == "ABSORPTION"
-        else "Trap risk elevated near key levels."
-        if structural_guard["structural_state"] == "TRAP_RISK"
-        else f"Put writers defending {support_level}; upside momentum building."
+        f"Put writers defending {support_level}; upside momentum building."
         if stable_bias == "Bullish"
         else f"Call writers active near {resistance_level}; downside pressure holding."
         if stable_bias == "Bearish"
@@ -2927,15 +3599,23 @@ def _build_v2_intelligence(
     )
     decision_explanation = (
         "Price has moved materially below support. Breakdown confirmation in progress."
-        if bool(material_breach.get("support_broken")) and structural_guard["structural_state"] == "STABLE"
+        if bool(material_breach.get("support_broken"))
         else "Price has moved materially above resistance. Breakout confirmation in progress."
-        if bool(material_breach.get("resistance_broken")) and structural_guard["structural_state"] == "STABLE"
+        if bool(material_breach.get("resistance_broken"))
+        else "Trap risk elevated near key levels."
+        if trap_probability_pct >= 60
         else summary_line
     )
-    if momentum_score > 0.7 and structural_guard["structural_state"] == "STABLE":
+    if momentum_score > 0.7:
         decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
-    if decision.get("momentum_override_explanation") and structural_guard["structural_state"] == "STABLE":
+    if decision.get("momentum_override_explanation"):
         decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
+    trap_stability_payload = _stabilize_trap_probability(
+        new_trap_probability=float(trap.get("trap_probability_pct", 0.0) or 0.0),
+        previous_state=previous_state,
+    )
+    _apply_stabilized_trap(trap, trap_stability_payload)
+    trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
     blocking_reason = _determine_blocking_reason(
         trade_action=str(decision.get("trade_action", "WAIT")),
         readiness_active=bool(decision.get("readiness_active", False)),
@@ -2972,6 +3652,57 @@ def _build_v2_intelligence(
         pressure_state=str(decision.get("pressure_state", "") or ""),
         summary_line=summary_line,
     )
+    readiness_v2 = _compute_readiness_v2(
+        previous_state=previous_state,
+        committed_regime=committed_regime,
+        regime_hold_cycles=int(regime_stabilizer.get("regime_hold_cycles", 0) or 0),
+        candidate_regime_count=int(next_candidate_regime_count),
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        support_shift_cycle=int(support_reference_state.get("support_shift_cycle", 0) or 0),
+        structural_state=structural_state,
+        material_breach_confirmed=material_breach_confirmed,
+        confirmation_type=confirmation_type,
+        no_edge=no_edge,
+        spot=spot,
+        support_level=support_level,
+        resistance_level=resistance_level,
+        bias=stable_bias,
+        session_phase=str(target.get("session_phase") or decision.get("session_phase") or "Transition"),
+        breakout_probability_up=float(breakout_probability.get("upside", 0.0) or 0.0),
+        breakout_probability_down=float(breakout_probability.get("downside", 0.0) or 0.0),
+        support_zone_pressure=float(support_zone_pressure or 0.0),
+        resistance_zone_pressure=float(resistance_zone_pressure or 0.0),
+        trap_probability=trap_probability,
+        trap_type=str(trap.get("trap_type") or ""),
+        blocking_reason=blocking_reason,
+        winning_engine=winning_engine,
+        conflict_market_state=str(decision.get("conflict_market_state", "") or ""),
+        absorption_wins=absorption_wins,
+    )
+    # Readiness V2 is now the active readiness contract. Keep the explicit V2
+    # fields for diagnostics, but promote them into the primary readiness keys
+    # consumed by payloads, logs, and the frontend.
+    decision["trade_readiness"] = readiness_v2["trade_readiness_v2"]
+    decision["readiness_state"] = readiness_v2["readiness_state_v2"]
+    decision["readiness_active"] = bool(readiness_v2["readiness_active_v2"])
+    decision["readiness_model"] = "V2"
+    decision["trade_readiness_v2"] = readiness_v2["trade_readiness_v2"]
+    decision["readiness_state_v2"] = readiness_v2["readiness_state_v2"]
+    decision["readiness_active_v2"] = bool(readiness_v2["readiness_active_v2"])
+    decision["readiness_structure_quality"] = readiness_v2["readiness_structure_quality"]
+    decision["readiness_directional_alignment"] = readiness_v2["readiness_directional_alignment"]
+    decision["readiness_execution_quality"] = readiness_v2["readiness_execution_quality"]
+    decision["readiness_risk_friction"] = readiness_v2["readiness_risk_friction"]
+    decision["readiness_cap_reason"] = readiness_v2["readiness_cap_reason"]
+    decision["readiness_floor_reason"] = readiness_v2["readiness_floor_reason"]
+    if not bool(decision.get("readiness_active", False)) and str(decision.get("trade_action", "")) in {
+        "LONG BIAS",
+        "SHORT BIAS",
+        "BREAKOUT WATCH",
+        "BREAKDOWN WATCH",
+    }:
+        decision["trade_action"] = "WAIT"
     signal_history = _update_signal_history(
         previous_state,
         timestamp=str(features.get("meta", {}).get("timestamp") or _utc_iso(event_timestamp) or ""),
@@ -3001,7 +3732,7 @@ def _build_v2_intelligence(
         resistance_zone = [sr.get("resistance", {}).get("immediate"), sr.get("resistance", {}).get("major")]
     playbook = generate_intraday_playbook(
         primary_bias=str(decision.get("primary_bias", stable_bias)),
-        regime=str(current_regime),
+        regime=str(committed_regime),
         trap_probability=trap_probability,
         market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
         support_zone=support_zone,
@@ -3171,13 +3902,26 @@ def _build_v2_intelligence(
         "execution_risk": decision.get("execution_risk"),
         "trap_probability": trap_probability,
         "trap_level": trap.get("trap_level") or _trap_level_from_probability(trap_probability),
+        "trap_state": trap.get("trap_state"),
         "trap_type": trap.get("trap_type"),
+        "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
+        "range_trap_cap_applied": range_trap_cap_applied,
+        "range_trap_cap_reason": range_trap_cap_reason,
+        "range_trap_cap_stage": range_trap_cap_stage,
         "oi_imbalance_trap_probability": int(oi_imbalance_trap.get("trap_probability", 0) or 0),
         "oi_imbalance_trap_reason": oi_imbalance_trap.get("trap_reason"),
         "oi_imbalance_support_strength": int(oi_imbalance_trap.get("support_strength", 0) or 0),
         "oi_imbalance_support_reason": oi_imbalance_trap.get("support_reason"),
         "support_level": support_level,
         "resistance_level": resistance_level,
+        "sr_first_cycle_after_reset": bool(sr.get("sr_first_cycle_after_reset", False)),
+        "sr_cold_start_guard_applied": bool(sr_guard.get("sr_cold_start_guard_applied", False)),
+        "sr_previous_support_anchor_used": sr_guard.get("sr_previous_support_anchor_used"),
+        "sr_previous_support_anchor_source": sr_guard.get("sr_previous_support_anchor_source"),
+        "sr_previous_resistance_anchor_used": sr_guard.get("sr_previous_resistance_anchor_used"),
+        "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
+        "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
+        "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
         "previous_support": support_reference_state.get("previous_support"),
         "current_support": support_reference_state.get("current_support"),
         "previous_resistance": support_reference_state.get("previous_resistance"),
@@ -3207,20 +3951,33 @@ def _build_v2_intelligence(
         "trade_action": decision.get("trade_action"),
         "trade_readiness": decision.get("trade_readiness"),
         "readiness_state": decision.get("readiness_state"),
+        "readiness_active": bool(decision.get("readiness_active", False)),
+        "readiness_model": decision.get("readiness_model"),
+        "trade_readiness_v2": decision.get("trade_readiness_v2"),
+        "readiness_state_v2": decision.get("readiness_state_v2"),
+        "readiness_active_v2": bool(decision.get("readiness_active_v2", False)),
+        "readiness_structure_quality": decision.get("readiness_structure_quality"),
+        "readiness_directional_alignment": decision.get("readiness_directional_alignment"),
+        "readiness_execution_quality": decision.get("readiness_execution_quality"),
+        "readiness_risk_friction": decision.get("readiness_risk_friction"),
+        "readiness_cap_reason": decision.get("readiness_cap_reason"),
+        "readiness_floor_reason": decision.get("readiness_floor_reason"),
         "resolved_reason": resolved_reason,
         "blocking_reason": blocking_reason,
         "winning_engine": winning_engine,
         "decision_confidence": decision_confidence,
         "support_transition_badge": support_transition_badge,
         "resistance_transition_badge": resistance_transition_badge,
-        "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
-        "raw_candidate_regime": decision.get("raw_candidate_regime"),
-        "stabilized_regime_family": decision.get("regime_family"),
-        "regime_hold_cycles": decision.get("regime_hold_cycles", 0),
-        "regime_candidate_streak": decision.get("regime_candidate_streak", 0),
-        "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
+        "raw_candidate_regime": raw_candidate_regime,
+        "candidate_regime_after_range_lock": candidate_regime_after_range_lock,
+        "stabilized_regime_family": stabilized_regime_family,
+        "range_locked": range_locked,
+        "no_edge": no_edge,
+        "regime_hold_cycles": int(regime_stabilizer.get("regime_hold_cycles", 0) or 0),
+        "regime_candidate": next_candidate_regime,
+        "regime_candidate_streak": int(next_candidate_regime_count),
+        "regime_stabilizer_applied": True,
         "regime_state": decision.get("state"),
-        "regime_candidate": decision.get("regime_candidate"),
         "regime_hold_count": decision.get("regime_hold_count"),
         "regime_zone": decision.get("regime_zone"),
         "momentum_override_score": decision.get("momentum_override_score"),
@@ -3228,7 +3985,7 @@ def _build_v2_intelligence(
         "market_structure_score": mss.get("market_structure_score"),
         "mss_score": mss.get("market_structure_score"),
         "structure_state": mss.get("structure_state"),
-        "structural_state": decision.get("structural_state") or decision.get("state") or mss.get("structure_state"),
+        "structural_state": decision.get("state") or mss.get("structure_state"),
         "structure_bias": decision.get("structure_bias"),
         "breakout_probability": breakout_probability,
         "validation_warnings": validation_warnings,
@@ -3274,7 +4031,6 @@ def _build_v2_intelligence(
         "previous_resistance": support_reference_state.get("previous_resistance"),
         "current_resistance": support_reference_state.get("current_resistance"),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
-        "spc_session_key": session_phase_payload.get("session_key"),
         "_internal": {
             "smoothed_score": decision.get("weighted_score"),
         },
@@ -3310,11 +4066,6 @@ def _build_v2_intelligence(
             "regime_state": str(decision.get("state", "")),
             "regime_candidate": str(decision.get("regime_candidate", "")),
             "regime_hold_count": int(decision.get("regime_hold_count", 0) or 0),
-            "raw_candidate_regime": str(decision.get("raw_candidate_regime", "")),
-            "stabilized_regime_family": str(decision.get("regime_family", "")),
-            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
-            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
-            "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
             "regime_zone": str(decision.get("regime_zone", "")),
             "bias_stability_cycles": int(bias_stability_cycles),
             "bias_change_counter": int(bias_change_counter),
@@ -3335,6 +4086,11 @@ def _build_v2_intelligence(
             "bias_stability_label": bias_stability.get("bias_stability_label"),
             "bias_stability_score": bias_stability.get("bias_stability_score"),
             "trap_risk": int(trap.get("trap_probability_pct", 0) or 0),
+            "trap_state": str(trap.get("trap_state") or trap.get("trap_level") or ""),
+            "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
+            "range_trap_cap_applied": range_trap_cap_applied,
+            "range_trap_cap_reason": range_trap_cap_reason,
+            "range_trap_cap_stage": range_trap_cap_stage,
             "reversal_risk": reversal_risk,
             "support": support_level,
             "resistance": resistance_level,
@@ -3344,16 +4100,21 @@ def _build_v2_intelligence(
             "current_support": support_reference_state.get("current_support"),
             "previous_resistance": support_reference_state.get("previous_resistance"),
             "current_resistance": support_reference_state.get("current_resistance"),
+            "sr_first_cycle_after_reset": bool(sr.get("sr_first_cycle_after_reset", False)),
+            "sr_cold_start_guard_applied": bool(sr_guard.get("sr_cold_start_guard_applied", False)),
+            "sr_previous_support_anchor_used": sr_guard.get("sr_previous_support_anchor_used"),
+            "sr_previous_support_anchor_source": sr_guard.get("sr_previous_support_anchor_source"),
+            "sr_previous_resistance_anchor_used": sr_guard.get("sr_previous_resistance_anchor_used"),
+            "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
+            "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
+            "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
-            "spc_session_key": session_phase_payload.get("session_key"),
             "support_transition_active": _is_support_transition_active(
                 support_reference_state.get("support_shift_cycle", 0)
             ),
-            "resistance_transition_active": resistance_transition_badge,
             "support_transition_badge": support_transition_badge,
             "resistance_transition_badge": resistance_transition_badge,
-            "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
             "absorption_detected": bool(support_absorption.get("absorption_detected")),
             "absorption_level": support_absorption.get("level"),
             "absorption_message": support_absorption.get("message"),
@@ -3376,6 +4137,25 @@ def _build_v2_intelligence(
             "trade_readiness": decision.get("trade_readiness"),
             "readiness_state": decision.get("readiness_state"),
             "readiness_active": bool(decision.get("readiness_active", False)),
+            "readiness_model": decision.get("readiness_model"),
+            "trade_readiness_v2": decision.get("trade_readiness_v2"),
+            "readiness_state_v2": decision.get("readiness_state_v2"),
+            "readiness_active_v2": bool(decision.get("readiness_active_v2", False)),
+            "readiness_structure_quality": decision.get("readiness_structure_quality"),
+            "readiness_directional_alignment": decision.get("readiness_directional_alignment"),
+            "readiness_execution_quality": decision.get("readiness_execution_quality"),
+            "readiness_risk_friction": decision.get("readiness_risk_friction"),
+            "readiness_cap_reason": decision.get("readiness_cap_reason"),
+            "readiness_floor_reason": decision.get("readiness_floor_reason"),
+            "market_state": derived_market_state or None,
+            "range_locked": range_locked,
+            "no_edge": no_edge,
+            "raw_candidate_regime": raw_candidate_regime,
+            "candidate_regime_after_range_lock": candidate_regime_after_range_lock,
+            "stabilized_regime_family": stabilized_regime_family,
+            "regime_hold_cycles": int(regime_stabilizer.get("regime_hold_cycles", 0) or 0),
+            "regime_candidate_streak": int(next_candidate_regime_count),
+            "regime_stabilizer_applied": True,
             "committed_regime": committed_regime,
             "detected_regime": detected_committed_regime,
             "last_detected_regime": detected_committed_regime,
@@ -3387,18 +4167,12 @@ def _build_v2_intelligence(
             "market_structure_score": mss.get("market_structure_score"),
             "mss_score": mss.get("market_structure_score"),
             "structure_state": mss.get("structure_state"),
-            "structural_state": decision.get("structural_state") or decision.get("state") or mss.get("structure_state"),
+            "structural_state": decision.get("state") or mss.get("structure_state"),
             "structure_bias": decision.get("structure_bias"),
             "breakout_probability": breakout_probability,
-            "resistance_shift_cycle": resistance_shift_cycle,
             "regime_state": str(decision.get("state", "")),
             "regime_candidate": str(decision.get("regime_candidate", "")),
             "regime_hold_count": int(decision.get("regime_hold_count", 0) or 0),
-            "raw_candidate_regime": str(decision.get("raw_candidate_regime", "")),
-            "stabilized_regime_family": str(decision.get("regime_family", "")),
-            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
-            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
-            "regime_stabilizer_applied": bool(decision.get("regime_stabilizer_applied", False)),
             "regime_zone": str(decision.get("regime_zone", "")),
             "signal_history": signal_history,
         },
@@ -3503,6 +4277,8 @@ def _build_v2_intelligence(
             "volume_prev_ts": (volume.get("volume_state", {}) or {}).get("volume_prev_ts"),
             "volume_history": (volume.get("volume_state", {}) or {}).get("volume_history", []),
             "trap_raw_prev": round(float(trap.get("trap_smoothed", trap.get("trap_raw", 0.0)) or 0.0), 4),
+            "trap_state": str(trap.get("trap_state") or trap.get("trap_level") or ""),
+            "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
             "previous_bias": stable_bias,
             "previous_projection": stable_projection,
             "bias_change_counter": int(bias_change_counter),
@@ -3520,24 +4296,51 @@ def _build_v2_intelligence(
             "detected_regime": detected_committed_regime,
             "candidate_regime": next_candidate_regime,
             "candidate_regime_count": int(next_candidate_regime_count),
+            "raw_candidate_regime": raw_candidate_regime,
+            "candidate_regime_after_range_lock": candidate_regime_after_range_lock,
+            "stabilized_regime_family": stabilized_regime_family,
+            "regime_hold_cycles": int(regime_stabilizer.get("regime_hold_cycles", 0) or 0),
+            "regime_candidate_streak": int(next_candidate_regime_count),
+            "regime_family": stabilized_regime_family,
+            "range_locked": range_locked,
+            "no_edge": no_edge,
+            "range_trap_cap_applied": range_trap_cap_applied,
+            "range_trap_cap_reason": range_trap_cap_reason,
+            "range_trap_cap_stage": range_trap_cap_stage,
+            "trade_readiness": decision.get("trade_readiness"),
+            "readiness_state": decision.get("readiness_state"),
             "readiness_active": bool(decision.get("readiness_active", False)),
+            "readiness_model": decision.get("readiness_model"),
+            "trade_readiness_v2": decision.get("trade_readiness_v2"),
+            "readiness_state_v2": decision.get("readiness_state_v2"),
+            "readiness_active_v2": bool(decision.get("readiness_active_v2", False)),
+            "readiness_structure_quality": decision.get("readiness_structure_quality"),
+            "readiness_directional_alignment": decision.get("readiness_directional_alignment"),
+            "readiness_execution_quality": decision.get("readiness_execution_quality"),
+            "readiness_risk_friction": decision.get("readiness_risk_friction"),
+            "readiness_cap_reason": decision.get("readiness_cap_reason"),
+            "readiness_floor_reason": decision.get("readiness_floor_reason"),
             "breakout_candidate": breakout_candidate,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),
             "previous_resistance": support_reference_state.get("previous_resistance"),
             "current_resistance": support_reference_state.get("current_resistance"),
+            "sr_first_cycle_after_reset": False,
+            "sr_cold_start_guard_applied": bool(sr_guard.get("sr_cold_start_guard_applied", False)),
+            "sr_previous_support_anchor_used": sr_guard.get("sr_previous_support_anchor_used"),
+            "sr_previous_support_anchor_source": sr_guard.get("sr_previous_support_anchor_source"),
+            "sr_previous_resistance_anchor_used": sr_guard.get("sr_previous_resistance_anchor_used"),
+            "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
+            "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
+            "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
-            "resistance_shift_cycle": resistance_shift_cycle,
             "blocking_reason": blocking_reason,
             "winning_engine": winning_engine,
             "decision_confidence": decision_confidence,
             "resolved_reason": resolved_reason,
-            "support_transition_active": support_transition_badge,
             "support_transition_badge": support_transition_badge,
-            "resistance_transition_active": resistance_transition_badge,
             "resistance_transition_badge": resistance_transition_badge,
-            "spc_shift_cooldown_remaining": decision.get("spc_shift_cooldown_remaining", 0),
             "signal_history": signal_history,
             "wick_zero_streak": int(wick_zero_streak),
             "oi_near_one_streak": int(oi_near_one_streak),
@@ -3547,11 +4350,6 @@ def _build_v2_intelligence(
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "session_phase_session_key": session_phase_payload.get("session_key"),
             "session_date": session_phase_payload.get("session_key"),
-            "spc_session_key": session_phase_payload.get("session_key"),
-            "regime_hold_cycles": int(decision.get("regime_hold_cycles", 0) or 0),
-            "regime_candidate": str(decision.get("regime_candidate", "")),
-            "regime_candidate_streak": int(decision.get("regime_candidate_streak", 0) or 0),
-            "regime_family": str(decision.get("regime_family", "")),
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),
@@ -3580,6 +4378,7 @@ def _build_v2_intelligence(
 async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
     option_chain_section: dict[str, Any] = {}
     summary_section: dict[str, Any] = {}
+    daily_context = await asyncio.to_thread(get_daily_context, symbol)
 
     contract_info = await _fetch_contract_info_async(symbol)
     expiries = list(contract_info.get("expiryDates", []))
@@ -3591,6 +4390,7 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         "expiries": expiries,
         "strikes": strikes,
     }
+    option_chain_section["daily_context"] = daily_context
 
     expiries_to_fetch = expiries[:MAX_EXPIRIES_PER_SYMBOL]
     if not expiries_to_fetch:
@@ -3639,6 +4439,7 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             "decision_input": decision_input,
             "master_decision": master_decision,
             "rows": rows,
+            "daily_context": daily_context,
         }
 
         v2_payload = _build_v2_intelligence(
@@ -3664,6 +4465,16 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             engine_stats=engine_stats,
             evaluation_time=_parse_timestamp_utc(records.get("timestamp")),
         )
+        daily_levels = (daily_context.get("levels") or {}) if isinstance(daily_context, dict) else {}
+        daily_window = (daily_context.get("rolling_3m") or {}) if isinstance(daily_context, dict) else {}
+        market_state = v2_payload.setdefault("market_state", {})
+        market_state["daily_context"] = daily_context
+        market_state["previous_day_open"] = daily_levels.get("previous_day_open")
+        market_state["previous_day_high"] = daily_levels.get("previous_day_high")
+        market_state["previous_day_low"] = daily_levels.get("previous_day_low")
+        market_state["previous_day_close"] = daily_levels.get("previous_day_close")
+        market_state["daily_trend_bias"] = daily_window.get("trend_bias")
+        v2_payload["daily_context"] = daily_context
         mstate = v2_payload.get("market_state", {}) or {}
         signals = v2_payload.get("signals", {}) or {}
         auto_exit = (signals.get("auto_exit", {}) or {}).get("exit_signal", False)

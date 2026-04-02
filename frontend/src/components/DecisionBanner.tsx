@@ -11,6 +11,7 @@ type DecisionBannerProps = {
   bias: string;
   readinessScore: number;
   readinessState: string;
+  readinessExplainability?: string | null;
   pressureState: string;
   regime: string;
   detailSummary?: string;
@@ -59,7 +60,11 @@ function normalizeExplanation(
       return fallbackWait;
     }
     if (!lower.includes("wait")) {
-      return `Waiting is correct: ${clean.charAt(0).toLowerCase()}${clean.slice(1)}`;
+      const normalizedLead =
+        /^[A-Z]{2,}\b/.test(clean) || !clean
+          ? clean
+          : `${clean.charAt(0).toLowerCase()}${clean.slice(1)}`;
+      return `Waiting is correct: ${normalizedLead}`;
     }
   }
 
@@ -79,6 +84,7 @@ export default function DecisionBanner({
   bias,
   readinessScore,
   readinessState,
+  readinessExplainability = null,
   pressureState,
   regime,
   detailSummary,
@@ -121,7 +127,9 @@ export default function DecisionBanner({
     <div className={`ia-card ia-decision-banner ia-decision-banner-v2 ${toneClass}`}>
       <div className="ia-decision-banner-v2-head">
         <div className="ia-kpi-label ia-decision-banner-v2-title">Trade Signal</div>
-        <div className="ia-decision-banner-v2-badge">{action}</div>
+        <div className="ia-decision-banner-v2-head-actions">
+          <div className="ia-decision-banner-v2-badge">{action}</div>
+        </div>
       </div>
 
       <div className="ia-decision-banner-v2-body">
@@ -146,12 +154,15 @@ export default function DecisionBanner({
           </div>
           <div className="ia-readiness-track">
             <div className="ia-readiness-fill" style={{ width: `${readinessPct}%` }} />
-            <div className="ia-readiness-threshold-wrap" style={{ left: "57%" }}>
-              <span className="ia-readiness-entry">57 entry</span>
+            <div className="ia-readiness-threshold-wrap" style={{ left: "60%" }}>
+              <span className="ia-readiness-entry">60 entry</span>
               <div className="ia-readiness-threshold" />
             </div>
           </div>
         </div>
+        {readinessExplainability ? (
+          <div className="ia-readiness-explain">{readinessExplainability}</div>
+        ) : null}
 
         <div className="ia-confidence-strip">
           <div className="ia-confidence-head">

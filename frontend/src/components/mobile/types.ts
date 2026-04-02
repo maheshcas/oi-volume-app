@@ -49,6 +49,7 @@ export type MobileDashboardData = {
   readinessScore: number | null;
   readinessState: string;
   readinessActive: boolean | null;
+  readinessExplainability?: string | null;
   pressureState: string;
   regime: string;
   sessionPhase: string;

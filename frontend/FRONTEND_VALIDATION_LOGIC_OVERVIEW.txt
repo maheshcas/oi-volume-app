@@ -94,53 +94,34 @@ frontend/src/components/KeyLevelsCard.tsx
 
 Structural Price Context
 frontend/src/components/StructuralPriceContextCard.tsx
-- SPC now uses a decision-first desktop layout with a Hybrid SPC rail.
-- Current desktop SPC content:
-  - action
-  - resolved reason
-  - status chips
+- SPC now uses a dense structural layout on desktop.
+- Current compact / dense content:
+  - action / reason header
+  - session phase
+  - bias chip
   - support / spot / resistance
   - support and resistance defense ratios
   - previous support / previous resistance labels when provided
-  - Hybrid SPC rail
-  - context alert strip
-  - compact footer:
-    - trap state
-    - breakout needs +50 pts
-  - Today's Expected Range
-- Chart is behind a Show Chart / Hide Chart toggle.
-- Separate upside/downside target cards were merged into:
-  - Today's Expected Range
-- Hybrid SPC rail is rendered through:
-  - frontend/src/components/StructureBand.tsx
-- Hybrid SPC rail behavior:
-  - segmented active structure:
-    - Defended Support
-    - Active Zone
-    - Resistance Watch
-  - one-sided elastic extension on breach only
-  - previous structural memory ticks with below-band labels
-  - automatic snap-back when spot returns inside current structure
-  - premium rail styling:
-    - glass base rail
-    - flattened single-rail active gradient
-    - thinner energy-stretch extension tail
-    - 3-layer spot orb
-    - glass-chip rail labels
-    - subtle structure tension glow near support / resistance
-    - inline SAFE badge when trap is not dominant
-    - embedded state chip hidden to avoid footer collisions
-- SPC support/resistance stat row rules:
-  - primary row renders separate nodes for:
-    - structural token (`S` or `R`)
-    - level value
-    - optional `NEW` badge
-  - previous level text stays on its own muted line
-  - structural identifiers must never concatenate into strings like `newS 22,800`
-- SPC readiness visualization:
-  - readiness text was removed from the footer center column
-  - readiness now renders as a blurred under-rail glow
-  - glow is shifted right and opacity scales from readiness score/state
+  - active band track with watch zone
+  - dense footer:
+    - breakout probabilities
+    - below-S / above-R targets
+  - combined expected range
+- Chart code remains in file, but SPC chart rendering is intentionally disabled in the live UI.
+- Range track supports preserved previous-level breach markers when backend data exists.
+- Track now also supports:
+  - near-support and near-resistance proximity states
+  - spot dot color changes:
+    - blue mid-band
+    - green near support
+    - red near resistance
+    - red breach
+  - proximity / breach banner between track and footer
+- Current SPC cleanup rules:
+  - regime chip removed from SPC header
+  - point-distance helper lines removed from the body
+  - trap-risk helper text below the rail removed
+  - bearish bias chip renders red
 - Validation note:
   - if no mark appears, first check whether backend actually provides a distinct previous level and confirmed breach state
   - previous S/R display depends on backend market_state.previous_support / previous_resistance being non-null
@@ -277,6 +258,21 @@ frontend/src/main.tsx
 - Validation target:
   - spot and other live values should continue updating after refresh instead of freezing on stale cached API responses.
 
+SPC dense desktop validation
+frontend/src/components/StructuralPriceContextCard.tsx
+- Validate:
+  - left / center / right footer columns stay aligned
+  - right-side distance flips correctly between below R and above R
+  - Up Prob / Down Prob render numeric values instead of `-%`
+  - Expected Range renders as a combined low ↔ high envelope
+  - proximity banner appears only when:
+    - near support
+    - near resistance
+    - support broken
+    - resistance broken
+  - banner stays hidden mid-band
+  - old S / old R anchor labels only show when previous levels are actually present
+
 Validation checklist
 - Below `md`, mobile layout renders instead of desktop.
 - At `md` and above, desktop layout renders unchanged.
@@ -294,34 +290,7 @@ Validation checklist
   - green near support
   - red near resistance / breach
 - SPC banner only appears for proximity / breach states.
-- Hybrid SPC rail validation:
-  - active structure is visually dominant over the base rail
-  - segmented internal structure is visible:
-    - Defended Support
-    - Active Zone
-    - Resistance Watch
-  - extension appears only on the breached side and reads as a thinner energy tail
-  - previous S / previous R labels render below the band and shift away from spot when too close
-  - spot orb remains the brightest object and uses 3-layer depth:
-    - outer halo
-    - mid glow
-    - bright core
-  - embedded SAFE badge appears inline on the left when trap is low / not dominant
-  - readiness appears as a subtle blurred glow under the rail, not as footer text
-  - structure tension appears only when:
-    - near support
-    - near resistance
-  - right-side wording must not regress to Support Watch Zone
-  - SPC alert strip appears only for proximity / breach states
-  - Hybrid SPC rail clearly separates:
-    - current structure
-    - extension / breach stretch
-    - previous structural memory
-  - spot orb color semantics are:
-    - blue inside structure
-    - green near support / support defense
-    - red near resistance / breakdown
-    - amber breakout attempt / upside breach
+- SPC bearish bias chip appears red.
 - Bottom nav on mobile no longer inherits orange button styling.
 - Expiry dropdown text remains visible.
 - Netlify refresh on `/app` works after deploy.
@@ -331,3 +300,98 @@ Build validation
 - Current frontend changes build successfully with:
   - `npm run build`
 
+CURRENT OVERRIDE (2026-04-01)
+- This section supersedes stale notes above where they conflict.
+
+Desktop hierarchy (current)
+- Top row:
+  - Structural Price Context (SPC)
+  - Trap card (adjacent)
+- Key Levels is positioned between SPC and the trade-signal area.
+- Recent Signal Flow has been removed from active desktop/mobile UI paths.
+
+SPC renderer source of truth
+- Active SPC rail path uses:
+  - frontend/src/components/StructureBand.tsx
+- Integrated by:
+  - frontend/src/components/StructuralPriceContextCard.tsx
+- SPC chart is intentionally disabled in UI but code remains in file.
+
+SPC state handling
+- StructureBand uses resolved SPC state logic:
+  - WITHIN_STRUCTURE
+  - SUPPORT_DEFENSE
+  - RESISTANCE_PRESSURE
+  - BREAKOUT_ATTEMPT
+  - BREAKDOWN_ATTEMPT
+  - CONFIRMED_EXPANSION
+- Dual breach guard is enforced in-band rendering.
+
+SPC text correctness guards
+- Breached states must never render as near-edge text.
+- When spot > resistance:
+  - center text must read above-resistance context
+- When spot < support:
+  - center text must read below-support context
+- Generic "inside active band" reason is overridden when breach is active.
+
+S/R stat rendering rule
+- Primary structural row must contain only:
+  - S value or R value
+- Shift/new indicators must use badge rendering (for example NEW), not inline token concatenation.
+- Invalid pattern to reject:
+  - "S newS 22,800"
+
+SPC footer checks
+- Side columns should render:
+  - breakout probabilities above side targets
+  - below-S target on support side
+  - above-R target on resistance side
+- Expected range remains centered.
+
+Header chip cleanup
+- Regime chip and raw volume chip were removed from SPC header.
+- Header should stay action/reason/bias focused.
+
+CURRENT OVERRIDE (2026-04-02)
+- This section supersedes stale notes above where they conflict.
+
+Readiness display mode
+- Frontend is now pinned to the active backend readiness contract.
+- V1/V2 readiness toggle has been removed from desktop and mobile UI.
+- Readiness explainability uses:
+  - readiness_cap_reason
+  - readiness_floor_reason
+- Expected threshold marker in UI:
+  - 60 entry
+
+Decision card cleanup
+- Recent Signal Flow is removed from active desktop and mobile UI paths.
+- Validation should no longer expect timeline rendering in the decision card path.
+
+Current SPC structure
+- Desktop top row layout:
+  - Structural Price Context (SPC)
+  - Trap card next to SPC
+- SPC chart code remains in the component, but rendered chart output is intentionally disabled.
+
+Current SPC content contract
+- Header:
+  - action / reason
+  - session phase chip
+  - trap cleanliness / trap risk chip
+  - bias chip
+- Support / Spot / Resistance body:
+  - no point-distance helper lines
+  - previous levels on separate muted rows
+- Footer:
+  - support side = Down Prob + Below S target
+  - center = Today's Expected Range
+  - resistance side = Up Prob + Above R target
+
+Current SPC display guards
+- Regime chip is removed from SPC header.
+- Trap-risk helper text below the rail is removed.
+- Bearish bias chip renders red.
+- Bullish bias chip renders green.
+- Neutral bias chip keeps the default muted chip styling.

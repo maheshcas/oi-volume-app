@@ -91,25 +91,24 @@ class StabilityLoggerService:
         if not self.enabled:
             self.logger.info("Stability logger disabled")
             return
+        self.logger.info(
+            "Starting stability logger: symbol=%s expiry=%s interval=%ss",
+            self.symbol,
+            self.expiry or "AUTO",
+            self.interval_seconds,
+        )
         if not self._acquire_process_lock():
             self.logger.info("Stability logger already active in another process")
             return
-        self.logger.info(
-            "Stability logger started",
-            extra={
-                "symbol": self.symbol,
-                "interval_seconds": self.interval_seconds,
-            },
-        )
         try:
             while not stop_event.is_set():
                 try:
                     await self._log_once()
-                except Exception:
-                    self.logger.exception("Stability logger cycle failed")
+                except Exception as exc:
+                    self.logger.debug("Stability logger cycle failed: %s", exc)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=self.interval_seconds)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         finally:
             self._release_process_lock()

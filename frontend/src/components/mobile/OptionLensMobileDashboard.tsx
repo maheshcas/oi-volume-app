@@ -56,6 +56,7 @@ export default function OptionLensMobileDashboard({
           bias={data.bias}
           readinessScore={data.readinessScore}
           readinessState={data.readinessState}
+          readinessExplainability={data.readinessExplainability ?? null}
           pressureState={data.pressureState}
           regime={data.regime}
           supportTransitionBadge={data.supportTransitionBadge}

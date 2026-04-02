@@ -87,6 +87,62 @@ def _hydrate_previous_sr_state(previous_state: dict[str, Any] | None) -> dict[st
     return hydrated
 
 
+def _resolve_sr_cold_start_anchor(
+    previous_state: dict[str, Any] | None,
+    side: OptionType,
+) -> dict[str, Any]:
+    state = previous_state or {}
+    side_key = "resistance" if side == "CE" else "support"
+    nested_levels = (state.get("levels") or {}) if isinstance(state.get("levels"), dict) else {}
+    nested_side = dict(nested_levels.get(side_key) or {})
+    nested_immediate = _to_float(nested_side.get("immediate"), 0.0)
+    nested_major = _to_float(nested_side.get("major"), 0.0)
+
+    top_keys = (
+        ("current_resistance", "resistance_level", "previous_resistance")
+        if side == "CE"
+        else ("current_support", "support_level", "previous_support")
+    )
+    top_anchor = 0.0
+    for key in top_keys:
+        candidate = _to_float(state.get(key), 0.0)
+        if candidate > 0:
+            top_anchor = candidate
+            break
+
+    anchor = nested_immediate if nested_immediate > 0 else top_anchor if top_anchor > 0 else nested_major
+    used_top_level = nested_immediate <= 0 < top_anchor
+    first_cycle_after_reset = bool(state.get("sr_first_cycle_after_reset", False)) or int(state.get("support_shift_cycle", 0) or 0) < 0
+    guard_active = bool(anchor > 0 and (first_cycle_after_reset or used_top_level))
+    return {
+        "anchor": anchor if anchor > 0 else None,
+        "used_top_level": used_top_level,
+        "first_cycle_after_reset": first_cycle_after_reset,
+        "guard_active": guard_active,
+    }
+
+
+def _held_candidate_from_anchor(
+    *,
+    anchor: float,
+    prev_score: float,
+    side: OptionType,
+    spot: float | None,
+) -> _ScoredStrike:
+    distance_pct = 0.0
+    if spot is not None and spot > 0:
+        distance_pct = abs(anchor - spot) / spot
+    return _ScoredStrike(
+        strike=float(anchor),
+        score=float(prev_score),
+        oi=0.0,
+        doi=0.0,
+        vol=0.0,
+        distance_pct=distance_pct,
+        side=side,
+    )
+
+
 def _normalize_scores(values: list[float]) -> list[float]:
     if not values:
         return []
@@ -221,6 +277,7 @@ def _apply_level_hysteresis(
     scored: list[_ScoredStrike],
     previous_state: dict[str, Any] | None,
     spot: float | None,
+    debug_state: dict[str, Any] | None = None,
     score_margin: float = 0.18,
     oi_margin: float = 0.15,
     resistance_upward_buffer: float = 25.0,
@@ -232,11 +289,16 @@ def _apply_level_hysteresis(
     prev_levels = (previous_state or {}).get("levels", {})
     side_key = "resistance" if side == "CE" else "support"
     prev_obj = prev_levels.get(side_key, {}) if isinstance(prev_levels, dict) else {}
-    prev_immediate = _to_float((prev_obj.get("immediate") if isinstance(prev_obj, dict) else None), 0.0)
+    cold_start = _resolve_sr_cold_start_anchor(previous_state, side)
+    prev_immediate = _to_float(cold_start.get("anchor"), 0.0)
     prev_score = _to_float((prev_obj.get("immediate_score") if isinstance(prev_obj, dict) else None), 0.0)
-    if prev_immediate <= 0:
-        fallback_key = "resistance_level" if side == "CE" else "support_level"
-        prev_immediate = _to_float((previous_state or {}).get(fallback_key), 0.0)
+    if isinstance(debug_state, dict):
+        debug_state["first_cycle_after_reset"] = bool(cold_start.get("first_cycle_after_reset"))
+        debug_state["anchor_used"] = float(prev_immediate) if prev_immediate > 0 else None
+        debug_state["used_top_level"] = bool(cold_start.get("used_top_level"))
+        debug_state["guard_active"] = bool(cold_start.get("guard_active"))
+        debug_state["guard_applied"] = False
+        debug_state["buffer_blocked"] = False
 
     if prev_immediate <= 0:
         return immediate
@@ -244,11 +306,25 @@ def _apply_level_hysteresis(
         return immediate
 
     prev_candidate = next((item for item in scored if abs(item.strike - prev_immediate) < 1e-6), None)
+    used_synthetic_anchor = False
     if prev_candidate is None:
-        return immediate
+        if not bool(cold_start.get("guard_active")):
+            return immediate
+        prev_candidate = _held_candidate_from_anchor(
+            anchor=float(prev_immediate),
+            prev_score=float(prev_score),
+            side=side,
+            spot=spot,
+        )
+        used_synthetic_anchor = True
+        if isinstance(debug_state, dict):
+            debug_state["guard_applied"] = True
 
     if spot is not None:
         if side == "CE" and immediate.strike > prev_candidate.strike and spot < (prev_candidate.strike + resistance_upward_buffer):
+            if isinstance(debug_state, dict):
+                debug_state["buffer_blocked"] = True
+                debug_state["guard_applied"] = True
             logger.debug(
                 "SRTrace[%s][buffer_hold] prev=%s current=%s spot=%.2f required_spot=%.2f",
                 side,
@@ -268,6 +344,9 @@ def _apply_level_hysteresis(
             )
             return immediate
         if side == "PE" and immediate.strike < prev_candidate.strike and spot > (prev_candidate.strike - support_downward_buffer):
+            if isinstance(debug_state, dict):
+                debug_state["buffer_blocked"] = True
+                debug_state["guard_applied"] = True
             logger.debug(
                 "SRTrace[%s][buffer_hold] prev=%s current=%s spot=%.2f required_spot=%.2f",
                 side,
@@ -301,6 +380,8 @@ def _apply_level_hysteresis(
         current_score_gain,
         current_oi_gain,
     )
+    if used_synthetic_anchor and isinstance(debug_state, dict):
+        debug_state["guard_applied"] = True
     return prev_candidate
 
 
@@ -322,11 +403,9 @@ def _resolve_display_candidate(
     prev_levels = (previous_state or {}).get("levels", {})
     side_key = "resistance" if side == "CE" else "support"
     prev_obj = prev_levels.get(side_key, {}) if isinstance(prev_levels, dict) else {}
-    prev_immediate = _to_float((prev_obj.get("immediate") if isinstance(prev_obj, dict) else None), 0.0)
+    cold_start = _resolve_sr_cold_start_anchor(previous_state, side)
+    prev_immediate = _to_float(cold_start.get("anchor"), 0.0)
     prev_score = _to_float((prev_obj.get("immediate_score") if isinstance(prev_obj, dict) else None), 0.0)
-    if prev_immediate <= 0:
-        fallback_key = "resistance_level" if side == "CE" else "support_level"
-        prev_immediate = _to_float((previous_state or {}).get(fallback_key), 0.0)
 
     if prev_immediate <= 0 or abs(candidate.strike - prev_immediate) < 1e-6:
         return candidate
@@ -657,12 +736,15 @@ def run_sr_engine(
     logger.debug("SRTrace[CE][major_resistance] chosen=%s score=%.6f", major_res.strike if major_res else None, major_res.score if major_res else 0.0)
     immediate_res = _pick_immediate(ce_scored, spot_num, "CE")
     immediate_sup = _pick_immediate(pe_scored, spot_num, "PE")
+    support_hysteresis_debug: dict[str, Any] = {}
+    resistance_hysteresis_debug: dict[str, Any] = {}
     immediate_res = _apply_level_hysteresis(
         side="CE",
         immediate=immediate_res,
         scored=ce_scored,
         previous_state=previous_state,
         spot=spot_num,
+        debug_state=resistance_hysteresis_debug,
     )
     immediate_sup = _apply_level_hysteresis(
         side="PE",
@@ -670,6 +752,7 @@ def run_sr_engine(
         scored=pe_scored,
         previous_state=previous_state,
         spot=spot_num,
+        debug_state=support_hysteresis_debug,
     )
 
     ce_avg_vol = sum(s.vol for s in ce_scored) / max(1, len(ce_scored))
@@ -835,5 +918,16 @@ def run_sr_engine(
             "support": support_pressure,
             "resistance": resistance_pressure,
         },
+        "sr_first_cycle_after_reset": bool(
+            support_hysteresis_debug.get("first_cycle_after_reset")
+            or resistance_hysteresis_debug.get("first_cycle_after_reset")
+        ),
+        "sr_cold_start_guard_applied": bool(
+            support_hysteresis_debug.get("guard_applied") or resistance_hysteresis_debug.get("guard_applied")
+        ),
+        "sr_previous_support_anchor_used": support_hysteresis_debug.get("anchor_used"),
+        "sr_previous_resistance_anchor_used": resistance_hysteresis_debug.get("anchor_used"),
+        "sr_support_buffer_blocked": bool(support_hysteresis_debug.get("buffer_blocked")),
+        "sr_resistance_buffer_blocked": bool(resistance_hysteresis_debug.get("buffer_blocked")),
         "alerts": alerts,
     }

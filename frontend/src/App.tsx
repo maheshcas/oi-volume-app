@@ -187,6 +187,11 @@ type IntelligenceResponse = {
     trade_readiness?: number;
     readiness_state?: "High" | "Moderate" | "Low" | string;
     readiness_active?: boolean;
+    trade_readiness_v2?: number;
+    readiness_state_v2?: "High" | "Moderate" | "Low" | string;
+    readiness_active_v2?: boolean;
+    readiness_cap_reason?: string | null;
+    readiness_floor_reason?: string | null;
     session_phase?: string;
     session_phase_confidence?: number;
     breakout_probability?: {
@@ -355,6 +360,73 @@ const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const INDEX_NAMES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"];
+
+type ReadinessSelection = {
+  score: number | null;
+  state: string;
+  active: boolean | null;
+  explainabilityText: string | null;
+};
+
+const READINESS_REASON_LABEL_MAP: Record<string, string> = {
+  TRANSITION_CAP: "Capped by transition",
+  NO_BREACH_CONFIRMATION_CAP: "Capped: no breach confirmation",
+  HIGH_TRAP_NO_BREACH_CAP: "Capped by trap risk",
+  RANGE_DAY_MID_BAND_CAP: "Capped: mid-band range",
+  NO_EDGE_CAP: "Capped: no edge",
+  CONFIRMED_BREACH_FLOOR: "Lifted by confirmed breach",
+  CONFIRMED_EXPANSION_LOW_TRAP_FLOOR: "Lifted by confirmed expansion",
+};
+
+function mapReadinessReason(reason?: string | null) {
+  const key = String(reason || "").trim().toUpperCase();
+  if (!key) return null;
+  return READINESS_REASON_LABEL_MAP[key] ?? null;
+}
+
+function buildReadinessExplainability(capReason?: string | null, floorReason?: string | null) {
+  const cap = mapReadinessReason(capReason);
+  const floor = mapReadinessReason(floorReason);
+  if (cap && floor) return `${cap} | ${floor}`;
+  return cap ?? floor ?? null;
+}
+
+function normalizeReadinessScore(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, value));
+}
+
+function selectReadinessDisplay({
+  score,
+  state,
+  active,
+  capReason,
+  floorReason,
+  fallbackScore,
+  fallbackState,
+}: {
+  score?: number | null;
+  state?: string | null;
+  active?: boolean | null;
+  capReason?: string | null;
+  floorReason?: string | null;
+  fallbackScore?: number | null;
+  fallbackState?: string | null;
+}): ReadinessSelection {
+  const primaryScoreValue = normalizeReadinessScore(score);
+  const fallbackScoreValue = normalizeReadinessScore(fallbackScore);
+  const fallbackStateValue = String(fallbackState || "Unknown").trim() || "Unknown";
+  const selectedScore = primaryScoreValue ?? fallbackScoreValue;
+  const selectedState = String(state || "").trim() || fallbackStateValue;
+  const selectedActive = typeof active === "boolean" ? active : null;
+
+  return {
+    score: selectedScore,
+    state: selectedState,
+    active: selectedActive,
+    explainabilityText: buildReadinessExplainability(capReason, floorReason),
+  };
+}
 
 function classifyAlertSeverity(message: string): "info" | "watch" | "high" {
   const text = String(message || "").toLowerCase();
@@ -1828,16 +1900,20 @@ export default function App() {
   const activeSupportRow = useMemo(
     () =>
       typeof displaySupport === "number"
-        ? displayRows.find((row) => Number(row.strike) === Number(displaySupport)) ?? null
+        ? rows.find((row) => Number(row.strike) === Number(displaySupport)) ??
+          displayRows.find((row) => Number(row.strike) === Number(displaySupport)) ??
+          null
         : null,
-    [displayRows, displaySupport]
+    [displayRows, displaySupport, rows]
   );
   const activeResistanceRow = useMemo(
     () =>
       typeof displayResistance === "number"
-        ? displayRows.find((row) => Number(row.strike) === Number(displayResistance)) ?? null
+        ? rows.find((row) => Number(row.strike) === Number(displayResistance)) ??
+          displayRows.find((row) => Number(row.strike) === Number(displayResistance)) ??
+          null
         : null,
-    [displayRows, displayResistance]
+    [displayRows, displayResistance, rows]
   );
   const supportDefenseRatio = useMemo(() => {
     const backendDefense = intelligence?.levels?.support?.defense_score;
@@ -2012,10 +2088,24 @@ export default function App() {
         : pressureSmoothed < 75
           ? "Buy Pressure"
           : "Strong Buy Pressure";
-  const displayReadinessScore = Number(intelligence?.market_state?.trade_readiness ?? readinessDisplay.score ?? 0);
-  const displayReadinessState =
-    intelligence?.market_state?.readiness_state ??
-    (readinessDisplay.state === "READY" ? "High" : readinessDisplay.state === "CAUTION" ? "Moderate" : "Low");
+  const fallbackReadinessState =
+    readinessDisplay.state === "READY"
+      ? "High"
+      : readinessDisplay.state === "CAUTION"
+        ? "Moderate"
+        : "Low";
+  const selectedReadiness = selectReadinessDisplay({
+    score: intelligence?.market_state?.trade_readiness,
+    state: intelligence?.market_state?.readiness_state,
+    active: intelligence?.market_state?.readiness_active,
+    capReason: intelligence?.market_state?.readiness_cap_reason,
+    floorReason: intelligence?.market_state?.readiness_floor_reason,
+    fallbackScore: readinessDisplay.score,
+    fallbackState: fallbackReadinessState,
+  });
+  const displayReadinessScore = Number(selectedReadiness.score ?? 0);
+  const displayReadinessState = selectedReadiness.state;
+  const displayReadinessExplainability = selectedReadiness.explainabilityText;
   const directionalPressureLabel =
     intelligence?.decision_engine?.pressure_state ??
     intelligence?.market_state?.pressure_state ??
@@ -2914,9 +3004,10 @@ export default function App() {
     bias: displayPrimaryBias,
     dayTrend: dayTrendDisplay,
     longTrend: longTrendDisplay,
-    readinessScore: intelligence?.market_state?.trade_readiness ?? null,
-    readinessState: intelligence?.market_state?.readiness_state ?? "Unknown",
-    readinessActive: intelligence?.market_state?.readiness_active ?? null,
+    readinessScore: selectedReadiness.score,
+    readinessState: selectedReadiness.state,
+    readinessActive: selectedReadiness.active,
+    readinessExplainability: displayReadinessExplainability,
     pressureState: intelligence?.market_state?.pressure_state ?? pressureStateLabel ?? "-",
     regime: intelligence?.market_state?.regime ?? displayRegime,
     sessionPhase: displaySessionPhase,
@@ -3078,7 +3169,6 @@ export default function App() {
             {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
           </div>
         </div>
-
         <MarketBanner
           indexName={indexNameMap[symbol] ?? symbol}
           spot={formatNumber(spotValue)}
@@ -3114,6 +3204,7 @@ export default function App() {
             bias: String(displayPrimaryBias ?? displayBias ?? "Neutral"),
             readinessScore: displayReadinessScore,
             readinessState: displayReadinessState,
+            readinessExplainability: displayReadinessExplainability,
             pressureState: directionalPressureLabel,
             regime: displayRegime,
             detailSummary: displayDecisionText,
@@ -3159,22 +3250,13 @@ export default function App() {
             resistanceEnd: activeResistanceEnd,
             target1: typeof displayTarget1 === "number" ? displayTarget1 : null,
             target2: typeof displayTarget2 === "number" ? displayTarget2 : null,
+            breakBelowPrimary: formatNumber(canonicalBreakBelowPrimary),
+            breakAbovePrimary: formatNumber(canonicalBreakAbovePrimary),
             previousSupport,
             previousResistance,
             materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
             confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
             sessionPhase: displaySessionPhase,
-            tradeAction: intelligence?.market_state?.trade_action ?? "WAIT",
-            resolvedReason: intelligence?.market_state?.resolved_reason ?? null,
-            decisionExplanation: intelligence?.market_state?.decision_explanation ?? null,
-            decisionConfidence: intelligence?.market_state?.decision_confidence ?? null,
-            readinessState: intelligence?.market_state?.readiness_state ?? null,
-            supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
-            supportTransitionBadge: Boolean(
-              intelligence?.market_state?.support_transition_badge ??
-              intelligence?.market_state?.support_transition_active
-            ),
-            resistanceTransitionBadge: Boolean(intelligence?.market_state?.resistance_transition_badge),
             bias: String(displayPrimaryBias ?? displayBias),
             biasStrength: biasStrengthLabel,
             regime: displayRegime,
@@ -3187,6 +3269,8 @@ export default function App() {
             trapProbability: typeof displayTrapRiskPct === "number" ? displayTrapRiskPct : null,
             trapDirection,
             readinessScore: displayReadinessScore,
+            readinessState: displayReadinessState,
+            readinessExplainability: displayReadinessExplainability,
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel: formatNumber(
               displayRows.reduce(

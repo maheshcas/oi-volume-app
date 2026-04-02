@@ -10,6 +10,7 @@ type PrimarySignalCardProps = {
   bias: string;
   readinessScore: number | null;
   readinessState: string;
+  readinessExplainability?: string | null;
   pressureState: string;
   regime: string;
   blockingReason?: string;
@@ -46,6 +47,7 @@ export default function PrimarySignalCard({
   bias,
   readinessScore,
   readinessState,
+  readinessExplainability = null,
   pressureState,
   regime,
   blockingReason = "NONE",
@@ -62,6 +64,7 @@ export default function PrimarySignalCard({
     : resistanceTransitionBadge
       ? "Resistance Transition Active"
       : null;
+
   return (
     <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-4">
       <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.07em] text-slate-600">Trade signal</div>
@@ -99,12 +102,15 @@ export default function PrimarySignalCard({
       </div>
       <div className="relative mb-3 h-[5px] rounded-full bg-white/8">
         <div className="h-full rounded-full bg-[#5ba4e8] transition-all" style={{ width: `${readiness}%` }} />
-        <div className="absolute left-[57%] top-[-5px] h-[15px] w-[1.5px] rounded bg-amber-300">
+        <div className="absolute left-[60%] top-[-5px] h-[15px] w-[1.5px] rounded bg-amber-300">
           <div className="absolute left-1/2 top-[-12px] -translate-x-1/2 whitespace-nowrap font-mono text-[9px] text-amber-300">
-            57 entry
+            60 entry
           </div>
         </div>
       </div>
+      {readinessExplainability ? (
+        <div className="ia-readiness-explain ia-readiness-explain-mobile">{readinessExplainability}</div>
+      ) : null}
 
       <div className="mb-3 rounded-xl border border-white/8 bg-[#0f1a27] px-3 py-2.5">
         <div className="mb-1 flex items-center justify-between gap-3">

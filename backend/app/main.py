@@ -86,7 +86,7 @@ async def on_startup() -> None:
             _stability_task = asyncio.create_task(_stability_logger.run(_stability_stop_event))
             logger.info("Stability logger task started")
     else:
-        logger.info("Stability logger disabled")
+        logger.info("Stability logger disabled by configuration")
 
 
 

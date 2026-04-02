@@ -7,6 +7,7 @@ import requests
 BASE_URL = "https://www.nseindia.com/api/option-chain-v3"
 INDEX_URL = "https://www.nseindia.com/api/NextApi/apiClient"
 CONTRACT_INFO_URL = "https://www.nseindia.com/api/option-chain-contract-info"
+INDEX_HISTORY_URL = "https://www.nseindia.com/api/historicalOR/indicesHistory"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0",
@@ -66,7 +67,7 @@ def _cache_key(url: str, params: dict) -> str:
     return f"{url}?{'&'.join(parts)}"
 
 
-def _request_json(url: str, params: dict, context: str) -> dict:
+def _request_json(url: str, params: dict, context: str, extra_headers: dict | None = None) -> dict:
     request_params = dict(params)
     if context == "option chain":
         request_params["_"] = str(int(time.time() * 1000))
@@ -79,7 +80,10 @@ def _request_json(url: str, params: dict, context: str) -> dict:
         session = _ensure_session(force_new=force_new)
         try:
             _prime_session(session, force=force_new)
-            response = session.get(url, params=request_params, timeout=10, headers=API_HEADERS)
+            request_headers = dict(API_HEADERS)
+            if extra_headers:
+                request_headers.update(extra_headers)
+            response = session.get(url, params=request_params, timeout=10, headers=request_headers)
             if response.status_code in (401, 403):
                 last_error = f"HTTP {response.status_code}"
                 continue
@@ -129,3 +133,21 @@ def fetch_option_chain_contract_info(symbol: str):
     """
     params = {"symbol": symbol}
     return _request_json(CONTRACT_INFO_URL, params, "contract info")
+
+
+def fetch_index_history(index_type: str, from_date: str, to_date: str) -> dict:
+    """
+    Fetch NSE daily historical index candles.
+    This is intended for previous-day / higher-timeframe context, not intraday SPC logic.
+    """
+    params = {
+        "indexType": index_type,
+        "from": from_date,
+        "to": to_date,
+    }
+    return _request_json(
+        INDEX_HISTORY_URL,
+        params,
+        "daily index history",
+        extra_headers={"Referer": "https://www.nseindia.com/reports-indices-historical-index-data"},
+    )

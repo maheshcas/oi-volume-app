@@ -22,6 +22,7 @@ type DashboardLayoutProps = {
     bias: string;
     readinessScore: number;
     readinessState: string;
+    readinessExplainability?: string | null;
     pressureState: string;
     regime: string;
     detailSummary?: string;
@@ -75,19 +76,13 @@ type DashboardLayoutProps = {
     resistanceEnd: number | null;
     target1: number | null;
     target2: number | null;
+    breakBelowPrimary?: string | null;
+    breakAbovePrimary?: string | null;
     previousSupport?: number | null;
     previousResistance?: number | null;
     materialBreachConfirmed?: boolean;
     confirmationType?: string | null;
     sessionPhase?: string | null;
-    tradeAction?: string | null;
-    resolvedReason?: string | null;
-    decisionExplanation?: string | null;
-    decisionConfidence?: number | null;
-    readinessState?: string | null;
-    supportTransitionActive?: boolean;
-    supportTransitionBadge?: boolean;
-    resistanceTransitionBadge?: boolean;
     bias: string;
     biasStrength: string;
     regime: string;
@@ -96,6 +91,8 @@ type DashboardLayoutProps = {
     trapProbability?: number | null;
     trapDirection?: "upside" | "downside" | "";
     readinessScore?: number | null;
+    readinessState?: string | null;
+    readinessExplainability?: string | null;
     trapZoneLabel?: string;
     volumeLabel?: string;
   };
@@ -142,9 +139,9 @@ export default function DashboardLayout({
       className="ia-dashboard-layout"
       style={{
         gridTemplateAreas: `
-          "decision levels trap"
-          "decisionlayer levels trap"
-          "structure structure playbook"
+          "structure structure trap"
+          "decision levels playbook"
+          "decisionlayer levels playbook"
         `,
       }}
     >
@@ -156,6 +153,7 @@ export default function DashboardLayout({
           bias={decision.bias}
           readinessScore={decision.readinessScore}
           readinessState={decision.readinessState}
+          readinessExplainability={decision.readinessExplainability}
           pressureState={decision.pressureState}
           regime={decision.regime}
           detailSummary={decision.detailSummary}
@@ -210,10 +208,20 @@ export default function DashboardLayout({
           resistanceEnd={structure.resistanceEnd}
           target1={structure.target1}
           target2={structure.target2}
+          breakBelowPrimary={structure.breakBelowPrimary}
+          breakAbovePrimary={structure.breakAbovePrimary}
           previousSupport={structure.previousSupport}
           previousResistance={structure.previousResistance}
           materialBreachConfirmed={structure.materialBreachConfirmed}
           confirmationType={structure.confirmationType}
+          sessionPhase={structure.sessionPhase}
+          breakoutProbabilityUp={structure.breakoutProbabilityUp}
+          breakoutProbabilityDown={structure.breakoutProbabilityDown}
+          trapProbability={structure.trapProbability}
+          trapDirection={structure.trapDirection}
+          readinessScore={structure.readinessScore}
+          readinessState={structure.readinessState}
+          readinessExplainability={structure.readinessExplainability}
           bias={structure.bias}
           biasStrength={structure.biasStrength}
           regime={structure.regime}

@@ -241,96 +241,6 @@ backend/app/services/background_updater.py
   - if support_transition_active stays at 0 across a calm session, the stale carryover fix is behaving correctly
   - exact support_shift_cycle == 0 gating was not added because pulsing disappeared after the carryover reset fix
 
-Daily SPC Reset
-backend/app/services/background_updater.py
-- SPC terminology is the source of truth for the desktop structure bar and its memory state.
-- Intraday SPC memory now resets by IST session key through:
-  - reset_spc_intraday_state(...)
-  - spc_session_key
-- Reset is day-key based, not exact 09:15 matching.
-- Purpose:
-  - prevent previous day support / resistance memory from leaking into the next session
-  - allow SPC to rebuild fresh from live SR engine outputs after market open
-- Fields cleared on a new session:
-  - previous_support
-  - previous_resistance
-  - current_support
-  - current_resistance
-  - support_level
-  - resistance_level
-  - support_shift_cycle
-  - resistance_shift_cycle
-  - spc_shift_cooldown_remaining
-  - support_transition_active / resistance_transition_active
-  - support_transition_badge / resistance_transition_badge
-  - absorption_reference_level
-  - signal_history
-- Validation target:
-  - first live cycle of a new IST session must rewrite spc_session_key to today's session key
-  - if spc_session_key remains on a prior date in live payload or state snapshots, SPC reset has not taken effect in the updater path
-- Intentionally preserved:
-  - telemetry files
-  - historical candles
-  - config
-  - non-SPC unrelated caches/state
-- Validation targets:
-  - app restart after market open still resets SPC for the new session
-  - yesterday's previous_support / previous_resistance should not appear in today's first SPC render
-
-SPC Structural Guard
-backend/app/services/background_updater.py
-- Directional bias promotion is now guarded by SPC structural stability.
-- Structural guard helper:
-  - _apply_spc_structural_guard(...)
-- Priority model:
-  - TRAP_RISK
-  - TRANSITION
-  - ABSORPTION
-  - STABLE
-- Transition / instability inputs:
-  - support_transition_active
-  - resistance_transition_active
-  - support_shift_cycle > 0
-  - resistance_shift_cycle > 0
-  - active SPC shift cooldown
-- Promotion gate:
-  - trade_readiness >= 55
-  - trap_probability < 65
-  - breach_confirmed == true
-  - confirmation_type present
-  - structural_state == STABLE
-- If gate fails:
-  - final bias is forced to Neutral
-  - trade_action is forced to WAIT
-- Validation target:
-  - a fresh support/resistance shift must not immediately flip user-facing bias to Bullish/Bearish while transition is still active
-
-SPC Shift Cooldown
-backend/app/services/background_updater.py
-- A short post-shift SPC cooldown is now persisted:
-  - SHIFT_COOLDOWN_CYCLES = 3
-  - spc_shift_cooldown_remaining
-- Trigger:
-  - just_shifted_support
-  - just_shifted_resistance
-- Effect while active:
-  - structural_state remains transition-like
-  - trade_readiness is capped low
-  - trade_action remains WAIT
-  - final bias remains Neutral
-- Validation target:
-  - immediate post-shift cycles should remain structurally cautious even if raw directional force temporarily spikes
-
-Trap / Absorption SPC Override
-backend/app/services/background_updater.py
-- High trap and absorption now override directional interpretation at the SPC state layer.
-- Rules:
-  - trap_probability >= 75 -> structural_state = TRAP_RISK
-  - absorption_detected or fresh level shift -> structural_state = ABSORPTION unless a higher-priority trap/transition state wins
-- Validation target:
-  - support absorption with unresolved breach confirmation should present as Neutral + WAIT, not a directional promotion
-  - transition badges should not carry over across sessions
-
 Session Phase Persistence
 backend/app/services/background_updater.py
 - session_phase is now persisted into _state with:
@@ -349,11 +259,11 @@ backend/app/services/background_updater.py
 
 Logger / Stability Validation
 backend/app/services/stability_logger.py
-- Logger is currently hard-disabled in code for local runtime validation.
-- Disable points:
-  - OPTIONLENS_ENABLE_STABILITY_LOGGER defaults to false
-  - StabilityLoggerService.run() returns immediately
-  - app startup no longer schedules the logger task
+- Stability logger is enabled by environment/config and is active again in local runtime validation.
+- Runtime behavior:
+  - OPTIONLENS_ENABLE_STABILITY_LOGGER controls whether startup schedules the logger task
+  - app startup schedules the logger when enabled
+  - logger writes to backend/logs/stability
 - Lock file writes real PID in fixed-width hex.
 - When logger is re-enabled, snapshot JSONL must include:
   - trap_probability
@@ -368,9 +278,9 @@ backend/app/services/stability_logger.py
 - Validation note:
   - transitions file appears only when watched fields actually change
   - current local expected state is:
-    - no stability_*.jsonl
-    - no transitions_*.jsonl
-    - only .logger.lock may remain
+    - stability_*.jsonl exists when logger is enabled
+    - transitions_*.jsonl appears only when watched fields change
+    - .logger.lock should exist while logger is active
 
 Readiness Stability
 backend/app/services/background_updater.py
@@ -460,8 +370,179 @@ Current deployment status
   - SR cold-start hydration for restart-safe buffers
   - local stability logger disable
   - decision UX fields in market_state for blocker / winning engine / confidence / timeline
-  - daily IST SPC reset via spc_session_key
 - Waiting on live session confirmation:
   - breach_confirmed firing end to end
   - committed_regime candidate ladder reaching count 3 and flipping
   - forward-only phase persistence across a true mid-session feed gap after phase has advanced
+
+CURRENT OVERRIDE (2026-04-01)
+- This section supersedes stale notes above where they conflict.
+
+Backend logger status
+- Stability logger is enabled again.
+- Active files should exist under:
+  - backend/logs/stability/stability_YYYYMMDD.jsonl
+  - backend/logs/stability/.logger.lock
+
+SPC session reset trigger
+- Session reset is wall-clock gated by IST trading day, not stale feed timestamps.
+- Trigger condition:
+  - Monday-Friday
+  - IST time >= 09:00
+- Key field:
+  - session_phase_session_key
+
+Range lock / no-edge stabilizer
+- Range lock and no-edge are active in background_updater.py.
+- Validation fields:
+  - market_state.range_locked
+  - market_state.no_edge
+  - market_state.raw_candidate_regime
+  - market_state.candidate_regime_after_range_lock
+  - market_state.stabilized_regime_family
+
+Daily context integration (new)
+- Daily context is now integrated into the live updater output.
+- Source module:
+  - backend/app/services/daily_context.py
+- Fetch source:
+  - nse_client.fetch_index_history(...)
+- Exposed fields:
+  - market_state.daily_context
+  - market_state.previous_day_open
+  - market_state.previous_day_high
+  - market_state.previous_day_low
+  - market_state.previous_day_close
+  - market_state.daily_trend_bias
+- Storage path:
+  - backend/data/daily_context/*_daily_context.json
+
+Daily context fetch policy (incremental)
+- If no saved file exists:
+  - bootstrap with rolling lookback (default 90 days)
+- If file exists:
+  - read existing rows
+  - find latest saved trading date
+  - fetch from latest+1 day to today
+  - merge, deduplicate, sort
+- Purpose:
+  - avoid downloading full 3-month history every day
+  - keep payload fresh with minimal network load
+
+Do-not-break rule
+- Daily context is read-only higher-timeframe context.
+- It must not directly drive intraday SPC breach/transition logic.
+
+CURRENT OVERRIDE (2026-04-01 - Trap Stabilizer + Readiness V2)
+- This subsection supersedes older readiness/trap notes where they conflict.
+
+Trap stabilizer (final 5 percent patch)
+- Trap probability now has three stabilizing layers in background_updater.py:
+  - smoothing:
+    - new = 0.7 * previous_trap + 0.3 * current_trap
+  - hysteresis deadband:
+    - if abs(current_trap - previous_trap) < 3, keep previous trap
+  - stable mid band lock:
+    - 55 <= trap_probability <= 65 => trap_state = STABLE_MID
+- New constants:
+  - TRAP_HYSTERESIS_DEADBAND
+  - TRAP_SMOOTH_PREV_WEIGHT
+  - TRAP_SMOOTH_NEW_WEIGHT
+  - TRAP_STABLE_MID_MIN
+  - TRAP_STABLE_MID_MAX
+- New output/debug fields:
+  - market_state.trap_state
+  - market_state.trap_hysteresis_applied
+  - cycle_log_entry.trap_state
+  - cycle_log_entry.trap_hysteresis_applied
+
+Readiness V2 (active model)
+- Readiness V2 is now the active readiness contract in background_updater.py.
+- Primary fields now reflect V2:
+  - trade_readiness
+  - readiness_state
+  - readiness_active
+- Explicit V2 fields are still emitted for diagnostics:
+  - trade_readiness_v2
+  - readiness_state_v2
+  - readiness_active_v2
+- Weighted pillars:
+  - structure_quality 30%
+  - directional_alignment 30%
+  - execution_quality 25%
+  - risk_friction 15%
+- State bands:
+  - High: 75+
+  - Moderate: 58-74
+  - Low: 42-57
+  - Not Ready: <42
+- Hysteresis:
+  - readiness_active_v2 ON at >= 60
+  - readiness_active_v2 OFF below < 55
+- New market_state fields:
+  - readiness_model = V2
+  - trade_readiness_v2
+  - readiness_state_v2
+  - readiness_active_v2
+  - readiness_structure_quality
+  - readiness_directional_alignment
+  - readiness_execution_quality
+  - readiness_risk_friction
+  - readiness_cap_reason
+  - readiness_floor_reason
+
+Readiness V2 caps/floors
+- Caps:
+  - transition badges cap
+  - no-breach-confirmation cap
+  - high-trap without confirmed breach cap
+  - range-day mid-band cap
+  - no-edge cap
+- Floors:
+  - confirmed abandonment breach floor
+  - confirmed expansion with moderate trap floor
+
+Pipeline placement (important)
+- Readiness V2 is computed after blocking_reason/winning_engine resolution and before final payload persistence.
+- This ensures:
+  - cap/floor logic can use blocker context
+  - primary readiness payload/log fields can be promoted from one place
+  - straightforward readiness diagnostics remain available
+
+Regression guard
+- A startup crash was fixed where Readiness V2 referenced session_phase_payload before initialization.
+- Readiness V2 now uses a pre-phase safe source at compute time:
+  - target.session_phase fallback chain
+
+Live validation expectation
+- Fresh cycle logs should now show:
+  - trade_readiness == trade_readiness_v2
+  - readiness_state == readiness_state_v2
+  - readiness_active == readiness_active_v2
+  - readiness_model == V2
+
+CURRENT OVERRIDE (2026-04-02 - Live Session Reset Validation)
+- This subsection supersedes stale notes above where they conflict.
+
+SPC reset status
+- Active processed SPC state snapshots are resetting correctly to the current IST session key.
+- Verified active snapshot fields:
+  - session_date = current IST trading day
+  - session_phase_session_key = current IST trading day
+- Reset eligibility rule remains:
+  - Monday-Friday
+  - IST time >= 09:00
+
+Snapshot interpretation guard
+- Only actively processed contracts are expected to roll forward to the new session key immediately.
+- Older inactive snapshot files may still retain older session_date values until they are processed again.
+- Validation should focus on active contracts surfaced by the live updater, not stale archived snapshot files.
+
+Cycle/event logging status
+- Backend cycle logging is enabled in local runtime validation.
+- Active files:
+  - backend/logs/optionlens_cycle_log.jsonl
+  - backend/logs/optionlens_market_events.txt / jsonl where configured
+- Validation target:
+  - fresh cycles should append after backend restart
+  - session reset-related fields should be visible in persisted snapshot state even if not emitted as explicit event text
