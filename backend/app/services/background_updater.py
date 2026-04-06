@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from app.core.cache import cache
+from app.core.cache import cache, make_cache_key
 from app.engines.breakout_engine import run_breakout_engine
 from app.engines.breakout_probability_engine import compute_breakout_probability
 from app.engines.auto_exit_suggestion_engine import generate_auto_exit_suggestion
@@ -86,6 +86,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 REGIME_MIN_HOLD_CYCLES = 3
 REGIME_SWITCH_CONFIRM_CYCLES = 2
+RANGE_REGIME_CANONICAL_LABEL = "Range Play"
+NON_COMMITTABLE_REGIMES: frozenset[str] = frozenset({"Balanced / Wait", "Balanced Structure", "Standby"})
 RANGE_LOCK_TRAP_MIN = 55
 RANGE_LOCK_READINESS_MAX = 45
 NO_EDGE_TRAP_MIN = 55
@@ -96,6 +98,8 @@ TRAP_SMOOTH_PREV_WEIGHT = 0.7
 TRAP_SMOOTH_NEW_WEIGHT = 0.3
 TRAP_STABLE_MID_MIN = 55.0
 TRAP_STABLE_MID_MAX = 65.0
+READINESS_TRANSITION_FLAP_MAX_DROP = 8.0
+READINESS_TRANSITION_FLAP_FLOOR = 36.0
 
 REGIME_FAMILY_MAP: dict[str, str] = {
     "Range Play": "RANGE",
@@ -113,6 +117,17 @@ REGIME_FAMILY_MAP: dict[str, str] = {
     "Trap Day": "TRAP",
 }
 
+# ---------------------------------------------------------------------------
+# Module-level mutable state — SINGLE WORKER ONLY
+# All of the dicts below are mutated exclusively by the background_update_loop
+# asyncio task and are never written from multiple threads or processes.
+# This architecture only supports a single Uvicorn worker (--workers 1).
+# Running multiple workers will silently fork this state, causing history
+# divergence between processes. Enforce single-worker in your start command
+# and do NOT use gunicorn multi-worker or multiple Uvicorn instances without
+# migrating this state to a shared store (e.g. Redis).
+# ---------------------------------------------------------------------------
+
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
 _calibrated_weights: dict[str, float] = load_adaptive_weights()
@@ -129,8 +144,7 @@ def _utc_iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def _cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
-    return f"{instrument_type.upper()}::{symbol.upper()}::{expiry or 'AUTO'}"
+_cache_key = make_cache_key
 
 
 def _state_snapshot_path(kind: str, key: str) -> Path:
@@ -146,7 +160,7 @@ def _load_persisted_state(kind: str, key: str) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
     except Exception as exc:
-        logger.debug("State snapshot load failed [%s][%s]: %s", kind, key, exc)
+        logger.warning("State snapshot load failed [%s][%s]: %s", kind, key, exc)
         return {}
 
 
@@ -156,7 +170,7 @@ def _persist_state_snapshot(kind: str, key: str, state: dict[str, Any]) -> None:
         STATE_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, ensure_ascii=True, default=str), encoding="utf-8")
     except Exception as exc:
-        logger.debug("State snapshot persist failed [%s][%s]: %s", kind, key, exc)
+        logger.warning("State snapshot persist failed [%s][%s]: %s", kind, key, exc)
 
 
 def _parse_timestamp_utc(text: str | None) -> datetime:
@@ -199,7 +213,7 @@ def _current_ist_trading_session_key(now_utc: datetime | None = None) -> str | N
     return current_ist.date().isoformat()
 
 
-def _session_phase_session_key(timestamp: datetime | None) -> str | None:
+def _session_phase_session_key() -> str | None:
     return _current_ist_trading_session_key()
 
 
@@ -210,7 +224,7 @@ def _reset_state_for_new_session(
 ) -> dict[str, Any] | None:
     if not isinstance(previous_state, dict):
         return previous_state
-    session_key = _session_phase_session_key(timestamp)
+    session_key = _session_phase_session_key()
     prev_session_key = str(previous_state.get("session_date") or "").strip() or None
     if not session_key or prev_session_key == session_key:
         return previous_state
@@ -275,7 +289,7 @@ def _stabilize_session_phase(
 ) -> dict[str, Any]:
     phase = str(current_phase or "Transition")
     confidence = max(0.0, min(0.99, float(current_confidence or 0.0)))
-    session_key = _session_phase_session_key(timestamp)
+    session_key = _session_phase_session_key()
 
     prev = previous_state or {}
     prev_phase = str(prev.get("session_phase") or "").strip()
@@ -307,7 +321,7 @@ def _append_cycle_log(entry: dict[str, Any]) -> None:
         with CYCLE_LOG_PATH.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
     except Exception as exc:
-        logger.debug("Cycle log append failed: %s", exc)
+        logger.warning("Cycle log append failed: %s", exc)
 
 
 def _should_log_cycle(key: str) -> bool:
@@ -353,7 +367,7 @@ def _append_market_event(*, timestamp: datetime | None, event: str, symbol: str,
             label = f"{symbol} {expiry}".strip() if expiry else symbol
             fp.write(f"{ts.strftime('%H:%M')}     [{label}] {event_text}\n")
     except Exception as exc:
-        logger.debug("Market event log append failed: %s", exc)
+        logger.warning("Market event log append failed: %s", exc)
 
 
 def _event_family(event_type: str) -> str:
@@ -388,7 +402,7 @@ def _append_market_event_record(event_record: dict[str, Any]) -> None:
         with EVENT_STREAM_PATH.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(event_record, ensure_ascii=True, default=str) + "\n")
     except Exception as exc:
-        logger.debug("Market event stream append failed: %s", exc)
+        logger.warning("Market event stream append failed: %s", exc)
 
 
 def _emit_market_event(
@@ -1171,6 +1185,11 @@ def _compute_readiness_v2(
         support=support_level,
         resistance=resistance_level,
     )
+    previous_structural_state = str(
+        (previous_state or {}).get("structural_state")
+        or (previous_state or {}).get("structural_state_marker")
+        or ""
+    ).strip().upper()
 
     structure_quality = _score_readiness_structure_quality(
         committed_regime=committed_regime,
@@ -1316,6 +1335,23 @@ def _compute_readiness_v2(
         final_score = 38.0
         cap_reason = "INVALID_SR_GEOMETRY_CAP"
 
+    readiness_transition_guard_applied = False
+    if (
+        readiness_range_like_session
+        and str(structural_state or "").strip().upper() == "TRANSITION"
+        and previous_structural_state not in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}
+        and prev_trade_readiness_v2 is not None
+        and not material_breach_confirmed
+    ):
+        transition_floor = max(
+            READINESS_TRANSITION_FLAP_FLOOR,
+            float(prev_trade_readiness_v2) - READINESS_TRANSITION_FLAP_MAX_DROP,
+        )
+        if final_score < transition_floor:
+            final_score = transition_floor
+            cap_reason = "TRANSITION_FLAP_GUARD"
+            readiness_transition_guard_applied = True
+
     if not material_breach_confirmed:
         final_score, final_smoothed = _smooth_readiness_value(
             final_score,
@@ -1355,6 +1391,7 @@ def _compute_readiness_v2(
         "readiness_raw_score_v2": round(raw_score_before_caps, 2),
         "readiness_invalid_sr_geometry": bool(invalid_sr_geometry),
         "readiness_smoothing_applied": bool(readiness_smoothing_applied),
+        "readiness_transition_guard_applied": bool(readiness_transition_guard_applied),
     }
 
 
@@ -1651,6 +1688,17 @@ def _regime_family(regime: str | None) -> str:
     return REGIME_FAMILY_MAP.get(text, "RANGE")
 
 
+def _canonicalize_regime_label(regime: str | None) -> str:
+    text = str(regime or "").strip()
+    if _regime_family(text) == "RANGE":
+        return RANGE_REGIME_CANONICAL_LABEL
+    return text or RANGE_REGIME_CANONICAL_LABEL
+
+
+def _is_non_committable_regime(regime: str | None) -> bool:
+    return str(regime or "").strip() in NON_COMMITTABLE_REGIMES
+
+
 def _is_range_like_session(
     committed_regime: str | None,
     stabilized_regime_family: str | None,
@@ -1806,9 +1854,10 @@ def _apply_regime_stabilizer(
     regime_candidate_streak: int,
     structural_state: str | None,
 ) -> dict[str, Any]:
-    raw_regime = str(raw_candidate_regime or "Range Play")
+    raw_input_regime = str(raw_candidate_regime or "").strip()
+    raw_regime = _canonicalize_regime_label(raw_candidate_regime or RANGE_REGIME_CANONICAL_LABEL)
     current_text = str(current_regime or "").strip()
-    current_regime_text = current_text or raw_regime
+    current_regime_text = _canonicalize_regime_label(current_text or raw_regime)
     raw_family = _regime_family(raw_regime)
     current_family = _regime_family(current_regime_text)
     structural_text = str(structural_state or "").strip().upper()
@@ -1826,6 +1875,15 @@ def _apply_regime_stabilizer(
         }
 
     if structural_text in {"ABSORPTION", "TRAP_RISK"}:
+        return {
+            "final_regime": current_regime_text,
+            "final_family": current_family,
+            "regime_hold_cycles": hold_cycles + 1,
+            "regime_candidate": None,
+            "regime_candidate_streak": 0,
+        }
+
+    if _is_non_committable_regime(raw_input_regime):
         return {
             "final_regime": current_regime_text,
             "final_family": current_family,
@@ -1893,6 +1951,8 @@ def _apply_committed_regime_hysteresis(
 
     if not committed:
         return detected, "", 0
+    if _is_non_committable_regime(detected):
+        return _canonicalize_regime_label(committed), "", 0
     if detected == committed:
         return committed, "", 0
     if detected != last_detected:
@@ -3866,6 +3926,9 @@ def _build_v2_intelligence(
     decision["readiness_raw_score_v2"] = readiness_v2["readiness_raw_score_v2"]
     decision["readiness_invalid_sr_geometry"] = bool(readiness_v2["readiness_invalid_sr_geometry"])
     decision["readiness_smoothing_applied"] = bool(readiness_v2["readiness_smoothing_applied"])
+    decision["readiness_transition_guard_applied"] = bool(
+        readiness_v2.get("readiness_transition_guard_applied", False)
+    )
     if not bool(decision.get("readiness_active", False)) and str(decision.get("trade_action", "")) in {
         "LONG BIAS",
         "SHORT BIAS",
@@ -4138,6 +4201,9 @@ def _build_v2_intelligence(
         "readiness_raw_score_v2": decision.get("readiness_raw_score_v2"),
         "readiness_invalid_sr_geometry": bool(decision.get("readiness_invalid_sr_geometry", False)),
         "readiness_smoothing_applied": bool(decision.get("readiness_smoothing_applied", False)),
+        "readiness_transition_guard_applied": bool(
+            decision.get("readiness_transition_guard_applied", False)
+        ),
         "resolved_reason": resolved_reason,
         "blocking_reason": blocking_reason,
         "winning_engine": winning_engine,
@@ -4508,6 +4574,9 @@ def _build_v2_intelligence(
             "readiness_raw_score_v2": decision.get("readiness_raw_score_v2"),
             "readiness_invalid_sr_geometry": bool(decision.get("readiness_invalid_sr_geometry", False)),
             "readiness_smoothing_applied": bool(decision.get("readiness_smoothing_applied", False)),
+            "readiness_transition_guard_applied": bool(
+                decision.get("readiness_transition_guard_applied", False)
+            ),
             "breakout_candidate": breakout_candidate,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),

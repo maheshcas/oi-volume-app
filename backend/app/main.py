@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -14,19 +16,61 @@ from app.services.stability_logger import StabilityLoggerService
 
 logger = logging.getLogger("optionlens.main")
 
-app = FastAPI(title="NSE OI-Volume App", version="1.0")
+_stability_logger = StabilityLoggerService()
+
+# ---------------------------------------------------------------------------
+# Allowed CORS origins — set ALLOWED_ORIGINS env var to a comma-separated list
+# of frontend URLs (e.g. "https://your-app.netlify.app,http://localhost:5173").
+# Never use wildcard ("*") together with allow_credentials=True.
+# ---------------------------------------------------------------------------
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
+ALLOWED_ORIGINS: list[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ---- startup ----
+    updater_stop = asyncio.Event()
+    updater_task = asyncio.create_task(background_update_loop(updater_stop))
+    logger.info("Background updater task started")
+
+    stability_stop: asyncio.Event | None = None
+    stability_task: asyncio.Task | None = None
+    if _stability_logger.enabled:
+        stability_stop = asyncio.Event()
+        stability_task = asyncio.create_task(_stability_logger.run(stability_stop))
+        logger.info("Stability logger task started")
+    else:
+        logger.info("Stability logger disabled by configuration")
+
+    yield
+
+    # ---- shutdown ----
+    updater_stop.set()
+    try:
+        await asyncio.wait_for(updater_task, timeout=10)
+        logger.info("Background updater task stopped")
+    except TimeoutError:
+        updater_task.cancel()
+        logger.warning("Background updater task timed out on shutdown — cancelled")
+
+    if stability_task and stability_stop:
+        stability_stop.set()
+        try:
+            await asyncio.wait_for(stability_task, timeout=10)
+            logger.info("Stability logger task stopped")
+        except TimeoutError:
+            stability_task.cancel()
+            logger.warning("Stability logger task timed out on shutdown — cancelled")
+
+
+app = FastAPI(title="NSE OI-Volume App", version="1.0", lifespan=lifespan)
 app.include_router(option_chain.router, prefix="/api")
 app.add_middleware(SupabaseAuthMiddleware)
 
-_updater_stop_event: asyncio.Event | None = None
-_updater_task: asyncio.Task | None = None
-_stability_stop_event: asyncio.Event | None = None
-_stability_task: asyncio.Task | None = None
-_stability_logger = StabilityLoggerService()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,54 +108,9 @@ def protected_analysis(current_user: dict = Depends(get_current_user)):
         "user": current_user,
         "analysis": {
             "message": "Authenticated request accepted",
-            "timestamp": os.times().elapsed,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     }
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    global _updater_stop_event, _updater_task, _stability_stop_event, _stability_task
-    if _updater_task and not _updater_task.done():
-        logger.info("Background updater already running")
-    else:
-        _updater_stop_event = asyncio.Event()
-        _updater_task = asyncio.create_task(background_update_loop(_updater_stop_event))
-        logger.info("Background updater task started")
-    if _stability_logger.enabled:
-        if _stability_task and not _stability_task.done():
-            logger.info("Stability logger already running")
-        else:
-            _stability_stop_event = asyncio.Event()
-            _stability_task = asyncio.create_task(_stability_logger.run(_stability_stop_event))
-            logger.info("Stability logger task started")
-    else:
-        logger.info("Stability logger disabled by configuration")
-
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    global _updater_stop_event, _updater_task, _stability_stop_event, _stability_task
-    if _updater_stop_event:
-        _updater_stop_event.set()
-    if _updater_task:
-        try:
-            await asyncio.wait_for(_updater_task, timeout=10)
-        except TimeoutError:
-            _updater_task.cancel()
-    if _stability_stop_event:
-        _stability_stop_event.set()
-    if _stability_task:
-        try:
-            await asyncio.wait_for(_stability_task, timeout=10)
-        except TimeoutError:
-            _stability_task.cancel()
-    _updater_task = None
-    _updater_stop_event = None
-    _stability_task = None
-    _stability_stop_event = None
-    logger.info("Background updater task stopped")
 
 # Only run Uvicorn if this script is executed directly
 if __name__ == "__main__":

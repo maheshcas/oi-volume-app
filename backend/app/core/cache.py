@@ -136,3 +136,8 @@ class OptionLensCache:
 
 
 cache = OptionLensCache()
+
+
+def make_cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
+    """Canonical cache key used by both the router and the background updater."""
+    return f"{instrument_type.upper()}::{symbol.upper()}::{expiry or 'AUTO'}"

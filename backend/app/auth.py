@@ -3,8 +3,8 @@ import os
 import time
 from typing import Any
 
+import httpx
 import jwt
-import requests
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from jwt import InvalidTokenError
@@ -39,14 +39,16 @@ def _audience() -> str:
   return os.getenv("SUPABASE_JWT_AUDIENCE", "authenticated")
 
 
-def _fetch_jwks() -> list[dict[str, Any]]:
+async def _fetch_jwks() -> list[dict[str, Any]]:
   now = time.time()
   if _jwks_cache["keys"] and _jwks_cache["expires_at"] > now:
     return _jwks_cache["keys"]
 
-  response = requests.get(_jwks_url(), timeout=8)
-  response.raise_for_status()
-  payload = response.json()
+  async with httpx.AsyncClient(timeout=8) as client:
+    response = await client.get(_jwks_url())
+    response.raise_for_status()
+    payload = response.json()
+
   keys = payload.get("keys", [])
   if not isinstance(keys, list) or not keys:
     raise RuntimeError("Supabase JWKS payload is empty")
@@ -56,13 +58,13 @@ def _fetch_jwks() -> list[dict[str, Any]]:
   return keys
 
 
-def verify_supabase_jwt(token: str) -> dict[str, Any]:
+async def verify_supabase_jwt(token: str) -> dict[str, Any]:
   unverified_header = jwt.get_unverified_header(token)
   kid = unverified_header.get("kid")
   if not kid:
     raise InvalidTokenError("Token header missing kid")
 
-  jwk = next((k for k in _fetch_jwks() if k.get("kid") == kid), None)
+  jwk = next((k for k in await _fetch_jwks() if k.get("kid") == kid), None)
   if not jwk:
     raise InvalidTokenError("Signing key not found")
 
@@ -97,8 +99,8 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
     try:
       token = _extract_bearer_token(request)
       if token:
-        request.state.user = verify_supabase_jwt(token)
-    except (InvalidTokenError, RuntimeError, requests.RequestException) as exc:
+        request.state.user = await verify_supabase_jwt(token)
+    except (InvalidTokenError, RuntimeError, httpx.HTTPError) as exc:
       return JSONResponse(status_code=401, content={"detail": f"Unauthorized: {exc}"})
 
     return await call_next(request)

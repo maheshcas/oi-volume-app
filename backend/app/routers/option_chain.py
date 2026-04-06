@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import os
+import re
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Optional
@@ -7,7 +9,7 @@ from datetime import timezone
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.cache import cache
+from app.core.cache import cache, make_cache_key
 from app.engines.bias_probability_engine import compute_bias_probability
 from app.engines.simulation_engine import simulate_breakout_performance
 from app.services.engine_health import compute_engine_health
@@ -15,9 +17,43 @@ from pathlib import Path
 
 router = APIRouter()
 
+_cache_key = make_cache_key
 
-def _cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
-    return f"{instrument_type.upper()}::{symbol.upper()}::{expiry or 'AUTO'}"
+# ---------------------------------------------------------------------------
+# Allowed input values — driven by the same env vars as the background updater
+# so adding a new symbol in one place covers both.
+# ---------------------------------------------------------------------------
+_raw_symbols = os.getenv("OPTIONLENS_SYMBOLS", "NIFTY,BANKNIFTY,FINNIFTY")
+_ALLOWED_SYMBOLS: frozenset[str] = frozenset(
+    s.strip().upper() for s in _raw_symbols.split(",") if s.strip()
+) | frozenset({"SENSEX"})
+
+_ALLOWED_INSTRUMENT_TYPES: frozenset[str] = frozenset({"INDICES", "FUTURES", "EQUITIES"})
+
+# Expiry dates come from NSE/BSE and look like "27-Jun-2024"; allow only safe chars.
+_EXPIRY_RE = re.compile(r"^[A-Za-z0-9\-]+$")
+
+
+def _validate_symbol(symbol: str) -> str:
+    upper = symbol.strip().upper()
+    if upper not in _ALLOWED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unknown symbol '{symbol}'")
+    return upper
+
+
+def _validate_instrument_type(instrument_type: str) -> str:
+    upper = instrument_type.strip().upper()
+    if upper not in _ALLOWED_INSTRUMENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown instrument_type '{instrument_type}'")
+    return instrument_type.strip()
+
+
+def _validate_expiry(expiry: str | None) -> str | None:
+    if expiry is None:
+        return None
+    if not _EXPIRY_RE.fullmatch(expiry.strip()):
+        raise HTTPException(status_code=400, detail="Invalid expiry format")
+    return expiry.strip()
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -95,9 +131,9 @@ async def _require_cache_ready() -> dict[str, Any]:
 async def option_chain_expiries(
     symbol: str = "NIFTY",
     instrument_type: str = "Indices",
-    use_sample: bool = False,  # kept for compatibility; cache-only backend ignores this flag
 ):
-    _ = use_sample
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
     data = await _require_cache_ready()
     symbols = data["option_chain_data"].get("symbols", {})
     symbol_payload = symbols.get(symbol.upper(), {})
@@ -126,11 +162,10 @@ async def option_chain_summary(
     symbol: str = "NIFTY",
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
-    use_sample: bool = False,  # compatibility
-    target_mode: str = "fixed",  # compatibility; precomputed in background
-    confidence_score: float = 1.0,  # compatibility; precomputed in background
 ):
-    _ = (use_sample, target_mode, confidence_score)
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     summaries = data["summary_data"].get("summaries", {}) or {}
@@ -157,11 +192,10 @@ async def option_chain_target_projection(
     symbol: str = "NIFTY",
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
-    use_sample: bool = False,
-    target_mode: str = "fixed",
-    confidence_score: float = 1.0,
 ):
-    _ = (use_sample, target_mode, confidence_score)
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     target_projections = data["summary_data"].get("target_projections", {}) or {}
@@ -185,9 +219,10 @@ async def option_chain_interpretations(
     symbol: str = "NIFTY",
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
-    use_sample: bool = False,
 ):
-    _ = use_sample
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     interpretations = data["summary_data"].get("interpretations", {}) or {}
@@ -283,9 +318,10 @@ async def intelligence_summary_v2(
     symbol: str = "NIFTY",
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
-    use_sample: bool = False,
 ):
-    _ = use_sample
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     payload, resolved_expiry = _resolve_cached_v2_payload(
         data=data,
@@ -319,9 +355,10 @@ async def intelligence_trade_plan_v2(
     symbol: str = "NIFTY",
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
-    use_sample: bool = False,
 ):
-    _ = use_sample
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     payload = data["summary_data"].get("v2", {}).get(key)
@@ -345,6 +382,9 @@ async def performance_daily_v2(
     expiry: Optional[str] = None,
     instrument_type: str = "Indices",
 ):
+    symbol = _validate_symbol(symbol)
+    instrument_type = _validate_instrument_type(instrument_type)
+    expiry = _validate_expiry(expiry)
     data = await _require_cache_ready()
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     payload = data["summary_data"].get("v2", {}).get(key)
