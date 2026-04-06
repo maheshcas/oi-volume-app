@@ -1,548 +1,324 @@
-OptionLens Validation Logic Overview
+OptionLens Backend Validation Logic Overview
 
 Maintenance rule
-- Update this file whenever backend or frontend logic changes affect signal computation, state persistence, field mapping, UI interpretation, or validation behavior.
+- Update this file whenever backend logic changes affect signal computation, state persistence, API contracts, logger schema, or validation behavior.
 
-Current Backend Validation Priorities
+Current Backend Runtime State
+- Local runtime logging is currently disabled:
+  - `OPTIONLENS_ENABLE_CYCLE_LOG=false`
+  - `OPTIONLENS_ENABLE_EVENT_LOG=false`
+  - `OPTIONLENS_ENABLE_STABILITY_LOGGER=false`
+- If a validation session requires cycle, event, or stability evidence, re-enable the relevant logger before collecting logs.
 
-1. Trap stack
-- Range sessions should no longer show structurally inflated trap all day.
-- Validation sequence:
-  - Gate 1: median trap on quiet Range Day should generally sit below 62.
-  - Gate 2: readiness should be able to rise above 57 when trap falls below 60 and no other blocker wins.
-  - Gate 3: if readiness_active is true and trap < 60 but action remains WAIT, the remaining blocker is the LONG BIAS promotion guard in background_updater.py.
+Core Validation Priorities
 
-2. Breach stack
-- Large moves must confirm through either current-level breach logic or previous-level override logic.
-- Violent moves should not depend on fresh OI confirmation when distance fallback already proves abandonment.
+1. SR stability
+- Support / resistance must not ping-pong on small OI rank noise.
+- Cold-start / restart paths must not bypass the 25-point structural buffer.
+- Validation targets:
+  - no downward support move while spot is still above old support - 25
+  - no upward resistance move while spot is still below old resistance + 25
 
-3. SR stability
-- Immediate support/resistance should not ping-pong on small OI rank noise.
-- Candidate regime accumulation depends on stable SR levels.
+2. Regime stability
+- Range-family noise must not promote unstable committed regimes.
+- `Balanced / Wait`, `Balanced Structure`, and `Standby` are detected-only regimes and must not become the committed regime anchor.
+- Range-family committed regimes should stabilize around:
+  - `Range Play`
 
-Trap Engine
+3. Readiness stability
+- Active readiness contract is V2.
+- Readiness should no longer collapse on one-cycle range-edge or transition flaps.
+- Validation target:
+  - large sawtooth moves should be materially reduced
+  - readiness should reflect structure quality, execution quality, and blocker context rather than label flicker
+
+4. Previous-level persistence
+- `previous_support` and `previous_resistance` must persist into:
+  - `market_state`
+  - persisted `_state`
+  - stability snapshots when logger is enabled
+- Validation target:
+  - frontend previous-level markers should remain available after session open and normal state transitions
+
+5. Symbol coverage
+- NSE symbols and SENSEX must all flow through the same v2 summary contract safely.
+- Validation target:
+  - `/api/v2/intelligence/summary?symbol=SENSEX` returns non-null support / resistance / bias / trap_risk / session_phase
+
+Trap / Regime / Readiness
+
+Trap stack
 backend/app/engines/trap_engine.py
-- Trap is built in layers:
+- Trap remains a layered score built from:
   - structural validity failure
-  - rejection wick score
-  - hold-time failure
+  - wick / hold failure
   - continuation failure
-  - volatility factor
-  - absorption score
-- Core normalized validity score:
-  - 0.40 * breakout_strength
-  - 0.25 * atm_participation_score
-  - 0.20 * oi_shift_score
-  - 0.15 * volume_expansion_score
-- Raw trap score:
-  - structural failure
-  - wick
-  - hold-time failure
-  - volume continuation failure
-  - volatility factor
-  - absorption score
-- Warm-up mode downweights wick and hold-time influence.
-- Fake-breakout proportional boost still applies when:
-  - breakout_strength > 0.7
-  - rejection_wick_score > 0.7
-  - time_above_level_ratio < 0.3
+  - volatility
+  - absorption
+- Trap stabilizer is active in `background_updater.py`:
+  - smoothing
+  - hysteresis deadband
+  - stable-mid band lock
+- Validation/debug fields when logging is enabled:
+  - `trap_state`
+  - `trap_hysteresis_applied`
 
-Trap Classification
-backend/app/engines/trap_engine.py
-- trap_level thresholds:
-  - High: trap_raw > 0.65
-  - Moderate: trap_raw > 0.45
-  - Low otherwise
-- trap_type is now score-gated:
-  - aggressive types only assign when trap_raw > 0.45
-  - low-risk states no longer emit contradictory labels like Low + Liquidity Sweep
-
-Trap Retail Wrapper
-backend/app/engines/trap_engine.py
-- Practical trigger context:
-  - breakout trigger present
-  - weak ATM OI
-  - weak volume
-  - not in opening 5-minute suppression window
-- trap_raw is smoothed across cycles:
-  - 0.7 * previous trap_raw
-  - 0.3 * current trap_raw
-- displayed trap_risk now uses multiplier scaling, not blended floor inflation:
-  - is_trap -> 1.25x
-  - partial weakness -> 1.10x
-  - otherwise 1.0x
-- This replaces the earlier blended base formula that artificially pushed low/mid trap toward 50+.
-
-Trap Confidence / Regime Handling
+Range lock / no-edge stabilizer
 backend/app/services/background_updater.py
-- Confidence reduction now applies only to trend-family regimes:
-  - Trend Day
-  - Breakdown Day
-- Range Day skips confidence reduction entirely.
-- Trap Day currently also skips confidence reduction by design.
+- Range lock and no-edge shaping are active before final regime stabilization.
+- Validation/debug fields:
+  - `range_locked`
+  - `no_edge`
+  - `raw_candidate_regime`
+  - `candidate_regime_after_range_lock`
+  - `stabilized_regime_family`
+
+Regime stabilizer
+backend/app/services/background_updater.py
+- Regime families are stabilized before the public payload is written.
+- Same-family chatter should not cause visible regime flips.
+- Non-committable regimes:
+  - `Balanced / Wait`
+  - `Balanced Structure`
+  - `Standby`
 - Validation implication:
-  - high-confidence range sessions should not automatically show lower trap.
+  - these labels may still appear as detected/UI-facing states
+  - they must not become `committed_regime`
 
-Trap Range Cap
+Readiness V2
 backend/app/services/background_updater.py
-- Quiet range sessions apply a soft trap cap before readiness is computed.
-- Condition:
-  - committed_regime == Range Day
-  - material_breach_confirmed == false
-- Effect:
-  - trap_probability capped at 72
-- Ordering matters:
-  - cap is applied before readiness / readiness_active logic
+- Active readiness contract:
+  - `trade_readiness`
+  - `readiness_state`
+  - `readiness_active`
+- Diagnostic V2 fields remain available:
+  - `trade_readiness_v2`
+  - `readiness_state_v2`
+  - `readiness_active_v2`
+  - `readiness_structure_quality`
+  - `readiness_directional_alignment`
+  - `readiness_execution_quality`
+  - `readiness_risk_friction`
+  - `readiness_cap_reason`
+  - `readiness_floor_reason`
+- Additional readiness stability fields:
+  - `readiness_regime_used`
+  - `readiness_regime_family_used`
+  - `readiness_range_like_session`
+  - `readiness_raw_score_v2`
+  - `readiness_invalid_sr_geometry`
+  - `readiness_smoothing_applied`
+  - `readiness_transition_guard_applied`
+- Current stabilization logic includes:
+  - committed-range regime canonicalization to `Range Play`
+  - invalid SR geometry handling when `resistance <= support`
+  - per-pillar smoothing
+  - final readiness smoothing
+  - transition flap guard in range-like sessions
 
-Absorption / Trap Interaction
-backend/app/services/background_updater.py
-- Absorption is still part of core trap_raw via absorption_score.
-- If absorption wins the resolver and action is already forced to WAIT:
-  - readiness now skips trap deduction
-- Purpose:
-  - avoid double penalizing the same absorption signal through both resolver and readiness deduction
+SR Engine / Cold-Start Protection
 
-Expiry / Session Phase Trap Adjustment
-backend/app/engines/expiry_mode_engine.py
-- Expiry trap adjustment still exists.
-- Current combined trap multiplier:
-  - expiry multiplier * phase multiplier
-  - capped at 1.5x total
-- This prevents expiry-day phase stacking from overshooting intent.
-- Current phase references include:
-  - Compression Phase
-  - Position Build Phase
-  - Transition
-  - Power Hour
-
-Trade Readiness
-backend/app/services/background_updater.py
-- Readiness inputs:
-  - clarity
-  - alignment magnitude
-  - execution risk
-  - breakout probability
-  - trap deduction
-- Trap deduction behavior:
-  - no deduction below 55
-  - above 55 deducts 0.25 per point
-  - max deduction = 10
-- Deduction is skipped when:
-  - breakout_suppressed
-  - breakout_candidate
-  - absorption already forced WAIT
-- Readiness hysteresis:
-  - activate at >= 57
-  - deactivate below < 53
-
-LONG BIAS Promotion Guard
-backend/app/services/background_updater.py
-- Validation target:
-  - if readiness_active = true and trap < 60 but action remains WAIT, the remaining blocker is in the promotion guard, not the trap stack
-- Watch for:
-  - readiness_active = true
-  - trade_readiness > 57
-  - action = WAIT
-- That pattern indicates a downstream action promotion condition is still blocking.
-
-Material Breach Engine
-backend/app/engines/material_breach_engine.py
-- Current-level thresholds:
-  - max(50, level * 0.002)
-- Confirmation paths:
-  - bullish_positioning
-  - resistance_abandonment
-  - bearish_positioning
-  - support_abandonment
-- Previous-level override now lives inside material_breach_engine.py itself.
-- detect_material_breach(...) explicitly accepts:
-  - prev_support
-  - prev_resistance
-- Validation implication:
-  - previous-level abandonment logic is owned by one engine instead of split between engine and updater
-
-Breach Debug Logging
-backend/app/engines/material_breach_engine.py
-- Positive confirmation debug lines now exist:
-  - breach confirmed: side=... dist=... type=... via=...
-- Unconfirmed debug lines still log:
-  - breach distance
-  - PE OI %
-  - CE OI %
-  - previous level when relevant
-- Validation target:
-  - large single-cycle moves should either confirm or emit a useful unconfirmed trace
-
-SR Engine Hysteresis
+SR hysteresis
 backend/app/engines/sr_engine.py
-- Immediate support/resistance selection holds the previous active level unless the new level is meaningfully stronger.
-- Current intended hysteresis:
-  - roughly 15 percent OI improvement required to flip immediate support/resistance
-- Additional upward resistance promotion buffer:
-  - CE resistance cannot promote upward unless spot is at least 25 points above the previous resistance
-  - downward reverts remain free
+- Immediate support / resistance still use hysteresis and structural buffers.
+- Prior support / resistance anchors are hydrated from persisted state on restart.
+
+Updater-level SR cold-start guard
+backend/app/services/background_updater.py
+- A post-SR guard is applied immediately after `run_sr_engine(...)`.
 - Purpose:
-  - stop 23800 <-> 24000 or equivalent support ping-pong
-  - stop premature upward resistance jumps such as 23300 -> 23500 while spot is still below the active resistance
-  - allow candidate_regime_count to reach 3
+  - protect downstream breakout / trap / material breach logic even if the first SR read after reset is missing nested immediate state
+- Debug / validation fields:
+  - `sr_first_cycle_after_reset`
+  - `sr_cold_start_guard_applied`
+  - `sr_previous_support_anchor_used`
+  - `sr_previous_support_anchor_source`
+  - `sr_previous_resistance_anchor_used`
+  - `sr_previous_resistance_anchor_source`
+  - `sr_support_buffer_blocked`
+  - `sr_resistance_buffer_blocked`
 
-Target / Breakout Probability
-backend/app/engines/target_engine.py
-backend/app/engines/breakout_probability_engine.py
-backend/app/engines/expiry_mode_engine.py
-- Targets are anchored to live S/R band width, not stale expectedMove distance.
-- Core move base:
-  - band_width = resistance - support
-  - base_move = band_width * (1 + oi_power) * vol_factor
-- Target scaling:
-  - target_1 = 0.8x base_move
-  - target_2 = 1.5x base_move
-  - extended = 2.5x base_move where used
-- Target distance clamp:
-  - max 3x band from the broken level
-- Breakout probability includes proximity weighting:
-  - closer to resistance boosts upside
-  - closer to support boosts downside
-
-Session Phase
+Previous level persistence
 backend/app/services/background_updater.py
-backend/app/engines/session_phase_engine.py
-- NSE-style timestamps are parsed as IST first, then converted internally.
-- Validation target:
-  - session_phase should not remain Transition all session due to timezone drift alone
-
-Regime Hysteresis
-backend/app/services/background_updater.py
-- Committed regime uses explicit hysteresis state:
-  - committed_regime
-  - candidate_regime
-  - candidate_regime_count
-  - last_detected_regime
-- Normal structural shift acceptance pattern:
-  - N+0 -> candidate count 1
-  - N+1 -> count 2
-  - N+2 -> count 3
-  - N+3 -> committed flips, candidate clears
-- Minimum hold is now required before the candidate ladder starts:
-  - detected regime must match previous cycle last_detected_regime
-  - one-cycle flickers should not increment candidate_regime_count
-- Confirmed material breaches bypass the 3-cycle gate:
-  - resistance breach -> Trend Day
-  - support breach -> Breakdown Day
-  - breach + absorption -> Trap Day
-
-Support Transition / Absorption Reference
-backend/app/services/background_updater.py
-- support_transition_active should only represent the fresh shift window
-- previous_support / previous_resistance are now retained for structural display context after shifts
-- support-transition telemetry and UI previous-level context are no longer treated as the same lifetime
-- absorption_reference_level should stay aligned with active support logic rather than lagging one level behind
-- Validation status:
-  - if support_transition_active stays at 0 across a calm session, the stale carryover fix is behaving correctly
-  - exact support_shift_cycle == 0 gating was not added because pulsing disappeared after the carryover reset fix
-
-Session Phase Persistence
-backend/app/services/background_updater.py
-- session_phase is now persisted into _state with:
-  - session_phase
-  - session_phase_confidence
-  - session_phase_session_key
-- Forward-only stabilizer:
-  - Transition=0
-  - Opening Drive=1
-  - Structure Formation=2
-  - Compression Phase=3
-  - Position Build Phase=4
-  - Expansion Window=5
-- Within the same session date, phase cannot move backward across feed gaps or restarts.
-- New-session reset is day-scoped and can start fresh from Transition.
-
-Logger / Stability Validation
-backend/app/services/stability_logger.py
-- Stability logger is enabled by environment/config and is active again in local runtime validation.
-- Runtime behavior:
-  - OPTIONLENS_ENABLE_STABILITY_LOGGER controls whether startup schedules the logger task
-  - app startup schedules the logger when enabled
-  - logger writes to backend/logs/stability
-- Lock file writes real PID in fixed-width hex.
-- When logger is re-enabled, snapshot JSONL must include:
-  - trap_probability
-  - trap_type
-  - committed_regime
-  - detected_regime
-  - candidate_regime
-  - candidate_regime_count
-  - support_transition_active
-  - support_shift_cycle
-  - confirmation_type
-- Validation note:
-  - transitions file appears only when watched fields actually change
-  - current local expected state is:
-    - stability_*.jsonl exists when logger is enabled
-    - transitions_*.jsonl appears only when watched fields change
-    - .logger.lock should exist while logger is active
-
-Readiness Stability
-backend/app/services/background_updater.py
-- Readiness no longer reads volatile detected_regime directly.
-- Regime-facing readiness clamps now use committed_regime / stable regime state.
+- Session reset and absorption/reference handling must preserve:
+  - `previous_support`
+  - `previous_resistance`
 - Validation implication:
-  - single-cycle Range Day <-> Balanced Structure flickers should not create ±10 to ±20 point readiness spikes
-  - if readiness remains low all session, inspect clarity / alignment_score rather than trap alone
+  - both previous levels should remain numeric at session open when a prior closing state exists
 
-Decision UX Layer
-backend/app/services/background_updater.py
-- market_state now exposes additive UX fields:
-  - resolved_reason
-  - blocking_reason
-  - winning_engine
-  - decision_confidence
-  - support_transition_badge
-  - resistance_transition_badge
-  - signal_history
-- blocking_reason is a single dominant blocker inferred from the final resolved decision path:
-  - transition badges
-  - absorption conflict
-  - no breach confirmation
-  - trap high
-  - range conflict
-  - promotion guard
-  - low readiness
-- winning_engine is inferred from the same final path and does not change core resolver behavior.
-- decision_confidence is a UI score derived from:
-  - trade_readiness base
-  - trap reduction
-  - transition penalty
-  - WAIT / blocker penalties
-  - small confirmed-breach lift
-- signal_history:
-  - stored in _state
-  - capped at 10 items
-  - only appends when action / resolved_reason / blocking_reason changes
-  - intended for recent UI timeline, not analytics
-
-SR Reset / Cold-Start Hydration
-backend/app/engines/sr_engine.py
-backend/app/services/background_updater.py
-- SR hysteresis now hydrates previous support/resistance from persisted top-level state on restart and cold start.
-- Purpose:
-  - prevent 25-point support / resistance buffers from being bypassed on the first post-restart OI read
+Material breach
+backend/app/engines/material_breach_engine.py
+- Current-level and previous-level abandonment logic remains centralized in the material breach engine.
 - Validation target:
-  - no downward support move should occur while spot is still above old support - 25
-  - no upward resistance move should occur while spot is still below old resistance + 25
+  - large single-cycle moves should either confirm or emit useful unconfirmed traces
 
-Frontend / Backend Contract Areas Worth Validating
+Session / SPC Reset
 
-Trap contract
-- signals.trap.trap_probability
-- signals.trap.trap_type
-- signals.trap.trap_direction
-- signals.trap.trap_affected_level
-- signals.trap.show_affected_level
-- Downside trap affected level should resolve to resistance-side structure.
-- Upside trap affected level should resolve to support-side structure.
-- Frontend may still apply a defensive fallback, but backend source of truth should already be correct.
-
-Key levels contract
-- levels.support.strike
-- levels.resistance.strike
-- levels.resistance.major should sit above active resistance if shown as Next Resistance
-- invalid overhead levels should be suppressed on the frontend rather than mislabeled
-
-Primary contradiction areas to watch next session
-1. trap median remains 68-72 on quiet Range Day -> trap inflation still active
-2. readiness remains capped below 57 despite trap < 60 -> readiness path still suppressed
-3. readiness_active = true and action = WAIT with trap < 60 -> LONG BIAS guard still blocking
-4. large single-cycle breach still unconfirmed -> breach override or previous-state feed still wrong
-5. SR flipping repeatedly within the same band -> hysteresis still insufficient
-
-Current deployment status
-- Confirmed fixed in code:
-  - trap stack inflation fixes
-  - previous-level breach refactor + debug logging
-  - session_phase persistence
-  - accumulator minimum hold
-  - stale previous_support carryover reset
-  - 25-point upward resistance promotion buffer
-  - 25-point downward support demotion buffer
-  - readiness stabilization via committed_regime
-  - previous S/R retention for frontend structural context
-  - SR cold-start hydration for restart-safe buffers
-  - local stability logger disable
-  - decision UX fields in market_state for blocker / winning engine / confidence / timeline
-- Waiting on live session confirmation:
-  - breach_confirmed firing end to end
-  - committed_regime candidate ladder reaching count 3 and flipping
-  - forward-only phase persistence across a true mid-session feed gap after phase has advanced
-
-CURRENT OVERRIDE (2026-04-01)
-- This section supersedes stale notes above where they conflict.
-
-Backend logger status
-- Stability logger is enabled again.
-- Active files should exist under:
-  - backend/logs/stability/stability_YYYYMMDD.jsonl
-  - backend/logs/stability/.logger.lock
-
-SPC session reset trigger
-- Session reset is wall-clock gated by IST trading day, not stale feed timestamps.
+SPC session reset
+backend/app/services/background_updater.py
+- SPC reset is wall-clock gated by IST trading day, not stale feed timestamps.
 - Trigger condition:
   - Monday-Friday
   - IST time >= 09:00
-- Key field:
-  - session_phase_session_key
+- Key persisted fields:
+  - `session_date`
+  - `session_phase_session_key`
+- Validation note:
+  - active processed contracts should roll to the current IST key
+  - inactive snapshot files may retain older keys until processed again
+- Internal helper `_session_phase_session_key()` takes no arguments; it reads wall-clock IST directly.
+  - The `timestamp` parameter that previously existed was never used and has been removed.
 
-Range lock / no-edge stabilizer
-- Range lock and no-edge are active in background_updater.py.
-- Validation fields:
-  - market_state.range_locked
-  - market_state.no_edge
-  - market_state.raw_candidate_regime
-  - market_state.candidate_regime_after_range_lock
-  - market_state.stabilized_regime_family
-
-Daily context integration (new)
-- Daily context is now integrated into the live updater output.
-- Source module:
-  - backend/app/services/daily_context.py
-- Fetch source:
-  - nse_client.fetch_index_history(...)
-- Exposed fields:
-  - market_state.daily_context
-  - market_state.previous_day_open
-  - market_state.previous_day_high
-  - market_state.previous_day_low
-  - market_state.previous_day_close
-  - market_state.daily_trend_bias
-- Storage path:
-  - backend/data/daily_context/*_daily_context.json
-
-Daily context fetch policy (incremental)
-- If no saved file exists:
-  - bootstrap with rolling lookback (default 90 days)
-- If file exists:
-  - read existing rows
-  - find latest saved trading date
-  - fetch from latest+1 day to today
-  - merge, deduplicate, sort
-- Purpose:
-  - avoid downloading full 3-month history every day
-  - keep payload fresh with minimal network load
-
-Do-not-break rule
-- Daily context is read-only higher-timeframe context.
-- It must not directly drive intraday SPC breach/transition logic.
-
-CURRENT OVERRIDE (2026-04-01 - Trap Stabilizer + Readiness V2)
-- This subsection supersedes older readiness/trap notes where they conflict.
-
-Trap stabilizer (final 5 percent patch)
-- Trap probability now has three stabilizing layers in background_updater.py:
-  - smoothing:
-    - new = 0.7 * previous_trap + 0.3 * current_trap
-  - hysteresis deadband:
-    - if abs(current_trap - previous_trap) < 3, keep previous trap
-  - stable mid band lock:
-    - 55 <= trap_probability <= 65 => trap_state = STABLE_MID
-- New constants:
-  - TRAP_HYSTERESIS_DEADBAND
-  - TRAP_SMOOTH_PREV_WEIGHT
-  - TRAP_SMOOTH_NEW_WEIGHT
-  - TRAP_STABLE_MID_MIN
-  - TRAP_STABLE_MID_MAX
-- New output/debug fields:
-  - market_state.trap_state
-  - market_state.trap_hysteresis_applied
-  - cycle_log_entry.trap_state
-  - cycle_log_entry.trap_hysteresis_applied
-
-Readiness V2 (active model)
-- Readiness V2 is now the active readiness contract in background_updater.py.
-- Primary fields now reflect V2:
-  - trade_readiness
-  - readiness_state
-  - readiness_active
-- Explicit V2 fields are still emitted for diagnostics:
-  - trade_readiness_v2
-  - readiness_state_v2
-  - readiness_active_v2
-- Weighted pillars:
-  - structure_quality 30%
-  - directional_alignment 30%
-  - execution_quality 25%
-  - risk_friction 15%
-- State bands:
-  - High: 75+
-  - Moderate: 58-74
-  - Low: 42-57
-  - Not Ready: <42
-- Hysteresis:
-  - readiness_active_v2 ON at >= 60
-  - readiness_active_v2 OFF below < 55
-- New market_state fields:
-  - readiness_model = V2
-  - trade_readiness_v2
-  - readiness_state_v2
-  - readiness_active_v2
-  - readiness_structure_quality
-  - readiness_directional_alignment
-  - readiness_execution_quality
-  - readiness_risk_friction
-  - readiness_cap_reason
-  - readiness_floor_reason
-
-Readiness V2 caps/floors
-- Caps:
-  - transition badges cap
-  - no-breach-confirmation cap
-  - high-trap without confirmed breach cap
-  - range-day mid-band cap
-  - no-edge cap
-- Floors:
-  - confirmed abandonment breach floor
-  - confirmed expansion with moderate trap floor
-
-Pipeline placement (important)
-- Readiness V2 is computed after blocking_reason/winning_engine resolution and before final payload persistence.
-- This ensures:
-  - cap/floor logic can use blocker context
-  - primary readiness payload/log fields can be promoted from one place
-  - straightforward readiness diagnostics remain available
-
-Regression guard
-- A startup crash was fixed where Readiness V2 referenced session_phase_payload before initialization.
-- Readiness V2 now uses a pre-phase safe source at compute time:
-  - target.session_phase fallback chain
-
-Live validation expectation
-- Fresh cycle logs should now show:
-  - trade_readiness == trade_readiness_v2
-  - readiness_state == readiness_state_v2
-  - readiness_active == readiness_active_v2
-  - readiness_model == V2
-
-CURRENT OVERRIDE (2026-04-02 - Live Session Reset Validation)
-- This subsection supersedes stale notes above where they conflict.
-
-SPC reset status
-- Active processed SPC state snapshots are resetting correctly to the current IST session key.
-- Verified active snapshot fields:
-  - session_date = current IST trading day
-  - session_phase_session_key = current IST trading day
-- Reset eligibility rule remains:
-  - Monday-Friday
-  - IST time >= 09:00
-
-Snapshot interpretation guard
-- Only actively processed contracts are expected to roll forward to the new session key immediately.
-- Older inactive snapshot files may still retain older session_date values until they are processed again.
-- Validation should focus on active contracts surfaced by the live updater, not stale archived snapshot files.
-
-Cycle/event logging status
-- Backend cycle logging is enabled in local runtime validation.
-- Active files:
-  - backend/logs/optionlens_cycle_log.jsonl
-  - backend/logs/optionlens_market_events.txt / jsonl where configured
+Session phase persistence
+backend/app/services/background_updater.py
+backend/app/engines/session_phase_engine.py
+- Session phase persists in `_state` and does not move backward within the same session.
 - Validation target:
-  - fresh cycles should append after backend restart
-  - session reset-related fields should be visible in persisted snapshot state even if not emitted as explicit event text
+  - phase should not regress across restart or feed gap within the same trading day
+
+Logger / Stability Schema
+
+Stability logger
+backend/app/services/stability_logger.py
+- Stability logger is environment-controlled and currently disabled in local runtime.
+- When enabled, snapshot JSONL must include:
+  - `trap_probability`
+  - `trap_type`
+  - `committed_regime`
+  - `detected_regime`
+  - `candidate_regime`
+  - `candidate_regime_count`
+  - `support_transition_active`
+  - `support_shift_cycle`
+  - `confirmation_type`
+  - `previous_support`
+  - `previous_resistance`
+- `previous_support` and `previous_resistance` are also part of watched transition fields.
+- Cache key resolution in `StabilityLoggerService` now uses `make_cache_key` from
+  `app.core.cache` (same function used by the router and background updater).
+  The local `_cache_key` static method has been removed.
+
+Cycle / event logs
+- Cycle and event logs are environment-controlled and currently disabled in local runtime.
+- When enabled, they should expose the same active readiness / SR guard / regime stabilization fields used by the API payload.
+
+SENSEX / BSE Integration
+
+SENSEX symbol support
+backend/app/services/bse_fetcher.py
+backend/app/services/bse_adapter.py
+backend/app/services/background_updater.py
+- `SENSEX` is now part of the live symbol pipeline.
+- Routing:
+  - `SENSEX` uses the BSE fetch / adapter path
+  - `NIFTY`, `BANKNIFTY`, and `FINNIFTY` continue using the NSE path
+- Existing cache contract is reused without schema changes.
+- Existing API contract is reused:
+  - `/api/v2/intelligence/summary?symbol=SENSEX`
+- Validation target:
+  - SENSEX summary returns a normal `market_state` payload with numeric support / resistance
+
+Daily context note
+backend/app/services/daily_context.py
+- Daily context remains a read-only higher-timeframe input.
+- Known low-priority gap:
+  - `daily_context.py` still has no SENSEX mapping
+  - SENSEX daily-context fields may therefore remain empty until that mapping is added
+
+API Security / Input Validation
+
+Query parameter validation
+backend/app/routers/option_chain.py
+- All GET endpoints enforce an allowlist on `symbol`, `instrument_type`, and `expiry`.
+- `symbol` allowlist is built from the `OPTIONLENS_SYMBOLS` env var at startup plus `SENSEX`.
+  - Default allowed symbols: `NIFTY`, `BANKNIFTY`, `FINNIFTY`, `SENSEX`
+  - Adding a symbol to `OPTIONLENS_SYMBOLS` automatically covers both the background updater and the router.
+- `instrument_type` allowlist: `INDICES`, `FUTURES`, `EQUITIES`
+  - Frontend sends `Indices`; validated as uppercase `INDICES` (allowed).
+  - Validated value is normalized to uppercase before use.
+- `expiry` format: `^[A-Za-z0-9\-]+$` (covers NSE format `27-Jun-2024`).
+- Invalid values return HTTP 400 before cache lookup, preventing cache-key probing.
+- Dead compatibility parameters (`use_sample`, `target_mode`, `confidence_score`) have been
+  removed from all endpoint signatures.
+
+Cache key canonical implementation
+backend/app/core/cache.py
+- `make_cache_key(symbol, instrument_type, expiry)` is the single source of truth.
+- Both `background_updater.py` and `option_chain.py` import and alias it as `_cache_key`.
+- `stability_logger.py` also uses `make_cache_key`; its former duplicate static method is removed.
+- Key format: `{INSTRUMENT_TYPE_UPPER}::{SYMBOL_UPPER}::{expiry or 'AUTO'}`
+- Validation implication: all three files always produce identical keys for the same inputs.
+
+Authentication / Middleware
+
+Supabase JWT verification
+backend/app/auth.py
+- `verify_supabase_jwt` is now an `async` function.
+- JWKS fetching uses `httpx.AsyncClient` (non-blocking); the previous `requests.get` call
+  blocked the asyncio event loop on every JWKS cache miss.
+- JWKS cache TTL remains 1 hour; cache miss is a rare event in steady-state operation.
+- `get_current_user` dependency (`app/dependencies.py`) is now `async def` to match.
+- `SupabaseAuthMiddleware.dispatch` correctly `await`s `verify_supabase_jwt`.
+- Validation implication: authenticated endpoints no longer stall other in-flight requests
+  during JWKS refresh.
+
+CORS configuration
+backend/app/main.py
+- `allow_origins` is driven by the `ALLOWED_ORIGINS` environment variable.
+  - Default (development): `http://localhost:5173,http://localhost:3000`
+  - Production: set `ALLOWED_ORIGINS` to the deployed frontend URL
+    (e.g. `https://your-app.netlify.app`) in the Render environment variables.
+- Wildcard `"*"` is never used together with `allow_credentials=True`; doing so is
+  rejected by browsers and the CORS spec.
+- Validation implication: credentialed cross-origin requests work correctly only when
+  `ALLOWED_ORIGINS` explicitly lists the frontend origin.
+
+Application lifecycle
+backend/app/main.py
+- Startup and shutdown are managed via the `lifespan` async context manager pattern.
+- The deprecated `@app.on_event("startup")` / `@app.on_event("shutdown")` decorators
+  have been removed.
+- Background updater and stability logger tasks are created and cancelled inside `lifespan`.
+- Shutdown log messages fire only when the respective tasks were actually started.
+
+Single-worker constraint
+backend/app/services/background_updater.py
+- All module-level state dicts (`_atr_history`, `_calibrated_weights`, etc.) are mutated
+  exclusively by the asyncio background loop.
+- The application must run as a single Uvicorn worker (`--workers 1`).
+- Running multiple workers silently forks in-memory state, causing history divergence.
+- Validated deployment command: `python -m uvicorn app.main:app --host 0.0.0.0 --port 10000`
+
+Exception logging
+backend/app/services/background_updater.py
+- I/O helper failures (state snapshot load/persist, cycle log, event log, event stream)
+  now log at `WARNING` level instead of `DEBUG`.
+- Validation implication: disk or permission errors that were previously invisible in
+  production logs will now appear as warnings.
+
+Current Deployment Status
+- Confirmed fixed in code:
+  - readiness V2 as active readiness contract
+  - trap smoothing / hysteresis / stable-mid band lock
+  - range lock / no-edge stabilizer
+  - range-family regime stabilization
+  - non-committable balanced regimes
+  - readiness transition flap guard / smoothing / invalid-SR handling
+  - updater-level SR cold-start buffer guard
+  - previous_resistance persistence in state
+  - previous_resistance added to stability logger snapshots
+  - SENSEX backend integration through existing v2 summary endpoint
+  - CORS origin allowlist via ALLOWED_ORIGINS env var (wildcard removed)
+  - async JWKS fetch via httpx (event loop no longer blocked on auth)
+  - lifespan context manager replacing deprecated on_event hooks
+  - input validation allowlist on all API query params (400 on bad input)
+  - make_cache_key canonical in app.core.cache (no duplicate implementations)
+  - stability_logger uses make_cache_key (local duplicate static method removed)
+  - I/O exception logging upgraded from DEBUG to WARNING
+  - _session_phase_session_key signature cleaned (unused timestamp param removed)
+- Validate live when needed:
+  - breach confirmation end to end
+  - SR cold-start guard firing on a real restart/reset cycle
+  - readiness volatility reduction in live logs
+  - SENSEX daily-context enrichment once mapping is added
+  - CORS behaviour with production Netlify origin once ALLOWED_ORIGINS is set on Render

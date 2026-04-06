@@ -1,397 +1,251 @@
 OptionLens Frontend Validation Logic Overview
 
 Maintenance rule
-- Update this file whenever frontend rendering, field mapping, responsive behavior, or UI interpretation changes.
+- Update this file whenever frontend rendering, field mapping, symbol routing, responsive behavior, or UI interpretation changes.
 
 Current Frontend Runtime State
-
-App shell
-frontend/src/App.tsx
 - Desktop dashboard renders at `md` and above.
 - Mobile dashboard renders below `md`.
-- Both use the same backend response and App.tsx state.
+- Both dashboards consume the same backend summary contract.
+- Current frontend build supports:
+  - `NIFTY`
+  - `BANKNIFTY`
+  - `FINNIFTY`
+  - `SENSEX`
 
-Current validation split
-- Web / desktop validation:
-  - main trading dashboard
-  - key levels
-  - trap card
-  - structural price context
-- Mobile validation:
-  - dedicated compact component stack in `frontend/src/components/mobile`
+App Shell / Symbol State
+frontend/src/App.tsx
+- Symbol registry includes:
+  - `NIFTY`
+  - `BANKNIFTY`
+  - `FINNIFTY`
+  - `SENSEX`
+- Index-name mapping includes:
+  - `BSE SENSEX`
+- Selected symbol is persisted in localStorage under:
+  - `optionlens:selected-symbol`
+- Desktop uses a pill-toggle selector instead of a native `<select>`.
+- Mobile uses the same symbol list and the same persisted change handler.
+- `instrument_type` is initialized as `"Indices"` and sent as a query parameter.
+  - The backend validates this as uppercase `"INDICES"` (allowed).
+  - The frontend never reads `instrument_type` back from API responses; it is outbound-only.
+  - No frontend changes are needed when the backend normalizes `instrument_type` to uppercase.
+- Validation targets:
+  - selecting `SENSEX` survives refresh
+  - symbol changes continue to drive the existing summary endpoint with `?symbol=...`
+  - switching symbols does not require component-specific data-shape changes
 
-Web Dashboard Validation
+Desktop Validation
 
 Market banner
 frontend/src/components/MarketBanner.tsx
-- Spot banner remains the primary top summary for web.
-- Spot layout is two-row:
-  - row 1: spot price + change badge
-  - row 2: vs prev close, from open, updated time
-- Spot number uses split formatting:
-  - integer portion emphasized
-  - decimal portion smaller and lower opacity
-- Numeric values should use JetBrains Mono where applied.
-
-Web controls
-frontend/src/styles.css
-- Under `600px`, controls wrap into two rows:
-  - Symbol + Instrument
-  - Expiry + Range
-- Each control fills its grid cell width.
-
-Decision / Key Levels / Trap layout
-frontend/src/styles.css
-- Under smaller web breakpoints:
-  - cards stack vertically
-  - Decision Layer hides below `768px`
-  - compact detail remains in the signal card path where wired
+- Top banner remains the primary live quote summary on desktop.
+- `FROM OPEN` and top delta color handling must treat:
+  - `-`
+  - `▼`
+  - `↓`
+  as downside.
+- Validation target:
+  - downside from-open values must not render green
 
 Decision card
 frontend/src/components/DecisionBanner.tsx
-frontend/src/styles.css
-- Title typography is aligned with other cards.
-- Semantic labels such as Bullish / Balanced / Range Day are not monospace.
-- Numeric values like readiness remain monospace.
-- Spacing across Decision, Trap, and Key Levels should feel visually consistent.
-- Current decision UX additions:
-  - action
-  - resolved reason
-  - blocker chip when blocking_reason != NONE
-  - winning engine badge
-  - compact decision confidence strip
-  - support / resistance transition badge
+- Recent Signal Flow is removed from the active UI.
+- Action badge / reason remain the primary focus.
+- WAIT messaging should remain human-readable and acronym-safe.
 - Validation target:
-  - blocker and winning-engine text must remain human-readable, not raw backend enums
-  - missing fields must hide safely without layout breakage
+  - strings like `ATM volume shock` must preserve `ATM`, not render as `aTM`
+
+Structural Price Context (SPC)
+frontend/src/components/StructuralPriceContextCard.tsx
+frontend/src/components/StructureBand.tsx
+- SPC sits in the top desktop row next to the trap card.
+- SPC chart code remains in file, but rendered chart output is intentionally disabled.
+- Current SPC contract includes:
+  - action / reason header
+  - session phase chip
+  - bias chip
+  - support / spot / resistance structure
+  - support and resistance defense ratios
+  - previous support / previous resistance labels when provided
+  - active rail / band
+  - breakout probabilities and side targets in the footer
+  - combined expected range
+- Current cleanup / guards:
+  - regime chip removed from SPC header
+  - trap-risk helper text below the rail removed
+  - point-distance helper lines removed from the body
+  - bearish bias chip renders red
+  - bullish bias chip renders green
+  - neutral bias chip stays muted
+
+SPC label correctness
+frontend/src/components/StructuralPriceContextCard.tsx
+- SPC uses unified label-state resolution (`resolveSPCLabelState`) for:
+  - center spot text
+  - breach / proximity banner
+- Both center text and breach banner are driven by the same resolved state, so they
+  always agree.
+- Label states: `BELOW_SUPPORT`, `ABOVE_RESISTANCE`, `NEAR_SUPPORT`, `NEAR_RESISTANCE`,
+  `LOWER_BAND`, `UPPER_BAND`, `MID_BAND`
+- Validation targets:
+  - if `spot < support`, center text must say below-support context, not near-support
+  - if `spot > resistance`, center text must say above-resistance context, not inside-band
+  - breach banner and center text must agree
+
+SPC band / orb behavior
+frontend/src/components/StructureBand.tsx
+- Active band remains the visual source of truth for structural context.
+- State resolved via `resolveSPCState` into one of 6 states; orb theme is derived from state.
+- Wide-spread and tight-spread range bounds are handled separately.
+- Tight breach states now get extra breached-side breathing room so the orb does not pin
+  to the far edge when spot is only slightly outside S/R.
+- Extensions (`showLeftExtension` / `showRightExtension`) only appear on genuine
+  breakout/breakdown attempts or confirmed expansion; they are not shown on minor proximity.
+- Validation targets:
+  - spot slightly above R should render as a modest breakout-attempt extension, not an orb
+    clipped at the far edge
+  - spot slightly below S should behave symmetrically on the left side
+
+SPC footer / marker spacing
+frontend/src/styles.css
+- Previous-level pills and SPC footer text now use separate vertical lanes.
+- Validation targets:
+  - `Prev S` / `Prev R` pills must not collide with breakout target text
+  - footer columns must remain readable without overlap
 
 Trap card
 frontend/src/components/TrapCard.tsx
-- Trap card supports:
-  - trap_direction
-  - trap_affected_level
-  - direction-aware suggested action
-- Direction pill semantics:
-  - downside = Resistance rejection
-  - upside = Support absorption
-- Trap type text is neutral, not direction-colored.
-- Affected level guard:
-  - downside must not resolve to an invalid level away from resistance; it falls back to displayed resistance
-  - upside must not resolve to an invalid level away from support; it falls back to displayed support
+- Direction semantics remain:
+  - downside = resistance rejection
+  - upside = support absorption
+- Pill text is full-length (`"Resistance rejection"` / `"Support absorption"`).
+- Validation targets:
+  - pill text must not truncate the second word
+  - affected level must stay aligned with the corresponding structural edge
 
-Key levels card
+Key levels
 frontend/src/components/KeyLevelsCard.tsx
-- Current labels:
-  - Support
-  - Resistance
-  - Confirm Above
-  - Next Resistance
-  - Next Support
-- Guard rules:
-  - Next Resistance only renders if strictly above active resistance
-  - Next Support only renders if strictly below active support
+- Next Resistance only renders if above active resistance.
+- Next Support only renders if below active support.
+- Invalid structural values (non-numeric) are suppressed via `parseNumeric` returning null.
+- Validation target:
   - invalid structural values should be suppressed rather than mislabeled
 
-Structural Price Context
-frontend/src/components/StructuralPriceContextCard.tsx
-- SPC now uses a dense structural layout on desktop.
-- Current compact / dense content:
-  - action / reason header
-  - session phase
-  - bias chip
-  - support / spot / resistance
-  - support and resistance defense ratios
-  - previous support / previous resistance labels when provided
-  - active band track with watch zone
-  - dense footer:
-    - breakout probabilities
-    - below-S / above-R targets
-  - combined expected range
-- Chart code remains in file, but SPC chart rendering is intentionally disabled in the live UI.
-- Range track supports preserved previous-level breach markers when backend data exists.
-- Track now also supports:
-  - near-support and near-resistance proximity states
-  - spot dot color changes:
-    - blue mid-band
-    - green near support
-    - red near resistance
-    - red breach
-  - proximity / breach banner between track and footer
-- Current SPC cleanup rules:
-  - regime chip removed from SPC header
-  - point-distance helper lines removed from the body
-  - trap-risk helper text below the rail removed
-  - bearish bias chip renders red
-- Validation note:
-  - if no mark appears, first check whether backend actually provides a distinct previous level and confirmed breach state
-  - previous S/R display depends on backend market_state.previous_support / previous_resistance being non-null
-  - if old S/R is missing, trace payload first before treating it as a styling issue
-
-Web field mapping
-frontend/src/App.tsx
-- Spot:
-  - index-data quote still updates faster than option-chain fallback
-  - local browser runtime must not cache `/api` responses through the service worker
-- Key levels:
-  - support = intelligence.levels.support.strike
-  - resistance = intelligence.levels.resistance.strike
-- Trap:
-  - trap_direction and trap_affected_level are normalized again at the frontend display layer to avoid impossible values leaking to UI
-- Targets:
-  - live market-state targets are preferred by structural side, not just by bias label
-- SPC probabilities / readiness:
-  - breakoutProbabilityUp falls back to displayBullProbability
-  - breakoutProbabilityDown falls back to displayBearProbability
-  - SPC uses display-aligned fallback values when raw market_state fields are null
-
-Mobile Dashboard Validation
+Mobile Validation
 
 Entry point
 frontend/src/components/mobile/OptionLensMobileDashboard.tsx
-- Mobile is now enabled again and should render live below `md`.
-
-Mobile components
-- frontend/src/components/mobile/MobileHeader.tsx
-- frontend/src/components/mobile/SpotHeroCard.tsx
-- frontend/src/components/mobile/PrimarySignalCard.tsx
-- frontend/src/components/mobile/TrapCardMobile.tsx
-- frontend/src/components/mobile/KeyLevelsCard.tsx
-- frontend/src/components/mobile/StructuralRangeTrackMobile.tsx
-- frontend/src/components/mobile/TradePlanMobile.tsx
-- frontend/src/components/mobile/AlertsCardMobile.tsx
-- frontend/src/components/mobile/BottomNavMobile.tsx
-
-Mobile layout order
-- status/header
-- spot header
-- primary signal
-- structural range track
-- trap card
-- key levels
-- trade plan
-- alerts
-- bottom nav
-
-Mobile visual rules
-- dark compact trading layout
-- narrow vertical spacing
-- signal-first hierarchy
-- bottom nav should be dark and flat, not inheriting global button styling
-
-Mobile bottom nav
-frontend/src/components/mobile/BottomNavMobile.tsx
-frontend/src/styles.css
-- Dedicated mobile nav button class now resets inherited global button styles.
+- Mobile dashboard is active again below `md`.
+- Current mobile order:
+  - header / status
+  - spot
+  - structural range track
+  - primary signal
+  - trap card
+  - key levels
+  - trade plan
+  - alerts
+  - bottom nav
 - Validation target:
-  - no orange rounded-button appearance from desktop/global button CSS
+  - SPC / structural track should appear before the signal card in the mobile stack
 
-Mobile signal card
+Mobile structural range
+frontend/src/components/mobile/StructuralRangeTrackMobile.tsx
+- Position context uses signed distance:
+  - `distToSupport < 0` → below support → renders breach wording (`"X pts below support"`)
+  - `distToResistance < 0` → above resistance → renders breach wording (`"X pts above R"`)
+- Near-edge wording is only used when distance is positive (spot is inside the band).
+- Validation target:
+  - broken states must render as breach context, not near-edge context
+
+Mobile primary signal
 frontend/src/components/mobile/PrimarySignalCard.tsx
-- Signal reason is larger and more prominent.
-- Decision-layer duplication was removed from the mobile path.
-- Bias / pressure / regime / readiness remain inside the primary card.
-- Mobile now also shows:
-  - blocker chip
-  - winning engine chip
-  - decision confidence strip
-  - transition badge
+- Mobile remains pinned to the active backend readiness contract.
+- Fields consumed: `readinessScore`, `readinessState`, `readinessExplainability`
+- No V1/V2 readiness toggle is present.
+- Validation target:
+  - readiness display reflects the active backend fields only
 
-Mobile data contract
-- trade action:
-  - market_state.trade_action
-- reason:
-  - market_state.resolved_reason
-  - market_state.resolved_reason
-  - fallback market_state.decision_explanation
-- blocker / winner / confidence:
-  - market_state.blocking_reason
-  - market_state.winning_engine
-  - market_state.decision_confidence
-- transition badges:
-  - market_state.support_transition_badge
-  - market_state.resistance_transition_badge
-- readiness:
-  - market_state.trade_readiness
-  - market_state.readiness_state
-  - market_state.readiness_active
-- trap:
-  - signals.trap.trap_probability
-  - signals.trap.trap_type
-  - signals.trap.trap_direction
-  - signals.trap.trap_affected_level
-- structure:
-  - levels.support.strike
-  - levels.resistance.strike
-- session:
-  - market_state.session_phase
-  - market_state.regime
-  - market_state.pressure_state
-- alerts:
-  - displayAlerts
-
-Defensive rendering rules
-- Missing numbers render as `-`.
-- Empty cards should either hide or show placeholders safely.
-- Trap and key-level cards must guard against structurally invalid backend values before display.
-
-Frontend-specific fixes worth validating
-
-Expiry dropdown
+Styles / Symbol Toggle
 frontend/src/styles.css
-- Web select / option text now has explicit dark-theme colors.
-- Validation target:
-  - expiry letters should remain visible when dropdown opens.
+- Symbol pill styles:
+  - `.symbol-toggle-field`
+  - `.symbol-pill-group`
+  - `.symbol-pill`
+  - `.symbol-pill-active`
+- Validation targets:
+  - active symbol pill should be visibly selected
+  - pills should wrap safely without layout breakage
 
-SPA refresh behavior
-frontend/netlify.toml
-frontend/public/_redirects
-- Netlify rewrites all routes to `index.html`.
-- Validation target:
-  - refreshing `/app` should not return 404 on deployed builds.
+Frontend / Backend Contract Areas
 
-PWA / Service Worker
-frontend/public/sw.js
-frontend/public/manifest.json
-frontend/src/main.tsx
-- PWA manifest and service worker are enabled.
-- Service worker must not cache live `/api/` requests.
+Summary endpoint usage
+frontend/src/App.tsx
+- Frontend uses the existing summary contract and changes only the `symbol` query parameter.
+- No card-specific symbol branching is required.
 - Validation target:
-  - spot and other live values should continue updating after refresh instead of freezing on stale cached API responses.
+  - `SENSEX` renders through the same normalized card stack as NSE symbols
 
-SPC dense desktop validation
+Backend input validation contract
+backend/app/routers/option_chain.py
+- The backend now rejects invalid query params with HTTP 400 before cache lookup.
+- Allowed symbols: `NIFTY`, `BANKNIFTY`, `FINNIFTY`, `SENSEX` (plus any in `OPTIONLENS_SYMBOLS`).
+- Allowed instrument_type values: `INDICES`, `FUTURES`, `EQUITIES` (case-insensitive input).
+  - Frontend sends `instrument_type=Indices`; this is accepted and normalized to `INDICES`.
+- Expiry format validated as `^[A-Za-z0-9\-]+$`.
+- Validation implication: frontend must not send arbitrary strings in these params.
+  Current frontend values (`Indices`, valid symbol names, NSE expiry format) all pass.
+
+Previous-level display
 frontend/src/components/StructuralPriceContextCard.tsx
-- Validate:
-  - left / center / right footer columns stay aligned
-  - right-side distance flips correctly between below R and above R
-  - Up Prob / Down Prob render numeric values instead of `-%`
-  - Expected Range renders as a combined low ↔ high envelope
-  - proximity banner appears only when:
-    - near support
-    - near resistance
-    - support broken
-    - resistance broken
-  - banner stays hidden mid-band
-  - old S / old R anchor labels only show when previous levels are actually present
+- Previous S/R labels depend on backend-provided:
+  - `market_state.previous_support`
+  - `market_state.previous_resistance`
+- Validation target:
+  - if previous markers are missing, inspect payload first before treating it as a styling issue
 
-Validation checklist
-- Below `md`, mobile layout renders instead of desktop.
-- At `md` and above, desktop layout renders unchanged.
-- Web key levels do not show a lower support value as Next Resistance.
-- Trap affected level always aligns with trap direction.
-- Decision blocker chip only renders when blocker != NONE.
-- Winning engine badge remains secondary, not louder than the action.
-- Decision confidence shows:
-  - numeric %
-  - High / Moderate / Low label
-- Transition badge appears when support_transition_badge or resistance_transition_badge is true.
-- SPC expected range does not look ambiguous.
-- SPC dot color matches context:
-  - blue normal
-  - green near support
-  - red near resistance / breach
-- SPC banner only appears for proximity / breach states.
-- SPC bearish bias chip appears red.
-- Bottom nav on mobile no longer inherits orange button styling.
-- Expiry dropdown text remains visible.
-- Netlify refresh on `/app` works after deploy.
-- Live spot still updates after service worker install / refresh.
+Readiness display
+frontend/src/App.tsx
+frontend/src/components/DecisionBanner.tsx
+frontend/src/components/mobile/PrimarySignalCard.tsx
+- Frontend is pinned to the active backend readiness contract.
+- No frontend toggle exists between V1 and V2.
+- Explainability uses backend-provided:
+  - `readiness_cap_reason`
+  - `readiness_floor_reason`
 
-Build validation
-- Current frontend changes build successfully with:
-  - `npm run build`
+Validation Checklist
+- Selecting `SENSEX` persists across refresh.
+- Desktop symbol pills and mobile symbol selection stay in sync.
+- Market banner downside values render red, not green.
+- Recent Signal Flow is not shown.
+- SPC remains in the first desktop row next to the trap card.
+- SPC chart stays disabled in rendered UI.
+- Regime chip does not appear in SPC header.
+- SPC center text and breach banner agree on above-R / below-S states.
+- SPC orb does not clip to the far edge on a small breach.
+- SPC footer text does not overlap previous-level pills.
+- Trap direction pill text does not truncate.
+- Mobile structural track appears before the primary signal card.
+- `npm run build` remains green after frontend changes.
 
-CURRENT OVERRIDE (2026-04-01)
-- This section supersedes stale notes above where they conflict.
-
-Desktop hierarchy (current)
-- Top row:
-  - Structural Price Context (SPC)
-  - Trap card (adjacent)
-- Key Levels is positioned between SPC and the trade-signal area.
-- Recent Signal Flow has been removed from active desktop/mobile UI paths.
-
-SPC renderer source of truth
-- Active SPC rail path uses:
-  - frontend/src/components/StructureBand.tsx
-- Integrated by:
-  - frontend/src/components/StructuralPriceContextCard.tsx
-- SPC chart is intentionally disabled in UI but code remains in file.
-
-SPC state handling
-- StructureBand uses resolved SPC state logic:
-  - WITHIN_STRUCTURE
-  - SUPPORT_DEFENSE
-  - RESISTANCE_PRESSURE
-  - BREAKOUT_ATTEMPT
-  - BREAKDOWN_ATTEMPT
-  - CONFIRMED_EXPANSION
-- Dual breach guard is enforced in-band rendering.
-
-SPC text correctness guards
-- Breached states must never render as near-edge text.
-- When spot > resistance:
-  - center text must read above-resistance context
-- When spot < support:
-  - center text must read below-support context
-- Generic "inside active band" reason is overridden when breach is active.
-
-S/R stat rendering rule
-- Primary structural row must contain only:
-  - S value or R value
-- Shift/new indicators must use badge rendering (for example NEW), not inline token concatenation.
-- Invalid pattern to reject:
-  - "S newS 22,800"
-
-SPC footer checks
-- Side columns should render:
-  - breakout probabilities above side targets
-  - below-S target on support side
-  - above-R target on resistance side
-- Expected range remains centered.
-
-Header chip cleanup
-- Regime chip and raw volume chip were removed from SPC header.
-- Header should stay action/reason/bias focused.
-
-CURRENT OVERRIDE (2026-04-02)
-- This section supersedes stale notes above where they conflict.
-
-Readiness display mode
-- Frontend is now pinned to the active backend readiness contract.
-- V1/V2 readiness toggle has been removed from desktop and mobile UI.
-- Readiness explainability uses:
-  - readiness_cap_reason
-  - readiness_floor_reason
-- Expected threshold marker in UI:
-  - 60 entry
-
-Decision card cleanup
-- Recent Signal Flow is removed from active desktop and mobile UI paths.
-- Validation should no longer expect timeline rendering in the decision card path.
-
-Current SPC structure
-- Desktop top row layout:
-  - Structural Price Context (SPC)
-  - Trap card next to SPC
-- SPC chart code remains in the component, but rendered chart output is intentionally disabled.
-
-Current SPC content contract
-- Header:
-  - action / reason
-  - session phase chip
-  - trap cleanliness / trap risk chip
-  - bias chip
-- Support / Spot / Resistance body:
-  - no point-distance helper lines
-  - previous levels on separate muted rows
-- Footer:
-  - support side = Down Prob + Below S target
-  - center = Today's Expected Range
-  - resistance side = Up Prob + Above R target
-
-Current SPC display guards
-- Regime chip is removed from SPC header.
-- Trap-risk helper text below the rail is removed.
-- Bearish bias chip renders red.
-- Bullish bias chip renders green.
-- Neutral bias chip keeps the default muted chip styling.
+Current Deployment Status
+- Confirmed fixed in code:
+  - SENSEX symbol toggle support
+  - symbol persistence via localStorage
+  - pill-style symbol selector on desktop
+  - mobile symbol selection uses the shared persisted handler
+  - SPC top-row layout
+  - SPC label-state unification (unified `resolveSPCLabelState` drives center text and banner)
+  - SPC chart disabled in rendered UI
+  - bearish bias chip red / bullish green
+  - header acronym-safe ATM formatting
+  - downside `FROM OPEN` color handling
+  - SPC footer / previous-marker overlap reduction
+  - mobile structural range breach vs near-edge wording (signed-distance check)
+  - key levels Next R/S suppressed when structurally invalid
+- Validate live when needed:
+  - SENSEX dashboard rendering end to end
+  - trap pill spacing at narrow widths
+  - SPC orb breathing room on live tight-range breakout attempts
