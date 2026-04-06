@@ -45,7 +45,7 @@ def _validate_instrument_type(instrument_type: str) -> str:
     upper = instrument_type.strip().upper()
     if upper not in _ALLOWED_INSTRUMENT_TYPES:
         raise HTTPException(status_code=400, detail=f"Unknown instrument_type '{instrument_type}'")
-    return instrument_type.strip()
+    return upper
 
 
 def _validate_expiry(expiry: str | None) -> str | None:

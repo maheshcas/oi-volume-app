@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.cache import cache
+from app.core.cache import cache, make_cache_key
 
 LOG_DIR = Path(__file__).resolve().parents[2] / "logs" / "stability"
 LOGGER_NAME = "optionlens.stability_logger"
@@ -26,6 +26,8 @@ WATCH_FIELDS = [
     "support_transition_active",
     "support_shift_cycle",
     "absorption_reference_level",
+    "previous_support",
+    "previous_resistance",
     "support_strike",
     "resistance_strike",
     "trap_probability",
@@ -133,14 +135,14 @@ class StabilityLoggerService:
         v2_map = data.get("summary_data", {}).get("v2", {}) or {}
         if not isinstance(v2_map, dict) or not v2_map:
             return None, None
-        exact_key = self._cache_key(symbol=self.symbol, instrument_type=self.instrument_type, expiry=self.expiry)
+        exact_key = make_cache_key(symbol=self.symbol, instrument_type=self.instrument_type, expiry=self.expiry)
         if self.expiry and exact_key in v2_map:
             return v2_map.get(exact_key), exact_key
 
         symbol_payload = data.get("option_chain_data", {}).get("symbols", {}).get(self.symbol, {}) or {}
         contract_expiries = symbol_payload.get("contract_info", {}).get("expiries", []) if isinstance(symbol_payload, dict) else []
         for expiry in contract_expiries:
-            candidate_key = self._cache_key(symbol=self.symbol, instrument_type=self.instrument_type, expiry=str(expiry))
+            candidate_key = make_cache_key(symbol=self.symbol, instrument_type=self.instrument_type, expiry=str(expiry))
             if candidate_key in v2_map:
                 return v2_map.get(candidate_key), candidate_key
 
@@ -194,7 +196,16 @@ class StabilityLoggerService:
             "support_transition_active": support_transition_active,
             "support_shift_cycle": support_shift_cycle,
             "absorption_reference_level": market_state.get("absorption_reference_level"),
-            "previous_support": internal_state.get("previous_support"),
+            "previous_support": (
+                internal_state.get("previous_support")
+                if internal_state.get("previous_support") is not None
+                else market_state.get("previous_support")
+            ),
+            "previous_resistance": (
+                internal_state.get("previous_resistance")
+                if internal_state.get("previous_resistance") is not None
+                else market_state.get("previous_resistance")
+            ),
             "cache_last_update": internal_state.get("last_update") or internal_state.get("updated_at"),
             "support_strike": levels.get("support", {}).get("strike"),
             "resistance_strike": levels.get("resistance", {}).get("strike"),
@@ -263,10 +274,6 @@ class StabilityLoggerService:
         if bool(record.get("breach_confirmed")) and record.get("confirmation_type") is None:
             missing.append("confirmation_type")
         return missing
-
-    @staticmethod
-    def _cache_key(symbol: str, instrument_type: str, expiry: str | None) -> str:
-        return f"{instrument_type.upper()}::{symbol.upper()}::{expiry or 'AUTO'}"
 
     def _acquire_process_lock(self) -> bool:
         lock_path = LOG_DIR / ".logger.lock"
