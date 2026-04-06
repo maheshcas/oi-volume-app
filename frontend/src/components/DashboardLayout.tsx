@@ -19,6 +19,7 @@ type DashboardLayoutProps = {
     action: "WAIT" | "CAUTION" | "READY";
     direction: "Bullish" | "Bearish" | "Neutral" | "Conflict";
     explanation: string;
+    sessionPhase?: string | null;
     bias: string;
     readinessScore: number;
     readinessState: string;
@@ -150,6 +151,7 @@ export default function DashboardLayout({
           action={decision.action}
           direction={decision.direction}
           explanation={decision.explanation}
+          sessionPhase={decision.sessionPhase}
           bias={decision.bias}
           readinessScore={decision.readinessScore}
           readinessState={decision.readinessState}

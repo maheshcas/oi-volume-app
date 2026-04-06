@@ -47,9 +47,12 @@ export default function OptionLensMobileDashboard({
           sessionPhase={data.sessionPhase}
         />
 
+        <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />
+
         <PrimarySignalCard
           tradeAction={data.tradeAction}
           resolvedReason={data.resolvedReason}
+          sessionPhase={data.sessionPhase}
           blockingReason={data.blockingReason}
           winningEngine={data.winningEngine}
           decisionConfidence={data.decisionConfidence}
@@ -62,8 +65,6 @@ export default function OptionLensMobileDashboard({
           supportTransitionBadge={data.supportTransitionBadge}
           resistanceTransitionBadge={data.resistanceTransitionBadge}
         />
-
-        <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />
 
         <TrapCardMobile
           trapProbability={data.trapProbability}

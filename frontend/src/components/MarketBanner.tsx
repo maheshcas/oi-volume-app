@@ -33,6 +33,19 @@ function toneForTrend(label?: string) {
   return "ia-pill-trend-neutral";
 }
 
+function isNegativeDelta(value?: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return (
+    text.startsWith("-") ||
+    text.startsWith("▼") ||
+    text.startsWith("↓") ||
+    text.includes(" -") ||
+    text.includes("▼") ||
+    text.includes("↓")
+  );
+}
+
 export default function MarketBanner(props: MarketBannerProps) {
   const spotParts = splitSpotParts(props.spot);
   const liveTone =
@@ -55,9 +68,8 @@ export default function MarketBanner(props: MarketBannerProps) {
             ? "BLOCKED"
             : "CHECKING";
 
-  const pctDown = props.pctChange.trim().startsWith("-");
-  const openDeltaDown =
-    String(props.fromOpenDelta ?? "").trim().startsWith("-") || String(props.fromOpenDelta ?? "").includes("?");
+  const pctDown = isNegativeDelta(props.pctChange) || isNegativeDelta(props.spotDelta);
+  const openDeltaDown = isNegativeDelta(props.fromOpenDelta);
   const projectionTone = props.projection?.toLowerCase().includes("down")
     ? "ia-text-bear"
     : props.projection?.toLowerCase().includes("up")

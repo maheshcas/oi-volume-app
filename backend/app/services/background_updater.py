@@ -43,6 +43,11 @@ from app.engines.volume_analyzer import run_volume_analysis
 from app.services.decision_engine import build_decision_input, master_decision_engine
 from app.services.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
+from app.services.bse_fetcher import get_sensex_option_chain
+from app.services.bse_adapter import (
+    fetch_sensex_option_chain_async,
+    fetch_sensex_contract_info_async,
+)
 from app.services.nse_client import fetch_index_data, fetch_option_chain, fetch_option_chain_contract_info
 from app.services.parser import build_oi_volume_summary, build_target_projection
 
@@ -51,6 +56,7 @@ logger = logging.getLogger("optionlens.background_updater")
 REFRESH_SECONDS = int(os.getenv("OPTIONLENS_REFRESH_SECONDS", "15"))
 STALE_AFTER_SECONDS = int(os.getenv("OPTIONLENS_STALE_AFTER_SECONDS", "60"))
 SYMBOLS = [s.strip().upper() for s in os.getenv("OPTIONLENS_SYMBOLS", "NIFTY,BANKNIFTY,FINNIFTY").split(",") if s.strip()]
+BSE_SYMBOLS: frozenset[str] = frozenset({"SENSEX"})
 INSTRUMENT_TYPE = os.getenv("OPTIONLENS_INSTRUMENT_TYPE", "Indices")
 MAX_EXPIRIES_PER_SYMBOL = max(1, int(os.getenv("OPTIONLENS_PREFETCH_EXPIRIES", "3")))
 ATR_ROLLING_WINDOW = max(5, int(os.getenv("OPTIONLENS_ATR_ROLLING_WINDOW", "40")))
@@ -549,10 +555,14 @@ def _resolve_absorption_reference_level(
     ):
         previous_resistance = prev_current_resistance
     else:
+        # Keep prior-session resistance memory alive at session open even when the
+        # reset seeded current_resistance == previous_resistance. Dropping it to
+        # None here blanks prev-R visuals and deprives breach confirmation of its
+        # opening structural anchor.
         previous_resistance = (
             prev_previous_resistance
-            if prev_previous_resistance is not None and prev_previous_resistance != current_resistance_value
-            else None
+            if prev_previous_resistance is not None
+            else prev_current_resistance
         )
 
     resolved = {
@@ -837,6 +847,51 @@ def _clamp_score_0_100(value: float) -> float:
     return max(0.0, min(100.0, float(value or 0.0)))
 
 
+READINESS_V2_PILLAR_ALPHA = 0.28
+READINESS_V2_FINAL_ALPHA = 0.35
+READINESS_V2_DEADBAND = 2.0
+READINESS_V2_PILLAR_UP_STEP = 10.0
+READINESS_V2_PILLAR_DOWN_STEP = 15.0
+READINESS_V2_FINAL_UP_STEP = 5.0
+READINESS_V2_FINAL_DOWN_STEP = 10.0
+
+
+def _is_invalid_readiness_sr_geometry(
+    support: float | None,
+    resistance: float | None,
+) -> bool:
+    support_value = _safe_float(support)
+    resistance_value = _safe_float(resistance)
+    return (
+        support_value is None
+        or resistance_value is None
+        or resistance_value <= support_value
+    )
+
+
+def _smooth_readiness_value(
+    new_value: float,
+    prev_value: float | None,
+    *,
+    alpha: float,
+    deadband: float,
+    up_max_step: float,
+    down_max_step: float,
+) -> tuple[float, bool]:
+    new_score = _clamp_score_0_100(new_value)
+    prev_score = _safe_float(prev_value)
+    if prev_score is None:
+        return new_score, False
+    if abs(new_score - prev_score) < deadband:
+        return prev_score, False
+
+    smoothed = (prev_score * (1.0 - alpha)) + (new_score * alpha)
+    upper_bound = prev_score + max(0.0, float(up_max_step or 0.0))
+    lower_bound = prev_score - max(0.0, float(down_max_step or 0.0))
+    smoothed = min(upper_bound, max(lower_bound, smoothed))
+    return _clamp_score_0_100(smoothed), True
+
+
 def _score_readiness_structure_quality(
     *,
     committed_regime: str,
@@ -869,9 +924,24 @@ def _score_readiness_structure_quality(
         score -= 15.0
     if structural_state in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}:
         score -= 15.0
-    if str(committed_regime or "").strip() in {"Range Day", "Balanced Structure"} and structural_state == "STABLE":
+    if _regime_family(committed_regime) == "RANGE" and structural_state == "STABLE":
         score += 5.0
     return _clamp_score_0_100(score)
+
+
+def _is_readiness_range_like_session(
+    *,
+    committed_regime: str,
+    stabilized_regime_family: str | None,
+    range_locked: bool,
+    no_edge: bool,
+) -> bool:
+    return bool(
+        str(stabilized_regime_family or "").strip().upper() == "RANGE"
+        or _regime_family(committed_regime) == "RANGE"
+        or range_locked
+        or no_edge
+    )
 
 
 def _score_readiness_directional_alignment(
@@ -1044,6 +1114,8 @@ def _compute_readiness_v2(
     *,
     previous_state: dict[str, Any] | None,
     committed_regime: str,
+    stabilized_regime_family: str | None,
+    range_locked: bool,
     regime_hold_cycles: int,
     candidate_regime_count: int,
     support_transition_badge: bool,
@@ -1071,6 +1143,15 @@ def _compute_readiness_v2(
 ) -> dict[str, Any]:
     prev_support = _safe_float((previous_state or {}).get("current_support"))
     prev_resistance = _safe_float((previous_state or {}).get("current_resistance"))
+    prev_trade_readiness_v2 = _safe_float(
+        (previous_state or {}).get("trade_readiness_v2")
+        if _safe_float((previous_state or {}).get("trade_readiness_v2")) is not None
+        else (previous_state or {}).get("trade_readiness")
+    )
+    prev_structure_quality = _safe_float((previous_state or {}).get("readiness_structure_quality"))
+    prev_directional_alignment = _safe_float((previous_state or {}).get("readiness_directional_alignment"))
+    prev_execution_quality = _safe_float((previous_state or {}).get("readiness_execution_quality"))
+    prev_risk_friction = _safe_float((previous_state or {}).get("readiness_risk_friction"))
     support_now = _safe_float(support_level)
     resistance_now = _safe_float(resistance_level)
     support_unchanged = (
@@ -1078,6 +1159,17 @@ def _compute_readiness_v2(
     )
     resistance_unchanged = (
         resistance_now is not None and prev_resistance is not None and abs(resistance_now - prev_resistance) < 1e-6
+    )
+
+    readiness_range_like_session = _is_readiness_range_like_session(
+        committed_regime=committed_regime,
+        stabilized_regime_family=stabilized_regime_family,
+        range_locked=bool(range_locked),
+        no_edge=bool(no_edge),
+    )
+    invalid_sr_geometry = _is_invalid_readiness_sr_geometry(
+        support=support_level,
+        resistance=resistance_level,
     )
 
     structure_quality = _score_readiness_structure_quality(
@@ -1119,6 +1211,51 @@ def _compute_readiness_v2(
         absorption_wins=absorption_wins,
     )
 
+    if invalid_sr_geometry:
+        structure_quality = min(
+            structure_quality,
+            20.0 if (support_transition_badge or resistance_transition_badge) else 30.0,
+        )
+        execution_quality = min(execution_quality, 18.0)
+
+    readiness_smoothing_applied = False
+    if not material_breach_confirmed:
+        structure_quality, structure_smoothed = _smooth_readiness_value(
+            structure_quality,
+            prev_structure_quality,
+            alpha=READINESS_V2_PILLAR_ALPHA,
+            deadband=READINESS_V2_DEADBAND,
+            up_max_step=READINESS_V2_PILLAR_UP_STEP,
+            down_max_step=READINESS_V2_PILLAR_DOWN_STEP,
+        )
+        directional_alignment, alignment_smoothed = _smooth_readiness_value(
+            directional_alignment,
+            prev_directional_alignment,
+            alpha=READINESS_V2_PILLAR_ALPHA,
+            deadband=READINESS_V2_DEADBAND,
+            up_max_step=READINESS_V2_PILLAR_UP_STEP,
+            down_max_step=READINESS_V2_PILLAR_DOWN_STEP,
+        )
+        execution_quality, execution_smoothed = _smooth_readiness_value(
+            execution_quality,
+            prev_execution_quality,
+            alpha=READINESS_V2_PILLAR_ALPHA,
+            deadband=READINESS_V2_DEADBAND,
+            up_max_step=READINESS_V2_PILLAR_UP_STEP,
+            down_max_step=READINESS_V2_PILLAR_DOWN_STEP,
+        )
+        risk_friction, friction_smoothed = _smooth_readiness_value(
+            risk_friction,
+            prev_risk_friction,
+            alpha=READINESS_V2_PILLAR_ALPHA,
+            deadband=READINESS_V2_DEADBAND,
+            up_max_step=READINESS_V2_PILLAR_UP_STEP,
+            down_max_step=READINESS_V2_PILLAR_DOWN_STEP,
+        )
+        readiness_smoothing_applied = any(
+            [structure_smoothed, alignment_smoothed, execution_smoothed, friction_smoothed]
+        )
+
     raw_score = (
         (structure_quality * 0.30)
         + (directional_alignment * 0.30)
@@ -1126,6 +1263,7 @@ def _compute_readiness_v2(
         + (risk_friction * 0.15)
     )
     final_score = _clamp_score_0_100(raw_score)
+    raw_score_before_caps = final_score
     cap_reason = None
     floor_reason = None
 
@@ -1147,7 +1285,7 @@ def _compute_readiness_v2(
     support_value = _safe_float(support_level)
     resistance_value = _safe_float(resistance_level)
     if (
-        str(committed_regime or "").strip() == "Range Day"
+        readiness_range_like_session
         and spot_value is not None
         and support_value is not None
         and resistance_value is not None
@@ -1174,6 +1312,21 @@ def _compute_readiness_v2(
             floor_reason = "CONFIRMED_EXPANSION_LOW_TRAP_FLOOR"
 
     final_score = _clamp_score_0_100(final_score)
+    if invalid_sr_geometry and final_score > 38.0:
+        final_score = 38.0
+        cap_reason = "INVALID_SR_GEOMETRY_CAP"
+
+    if not material_breach_confirmed:
+        final_score, final_smoothed = _smooth_readiness_value(
+            final_score,
+            prev_trade_readiness_v2,
+            alpha=READINESS_V2_FINAL_ALPHA,
+            deadband=READINESS_V2_DEADBAND,
+            up_max_step=READINESS_V2_FINAL_UP_STEP,
+            down_max_step=READINESS_V2_FINAL_DOWN_STEP,
+        )
+        readiness_smoothing_applied = readiness_smoothing_applied or final_smoothed
+
     readiness_state_v2 = _readiness_v2_state(final_score)
     prev_active_v2 = bool((previous_state or {}).get("readiness_active_v2", False))
     if not prev_active_v2 and final_score >= 60.0:
@@ -1193,6 +1346,15 @@ def _compute_readiness_v2(
         "readiness_risk_friction": round(risk_friction, 2),
         "readiness_cap_reason": cap_reason,
         "readiness_floor_reason": floor_reason,
+        "readiness_regime_used": str(committed_regime or ""),
+        "readiness_regime_family_used": (
+            str(stabilized_regime_family or "").strip().upper()
+            or _regime_family(committed_regime)
+        ),
+        "readiness_range_like_session": readiness_range_like_session,
+        "readiness_raw_score_v2": round(raw_score_before_caps, 2),
+        "readiness_invalid_sr_geometry": bool(invalid_sr_geometry),
+        "readiness_smoothing_applied": bool(readiness_smoothing_applied),
     }
 
 
@@ -3655,6 +3817,8 @@ def _build_v2_intelligence(
     readiness_v2 = _compute_readiness_v2(
         previous_state=previous_state,
         committed_regime=committed_regime,
+        stabilized_regime_family=stabilized_regime_family,
+        range_locked=range_locked,
         regime_hold_cycles=int(regime_stabilizer.get("regime_hold_cycles", 0) or 0),
         candidate_regime_count=int(next_candidate_regime_count),
         support_transition_badge=support_transition_badge,
@@ -3696,6 +3860,12 @@ def _build_v2_intelligence(
     decision["readiness_risk_friction"] = readiness_v2["readiness_risk_friction"]
     decision["readiness_cap_reason"] = readiness_v2["readiness_cap_reason"]
     decision["readiness_floor_reason"] = readiness_v2["readiness_floor_reason"]
+    decision["readiness_regime_used"] = readiness_v2["readiness_regime_used"]
+    decision["readiness_regime_family_used"] = readiness_v2["readiness_regime_family_used"]
+    decision["readiness_range_like_session"] = bool(readiness_v2["readiness_range_like_session"])
+    decision["readiness_raw_score_v2"] = readiness_v2["readiness_raw_score_v2"]
+    decision["readiness_invalid_sr_geometry"] = bool(readiness_v2["readiness_invalid_sr_geometry"])
+    decision["readiness_smoothing_applied"] = bool(readiness_v2["readiness_smoothing_applied"])
     if not bool(decision.get("readiness_active", False)) and str(decision.get("trade_action", "")) in {
         "LONG BIAS",
         "SHORT BIAS",
@@ -3962,6 +4132,12 @@ def _build_v2_intelligence(
         "readiness_risk_friction": decision.get("readiness_risk_friction"),
         "readiness_cap_reason": decision.get("readiness_cap_reason"),
         "readiness_floor_reason": decision.get("readiness_floor_reason"),
+        "readiness_regime_used": decision.get("readiness_regime_used"),
+        "readiness_regime_family_used": decision.get("readiness_regime_family_used"),
+        "readiness_range_like_session": bool(decision.get("readiness_range_like_session", False)),
+        "readiness_raw_score_v2": decision.get("readiness_raw_score_v2"),
+        "readiness_invalid_sr_geometry": bool(decision.get("readiness_invalid_sr_geometry", False)),
+        "readiness_smoothing_applied": bool(decision.get("readiness_smoothing_applied", False)),
         "resolved_reason": resolved_reason,
         "blocking_reason": blocking_reason,
         "winning_engine": winning_engine,
@@ -4144,10 +4320,16 @@ def _build_v2_intelligence(
             "readiness_structure_quality": decision.get("readiness_structure_quality"),
             "readiness_directional_alignment": decision.get("readiness_directional_alignment"),
             "readiness_execution_quality": decision.get("readiness_execution_quality"),
-            "readiness_risk_friction": decision.get("readiness_risk_friction"),
-            "readiness_cap_reason": decision.get("readiness_cap_reason"),
-            "readiness_floor_reason": decision.get("readiness_floor_reason"),
-            "market_state": derived_market_state or None,
+        "readiness_risk_friction": decision.get("readiness_risk_friction"),
+        "readiness_cap_reason": decision.get("readiness_cap_reason"),
+        "readiness_floor_reason": decision.get("readiness_floor_reason"),
+        "readiness_regime_used": decision.get("readiness_regime_used"),
+        "readiness_regime_family_used": decision.get("readiness_regime_family_used"),
+        "readiness_range_like_session": bool(decision.get("readiness_range_like_session", False)),
+        "readiness_raw_score_v2": decision.get("readiness_raw_score_v2"),
+        "readiness_invalid_sr_geometry": bool(decision.get("readiness_invalid_sr_geometry", False)),
+        "readiness_smoothing_applied": bool(decision.get("readiness_smoothing_applied", False)),
+        "market_state": derived_market_state or None,
             "range_locked": range_locked,
             "no_edge": no_edge,
             "raw_candidate_regime": raw_candidate_regime,
@@ -4320,6 +4502,12 @@ def _build_v2_intelligence(
             "readiness_risk_friction": decision.get("readiness_risk_friction"),
             "readiness_cap_reason": decision.get("readiness_cap_reason"),
             "readiness_floor_reason": decision.get("readiness_floor_reason"),
+            "readiness_regime_used": decision.get("readiness_regime_used"),
+            "readiness_regime_family_used": decision.get("readiness_regime_family_used"),
+            "readiness_range_like_session": bool(decision.get("readiness_range_like_session", False)),
+            "readiness_raw_score_v2": decision.get("readiness_raw_score_v2"),
+            "readiness_invalid_sr_geometry": bool(decision.get("readiness_invalid_sr_geometry", False)),
+            "readiness_smoothing_applied": bool(decision.get("readiness_smoothing_applied", False)),
             "breakout_candidate": breakout_candidate,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),
@@ -4380,7 +4568,10 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
     summary_section: dict[str, Any] = {}
     daily_context = await asyncio.to_thread(get_daily_context, symbol)
 
-    contract_info = await _fetch_contract_info_async(symbol)
+    if symbol.upper() in BSE_SYMBOLS:
+        contract_info = await fetch_sensex_contract_info_async(symbol)
+    else:
+        contract_info = await _fetch_contract_info_async(symbol)
     expiries = list(contract_info.get("expiryDates", []))
     strikes = list(contract_info.get("strikePrice", []))
 
@@ -4397,7 +4588,14 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         return option_chain_section, summary_section
 
     for expiry in expiries_to_fetch:
-        raw = await _fetch_option_chain_async(symbol=symbol, expiry=expiry, instrument_type=instrument_type)
+        if symbol.upper() in BSE_SYMBOLS:
+            raw = await fetch_sensex_option_chain_async(
+                symbol=symbol,
+                expiry=expiry,
+                instrument_type=instrument_type,
+            )
+        else:
+            raw = await _fetch_option_chain_async(symbol=symbol, expiry=expiry, instrument_type=instrument_type)
         records = raw.get("records", {})
         rows = build_oi_volume_summary(raw)
         if not rows:

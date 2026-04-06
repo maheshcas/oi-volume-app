@@ -7,6 +7,7 @@ import {
 type PrimarySignalCardProps = {
   tradeAction: string;
   resolvedReason: string;
+  sessionPhase?: string;
   bias: string;
   readinessScore: number | null;
   readinessState: string;
@@ -44,6 +45,7 @@ function readinessTone(state: string) {
 export default function PrimarySignalCard({
   tradeAction,
   resolvedReason,
+  sessionPhase,
   bias,
   readinessScore,
   readinessState,
@@ -65,11 +67,16 @@ export default function PrimarySignalCard({
       ? "Resistance Transition Active"
       : null;
 
+  const actionLabel =
+    String(tradeAction || "").toUpperCase() === "WAIT" && String(sessionPhase || "").trim()
+      ? `${tradeAction} — ${sessionPhase}`
+      : tradeAction || "WAIT";
+
   return (
     <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-4">
       <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.07em] text-slate-600">Trade signal</div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <div className={`text-[26px] font-semibold tracking-[0.02em] ${actionTone(tradeAction)}`}>{tradeAction || "WAIT"}</div>
+        <div className={`text-[20px] font-semibold tracking-[0.02em] ${actionTone(tradeAction)}`}>{actionLabel}</div>
         <div className={`rounded-full border px-3 py-1 text-[11px] font-medium ${badgeTone(tradeAction)}`}>
           {typeof readinessScore === "number" ? `${Math.round(readinessScore)}% ${readinessState}` : readinessState || "-"}
         </div>

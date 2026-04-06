@@ -8,6 +8,7 @@ type DecisionBannerProps = {
   action: "WAIT" | "CAUTION" | "READY";
   direction: "Bullish" | "Bearish" | "Neutral" | "Conflict";
   explanation: string;
+  sessionPhase?: string | null;
   bias: string;
   readinessScore: number;
   readinessState: string;
@@ -25,6 +26,14 @@ type DecisionBannerProps = {
   supportTransitionBadge?: boolean;
   resistanceTransitionBadge?: boolean;
 };
+
+function formatActionBadge(action: string, sessionPhase?: string | null) {
+  const phase = String(sessionPhase || "").trim();
+  if (action === "WAIT" && phase) {
+    return `${action} — ${phase}`;
+  }
+  return action;
+}
 
 function formatDirectionLabel(direction: DecisionBannerProps["direction"]) {
   if (direction === "Neutral") return "Neutral Bias";
@@ -81,6 +90,7 @@ export default function DecisionBanner({
   action,
   direction,
   explanation,
+  sessionPhase = null,
   bias,
   readinessScore,
   readinessState,
@@ -99,6 +109,7 @@ export default function DecisionBanner({
   resistanceTransitionBadge = false,
 }: DecisionBannerProps) {
   const displayExplanation = normalizeExplanation(action, direction, explanation);
+  const actionBadge = formatActionBadge(action, sessionPhase);
   const toneClass =
     action === "READY"
       ? "ia-decision-banner-ready"
@@ -128,7 +139,7 @@ export default function DecisionBanner({
       <div className="ia-decision-banner-v2-head">
         <div className="ia-kpi-label ia-decision-banner-v2-title">Trade Signal</div>
         <div className="ia-decision-banner-v2-head-actions">
-          <div className="ia-decision-banner-v2-badge">{action}</div>
+          <div className="ia-decision-banner-v2-badge">{actionBadge}</div>
         </div>
       </div>
 

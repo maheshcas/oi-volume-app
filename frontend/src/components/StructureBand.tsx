@@ -33,6 +33,9 @@ type RangeBounds = {
   buffer: number;
 };
 
+const WIDE_SPREAD_THRESHOLD = 600;
+const WIDE_SPREAD_HALF_WINDOW_CAP = 400;
+
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
@@ -107,19 +110,32 @@ export function getRangeBounds(params: {
   previousSupport?: number;
   previousResistance?: number;
 }): RangeBounds {
-  const { spot, support, resistance, previousSupport, previousResistance } = params;
+  const { spot, support, resistance } = params;
   const spread = Math.max(1, resistance - support);
   const buffer = clamp(spread * 0.08, 20, 60);
-  const values = [support, resistance, spot];
-  if (typeof previousSupport === "number" && Number.isFinite(previousSupport)) {
-    values.push(previousSupport);
+  const supportOverflow = Math.max(0, support - spot);
+  const resistanceOverflow = Math.max(0, spot - resistance);
+
+  if (spread <= WIDE_SPREAD_THRESHOLD) {
+    const leftBreachPadding =
+      supportOverflow > 0 ? clamp(buffer + supportOverflow * 1.5, 30, 90) : buffer;
+    const rightBreachPadding =
+      resistanceOverflow > 0 ? clamp(buffer + resistanceOverflow * 1.5, 30, 90) : buffer;
+
+    return {
+      rangeMin: Math.min(support - buffer, spot - leftBreachPadding),
+      rangeMax: Math.max(resistance + buffer, spot + rightBreachPadding),
+      buffer,
+    };
   }
-  if (typeof previousResistance === "number" && Number.isFinite(previousResistance)) {
-    values.push(previousResistance);
-  }
+
+  const halfWindow = Math.min(spread * 0.5, WIDE_SPREAD_HALF_WINDOW_CAP) + buffer;
+  const centeredMin = spot - halfWindow;
+  const centeredMax = spot + halfWindow;
+
   return {
-    rangeMin: Math.min(...values) - buffer,
-    rangeMax: Math.max(...values) + buffer,
+    rangeMin: Math.min(centeredMin, support - buffer),
+    rangeMax: Math.max(centeredMax, resistance + buffer),
     buffer,
   };
 }

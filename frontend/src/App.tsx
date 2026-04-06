@@ -358,8 +358,39 @@ const ATM_BAND_RANGE = 2;
 const SHORT_COVERING_BURST_MIN_STRIKES = 2;
 const ATM_VOLUME_SHOCK_MULTIPLIER = 1.4;
 
-const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
-const INDEX_NAMES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE"];
+const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"] as const;
+type SymbolKey = (typeof SYMBOLS)[number];
+const INDEX_NAMES = ["NIFTY 50", "NIFTY BANK", "NIFTY FIN SERVICE", "BSE SENSEX"];
+const SYMBOL_DISPLAY: Record<SymbolKey, string> = {
+  NIFTY: "NIFTY",
+  BANKNIFTY: "BANKNIFTY",
+  FINNIFTY: "FINNIFTY",
+  SENSEX: "SENSEX",
+};
+const SYMBOL_STORAGE_KEY = "optionlens:selected-symbol";
+
+function isSymbolKey(value: string): value is SymbolKey {
+  return (SYMBOLS as readonly string[]).includes(value);
+}
+
+function readPersistedSymbol(): SymbolKey {
+  if (typeof window === "undefined") return SYMBOLS[0];
+  try {
+    const stored = window.localStorage.getItem(SYMBOL_STORAGE_KEY);
+    return stored && isSymbolKey(stored) ? stored : SYMBOLS[0];
+  } catch {
+    return SYMBOLS[0];
+  }
+}
+
+function persistSymbol(symbol: SymbolKey) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SYMBOL_STORAGE_KEY, symbol);
+  } catch {
+    // Ignore storage failures; symbol state still updates locally.
+  }
+}
 
 type ReadinessSelection = {
   score: number | null;
@@ -373,7 +404,7 @@ const READINESS_REASON_LABEL_MAP: Record<string, string> = {
   NO_BREACH_CONFIRMATION_CAP: "Capped: no breach confirmation",
   HIGH_TRAP_NO_BREACH_CAP: "Capped by trap risk",
   RANGE_DAY_MID_BAND_CAP: "Capped: mid-band range",
-  NO_EDGE_CAP: "Capped: no edge",
+  NO_EDGE_CAP: "No clean edge",
   CONFIRMED_BREACH_FLOOR: "Lifted by confirmed breach",
   CONFIRMED_EXPANSION_LOW_TRAP_FLOOR: "Lifted by confirmed expansion",
 };
@@ -767,7 +798,7 @@ function detectTrap(context: TrapMarketContext) {
 }
 
 export default function App() {
-  const [symbol, setSymbol] = useState(SYMBOLS[0]);
+  const [symbol, setSymbol] = useState<SymbolKey>(readPersistedSymbol);
   const [instrumentType, setInstrumentType] = useState("Indices");
   const [expiries, setExpiries] = useState<string[]>([]);
   const [expiry, setExpiry] = useState<string>("");
@@ -820,6 +851,12 @@ export default function App() {
     pressure: { value: "Stable", count: 0 },
     trap: { value: "Low", count: 0 },
   });
+
+  const handleSymbolChange = (nextSymbol: string) => {
+    if (!isSymbolKey(nextSymbol)) return;
+    persistSymbol(nextSymbol);
+    setSymbol(nextSymbol);
+  };
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -1087,10 +1124,11 @@ export default function App() {
     [displayStrikes, displayCeOi, displayPeOi, nearestSpotStrike, meta?.symbol, meta?.spot]
   );
 
-  const indexNameMap: Record<string, string> = {
+  const indexNameMap: Record<SymbolKey, string> = {
     NIFTY: "NIFTY 50",
     BANKNIFTY: "NIFTY BANK",
     FINNIFTY: "NIFTY FIN SERVICE",
+    SENSEX: "BSE SENSEX",
   };
   const indexRow = indexData.find((row) => row.indexName === indexNameMap[symbol]);
   // Prefer index quote for faster visible updates; fallback to option-chain spot.
@@ -3062,9 +3100,9 @@ export default function App() {
       <div className="md:hidden">
         <OptionLensMobileDashboard
           data={mobileDashboardData}
-          symbolOptions={SYMBOLS.map((item) => ({ label: item, value: item }))}
+          symbolOptions={SYMBOLS.map((item) => ({ label: SYMBOL_DISPLAY[item], value: item }))}
           expiryOptions={mobileExpiryOptions}
-          onSelectSymbol={setSymbol}
+          onSelectSymbol={handleSymbolChange}
           onSelectExpiry={setExpiry}
         />
       </div>
@@ -3100,15 +3138,24 @@ export default function App() {
 
       <section className="panel">
         <div className="controls">
-          <label className="field">
+          <label className="field symbol-toggle-field">
             <span>Symbol</span>
-            <select value={symbol} onChange={(event) => setSymbol(event.target.value)}>
-              {SYMBOLS.map((item) => (
-                <option value={item} key={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
+            <div className="symbol-pill-group" role="tablist" aria-label="Select symbol">
+              {SYMBOLS.map((item) => {
+                const active = item === symbol;
+                return (
+                  <button
+                    type="button"
+                    key={item}
+                    className={`symbol-pill${active ? " symbol-pill-active" : ""}`}
+                    onClick={() => handleSymbolChange(item)}
+                    aria-pressed={active}
+                  >
+                    {SYMBOL_DISPLAY[item]}
+                  </button>
+                );
+              })}
+            </div>
           </label>
           <label className="field">
             <span>Instrument</span>
@@ -3201,6 +3248,7 @@ export default function App() {
             action: decisionActionState,
             direction: decisionDirection,
             explanation: decisionExplanation,
+            sessionPhase: displaySessionPhase,
             bias: String(displayPrimaryBias ?? displayBias ?? "Neutral"),
             readinessScore: displayReadinessScore,
             readinessState: displayReadinessState,

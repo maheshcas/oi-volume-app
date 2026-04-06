@@ -125,6 +125,13 @@ const positionSummary = ({
       return "Inside active band";
   }
 };
+
+const sanitizeReadinessExplainability = (value?: string | null) => {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (text.toLowerCase() === "no clean edge") return null;
+  return text;
+};
 const probabilityLabel = (v?: number | null) => {
   if (typeof v !== "number" || !Number.isFinite(v)) return null;
   const pct = Math.max(0, Math.min(100, v));
@@ -213,6 +220,33 @@ const formatReason = ({
   if (String(bias || "").toLowerCase() === "bullish") return "Support holding but no clean confirmation yet";
   if (String(bias || "").toLowerCase() === "bearish") return "Resistance holding but no clean confirmation yet";
   return "Inside active band - no clean directional edge";
+};
+
+const formatStructuralHeadline = ({
+  summary,
+  fallbackReason,
+}: {
+  summary: {
+    support: number;
+    resistance: number;
+    posRaw: number;
+    distS: number;
+    distR: number;
+  };
+  fallbackReason: string;
+}) => {
+  const labelState = resolveSPCLabelState({
+    position: summary.posRaw,
+    distToSupport: summary.distS,
+    distToResistance: summary.distR,
+  });
+  if (labelState === "ABOVE_RESISTANCE") {
+    return `Above resistance - waiting for acceptance over ${fmt(summary.resistance)}`;
+  }
+  if (labelState === "BELOW_SUPPORT") {
+    return `Below support - watching for continuation under ${fmt(summary.support)}`;
+  }
+  return fallbackReason;
 };
 const actionTone = (v: string) => {
   const t = v.toUpperCase();
@@ -342,7 +376,7 @@ export default function StructuralPriceContextCard(props: Props) {
   const act = actionLabel(props.tradeAction);
   const supportTransition = Boolean(props.supportTransitionBadge ?? props.supportTransitionActive);
   const resistanceTransition = Boolean(props.resistanceTransitionBadge);
-  const reason = formatReason({
+  const baseReason = formatReason({
     resolvedReason: props.resolvedReason,
     decisionExplanation: props.decisionExplanation,
     action: act,
@@ -352,6 +386,10 @@ export default function StructuralPriceContextCard(props: Props) {
     trapRisk,
     bias: props.bias,
   });
+  const reason = formatStructuralHeadline({
+    summary,
+    fallbackReason: baseReason,
+  });
   const confLabel = confidenceLabel(props.decisionConfidence);
   const phaseBadge = formatPhaseBadge({
     phase: props.sessionPhase,
@@ -359,6 +397,7 @@ export default function StructuralPriceContextCard(props: Props) {
     resistanceTransition,
   });
   const readinessGlow = readinessGlowOpacity(readiness, props.readinessState);
+  const readinessExplainability = sanitizeReadinessExplainability(props.readinessExplainability);
   const positionTextFriendly = positionSummary({
     position: summary.posRaw,
     distToSupport: summary.distS,
@@ -494,8 +533,8 @@ export default function StructuralPriceContextCard(props: Props) {
             ) : null}
           </div>
         </div>
-        {props.readinessExplainability ? (
-          <div className="spc-readiness-explain">{props.readinessExplainability}</div>
+        {readinessExplainability ? (
+          <div className="spc-readiness-explain">{readinessExplainability}</div>
         ) : null}
       </div>
       {!chartDisabled ? (

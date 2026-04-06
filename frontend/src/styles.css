@@ -280,6 +280,54 @@ button:hover {
   background: rgba(0, 200, 255, 0.08);
 }
 
+/* Symbol pill toggle */
+.symbol-toggle-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.symbol-pill-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.symbol-pill {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 6px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #c8d2d6;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+  white-space: nowrap;
+}
+
+.symbol-pill:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #e8edf0;
+}
+
+.symbol-pill-active {
+  border-color: rgba(243, 180, 90, 0.65);
+  color: #f7d3a0;
+  background: rgba(243, 180, 90, 0.16);
+}
+
+.symbol-pill-active:hover {
+  background: rgba(243, 180, 90, 0.22);
+  border-color: rgba(243, 180, 90, 0.8);
+}
+
 .hero-refresh-toggle {
   min-height: 44px;
   display: inline-flex;
@@ -2066,6 +2114,7 @@ tbody tr:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -2265,6 +2314,8 @@ tbody tr:hover {
   padding: 5px 11px;
   border-radius: 999px;
   border: 0.5px solid;
+  flex: 0 0 auto;
+  max-width: 100%;
   white-space: nowrap;
 }
 
@@ -2360,9 +2411,9 @@ tbody tr:hover {
   gap: 12px;
   grid-template-columns: minmax(320px, 1.35fr) minmax(240px, 0.9fr) minmax(240px, 0.9fr);
   grid-template-areas:
-    "decision levels trap"
-    "decisionlayer levels trap"
-    "structure structure playbook";
+    "structure structure trap"
+    "decision levels playbook"
+    "decisionlayer levels playbook";
 }
 
 .ia-layout-decision { grid-area: decision; }
@@ -2857,6 +2908,7 @@ tbody tr:hover {
 
 .spc-band-stack {
   position: relative;
+  margin-bottom: 12px;
 }
 
 .spc-readiness-rail-glow-wrap {
@@ -4064,12 +4116,13 @@ tbody tr:hover {
 .ia-decision-banner-v2-badge {
   border-radius: 10px;
   padding: 8px 16px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
   color: #ffbf3f;
   background: rgba(255, 191, 63, 0.12);
   border: 1px solid rgba(255, 191, 63, 0.28);
+  white-space: nowrap;
 }
 
 .ia-decision-banner-v2-body {
@@ -5235,11 +5288,11 @@ tbody tr:hover {
   .ia-dashboard-layout {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "decision"
+      "structure"
       "trap"
+      "decision"
       "levels"
       "decisionlayer"
-      "structure"
       "playbook";
   }
 }
@@ -5279,11 +5332,11 @@ tbody tr:hover {
   .ia-dashboard-layout {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "decision"
+      "structure"
       "trap"
+      "decision"
       "levels"
       "decisionlayer"
-      "structure"
       "playbook";
   }
 
@@ -5748,7 +5801,7 @@ input[type="number"] {
 }
 
 .sb-embedded .sb-rail-wrap {
-  height: 58px;
+  height: 72px;
 }
 
 .sb-left-badge {
@@ -5994,6 +6047,23 @@ input[type="number"] {
   letter-spacing: 0.04em;
   white-space: nowrap;
   backdrop-filter: blur(6px);
+}
+
+.sb-embedded .sb-prev-tick {
+  height: 24px;
+}
+
+.sb-embedded .sb-prev-leader {
+  top: 26px;
+}
+
+.sb-embedded .sb-prev-pill {
+  top: 30px;
+  padding: 2px 7px;
+  font-size: 9px;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sb-trap-zone {

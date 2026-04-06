@@ -27,6 +27,25 @@ export default function StructuralRangeTrackMobile({
   const resistanceSide = hasBand ? Math.max(0, 100 - supportSide) : 100;
   const distToSupport = hasBand ? Math.round(spot - support) : null;
   const distToResistance = hasBand ? Math.round(resistance - spot) : null;
+  const locationText = !hasBand
+    ? "Band unavailable"
+    : (distToSupport ?? 0) < 0
+      ? `${Math.abs(distToSupport ?? 0)} pts below support`
+      : (distToResistance ?? 0) < 0
+        ? `${Math.abs(distToResistance ?? 0)} pts above R`
+        : `${Math.round(position)}% in band`;
+  const supportText =
+    distToSupport === null
+      ? "-"
+      : distToSupport < 0
+        ? `${Math.abs(distToSupport)} pts below support`
+        : `${distToSupport} pts above support`;
+  const resistanceText =
+    distToResistance === null
+      ? "-"
+      : distToResistance < 0
+        ? `${Math.abs(distToResistance)} pts above R`
+        : `${distToResistance} pts below R`;
 
   return (
     <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-3">
@@ -61,9 +80,9 @@ export default function StructuralRangeTrackMobile({
       </div>
 
       <div className="flex justify-between gap-3 text-[10px] text-slate-500">
-        <span>{hasBand ? `${Math.round(position)}% in band` : "Band unavailable"}</span>
-        <span>{distToSupport !== null ? `${distToSupport} pts above support` : "-"}</span>
-        <span>{distToResistance !== null ? `${distToResistance} pts below R` : "-"}</span>
+        <span>{locationText}</span>
+        <span>{supportText}</span>
+        <span>{resistanceText}</span>
       </div>
     </section>
   );
