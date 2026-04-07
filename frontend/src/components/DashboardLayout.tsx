@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import DecisionBanner from "./DecisionBanner";
 import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
-import StructuralChartCard from "./StructuralChartCard";
+import StructuralPriceContextCard from "./StructuralPriceContextCard";
 import TradePlanCard from "./TradePlanCard";
 
 type CandlePoint = {
@@ -31,8 +31,6 @@ type DashboardLayoutProps = {
     detailWalls?: string | null;
     support: string;
     resistance: string;
-    majorSupport?: string;
-    majorResistance?: string;
     blockingReason?: string;
     winningEngine?: string;
     decisionConfidence?: number | null;
@@ -136,16 +134,7 @@ export default function DashboardLayout({
   alerts,
 }: DashboardLayoutProps) {
   return (
-    <div
-      className="ia-dashboard-layout"
-      style={{
-        gridTemplateAreas: `
-          "structure structure trap"
-          "decision levels playbook"
-          "decisionlayer levels playbook"
-        `,
-      }}
-    >
+    <div className="ia-dashboard-layout">
       <div className="ia-layout-decision">
         <DecisionBanner
           action={decision.action}
@@ -194,42 +183,45 @@ export default function DashboardLayout({
 
 
       <div className="ia-layout-structure">
-        <StructuralChartCard
-          candles={structure.candles}
-          spotPrice={structure.spotPrice}
-          dayOpen={structure.dayOpen}
-          dayHigh={structure.dayHigh}
-          dayLow={structure.dayLow}
-          supportLevel={structure.supportLevel}
-          resistanceLevel={structure.resistanceLevel}
-          supportDefenseRatio={structure.supportDefenseRatio}
-          resistanceDefenseRatio={structure.resistanceDefenseRatio}
-          supportStart={structure.supportStart}
-          supportEnd={structure.supportEnd}
-          resistanceStart={structure.resistanceStart}
-          resistanceEnd={structure.resistanceEnd}
-          target1={structure.target1}
-          target2={structure.target2}
-          breakBelowPrimary={structure.breakBelowPrimary}
-          breakAbovePrimary={structure.breakAbovePrimary}
-          previousSupport={structure.previousSupport}
-          previousResistance={structure.previousResistance}
-          materialBreachConfirmed={structure.materialBreachConfirmed}
-          confirmationType={structure.confirmationType}
-          sessionPhase={structure.sessionPhase}
-          breakoutProbabilityUp={structure.breakoutProbabilityUp}
-          breakoutProbabilityDown={structure.breakoutProbabilityDown}
-          trapProbability={structure.trapProbability}
-          trapDirection={structure.trapDirection}
-          readinessScore={structure.readinessScore}
-          readinessState={structure.readinessState}
-          readinessExplainability={structure.readinessExplainability}
-          bias={structure.bias}
-          biasStrength={structure.biasStrength}
-          regime={structure.regime}
-          trapZoneLabel={structure.trapZoneLabel}
-          volumeLabel={structure.volumeLabel}
-        />
+        <div className="ia-card ia-structure-card">
+          <StructuralPriceContextCard
+            candles={structure.candles}
+            spotPrice={structure.spotPrice}
+            dayOpen={structure.dayOpen}
+            dayHigh={structure.dayHigh}
+            dayLow={structure.dayLow}
+            supportLevel={structure.supportLevel}
+            resistanceLevel={structure.resistanceLevel}
+            supportDefenseRatio={structure.supportDefenseRatio}
+            resistanceDefenseRatio={structure.resistanceDefenseRatio}
+            supportStart={structure.supportStart}
+            supportEnd={structure.supportEnd}
+            resistanceStart={structure.resistanceStart}
+            resistanceEnd={structure.resistanceEnd}
+            target1={structure.target1}
+            target2={structure.target2}
+            breakBelowPrimary={structure.breakBelowPrimary}
+            breakAbovePrimary={structure.breakAbovePrimary}
+            previousSupport={structure.previousSupport}
+            previousResistance={structure.previousResistance}
+            materialBreachConfirmed={structure.materialBreachConfirmed}
+            confirmationType={structure.confirmationType}
+            sessionPhase={structure.sessionPhase}
+            breakoutProbabilityUp={structure.breakoutProbabilityUp}
+            breakoutProbabilityDown={structure.breakoutProbabilityDown}
+            trapProbability={structure.trapProbability}
+            trapDirection={structure.trapDirection}
+            readinessScore={structure.readinessScore}
+            readinessState={structure.readinessState}
+            readinessExplainability={structure.readinessExplainability}
+            bias={structure.bias}
+            biasStrength={structure.biasStrength}
+            regime={structure.regime}
+            showPremiumOverlay={false}
+            trapZoneLabel={structure.trapZoneLabel}
+            volumeLabel={structure.volumeLabel}
+          />
+        </div>
       </div>
 
       <div className="ia-layout-playbook">
@@ -264,9 +256,9 @@ export default function DashboardLayout({
             <div className="ia-trap-alerts">
               <div className="ia-kpi-label">Alerts</div>
               <div className="ia-trap-alert-list">
-                {alerts.slice(0, 4).map((item) => (
+                {alerts.slice(0, 4).map((item, idx) => (
                   <span
-                    key={`${item.type}-${item.severity}-${item.message}`}
+                    key={idx}
                     className={`alert-item alert-item-${item.severity} ${item.type === "counter" ? "alert-item-counter" : ""}`}
                   >
                     {item.message}
@@ -287,5 +279,3 @@ export default function DashboardLayout({
     </div>
   );
 }
-
-

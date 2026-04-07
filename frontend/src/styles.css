@@ -2422,8 +2422,6 @@ tbody tr:hover {
 .ia-layout-trap { grid-area: trap; }
 .ia-layout-structure { grid-area: structure; }
 .ia-layout-playbook { grid-area: playbook; }
-.ia-layout-expansion { grid-area: expansion; }
-.ia-layout-advanced { grid-area: advanced; }
 
 .ia-decision-banner {
   min-height: 220px;

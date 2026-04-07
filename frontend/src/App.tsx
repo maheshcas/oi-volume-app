@@ -1894,6 +1894,10 @@ export default function App() {
   const displayTrapLevel =
     intelligence?.signals?.trap?.trap_level ??
     (displayTrapRiskPct > 65 ? "High" : displayTrapRiskPct > 45 ? "Moderate" : "Low");
+  const volumeLabel = useMemo(
+    () => formatNumber(displayRows.reduce((sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0), 0)),
+    [displayRows]
+  );
   const rawTrapType = intelligence?.signals?.trap?.trap_type;
   const trapDirection: "upside" | "downside" | "" =
     intelligence?.signals?.trap?.trap_direction === "upside" || intelligence?.signals?.trap?.trap_direction === "downside"
@@ -3320,12 +3324,7 @@ export default function App() {
             readinessState: displayReadinessState,
             readinessExplainability: displayReadinessExplainability,
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
-            volumeLabel: formatNumber(
-              displayRows.reduce(
-                (sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
-                0
-              )
-            ),
+            volumeLabel,
           }}
           tradePlan={{
             bias: String(playbook?.bias ?? displayPrimaryBias),
@@ -3334,11 +3333,10 @@ export default function App() {
             trapRisk: String(displayTrapLevel),
             bullishTrigger: typeof displayResistance === "number"
               ? `Acceptance above active resistance ${formatNumber(displayResistance)}.`
-              : 'Acceptance above active resistance.',
+              : undefined,
             bearishTrigger: typeof displaySupport === "number"
               ? `Break below active support ${formatNumber(displaySupport)}.`
-              : 'Break below active support.',
-            invalidation: 'Range compression breaks.',
+              : undefined,
           }}
           decisionLayer={decisionLayerContent}
           trap={{
