@@ -43,6 +43,7 @@ from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
 from app.services.decision_engine import build_decision_input, master_decision_engine
 from app.services.daily_context import get_daily_context
+from app.services.historical_zone_scheduler import run_historical_zone_daily_if_due
 from app.services.intraday_performance_tracker import tracker
 from app.services.bse_fetcher import get_sensex_option_chain
 from app.services.bse_adapter import (
@@ -530,6 +531,347 @@ def _recent_event_count(*, symbol: str, expiry: str | None, raw_event: str, minu
         return 0
     cutoff = ts - timedelta(minutes=minutes)
     return sum(1 for item in occurrences if item >= cutoff)
+
+
+def _trim_list(value: Any, max_items: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    if max_items <= 0:
+        return []
+    return value[:max_items]
+
+
+def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(market_state, dict):
+        return {}
+
+    allowed_keys: set[str] = {
+        "volatility_state",
+        "bias",
+        "probability_bull",
+        "probability_bear",
+        "confidence",
+        "clarity",
+        "execution_risk",
+        "state",
+        "projection",
+        "conflict_market_state",
+        "conflict_flags",
+        "primary_bias",
+        "micro_bias",
+        "session_phase",
+        "session_phase_confidence",
+        "trap_risk",
+        "trap_state",
+        "support",
+        "resistance",
+        "previous_support",
+        "current_support",
+        "previous_resistance",
+        "current_resistance",
+        "absorption_reference_level",
+        "support_shift_cycle",
+        "support_transition_active",
+        "support_transition_badge",
+        "resistance_transition_badge",
+        "absorption_detected",
+        "absorption_level",
+        "absorption_message",
+        "support_zone_pressure",
+        "support_zone_state",
+        "resistance_zone_pressure",
+        "resistance_zone_state",
+        "target1",
+        "target2",
+        "summary_line",
+        "decision_explanation",
+        "resolved_reason",
+        "blocking_reason",
+        "winning_engine",
+        "decision_confidence",
+        "sr_breach_state",
+        "alignment_score",
+        "alignment_ratio",
+        "pressure_state",
+        "trade_action",
+        "trade_readiness",
+        "readiness_state",
+        "readiness_active",
+        "trade_readiness_v2",
+        "readiness_state_v2",
+        "readiness_active_v2",
+        "readiness_structure_quality",
+        "readiness_directional_alignment",
+        "readiness_execution_quality",
+        "readiness_risk_friction",
+        "readiness_cap_reason",
+        "readiness_floor_reason",
+        "market_state",
+        "range_locked",
+        "no_edge",
+        "committed_regime",
+        "detected_regime",
+        "candidate_regime",
+        "candidate_regime_count",
+        "momentum_override_score",
+        "momentum_override_explanation",
+        "breakout_candidate",
+        "breakout_probability",
+        "market_structure_score",
+        "structure_state",
+        "structural_state",
+        "structure_bias",
+        "daily_context",
+        "previous_day_open",
+        "previous_day_high",
+        "previous_day_low",
+        "previous_day_close",
+        "daily_trend_bias",
+        "day_trend",
+        "long_trend",
+        "readiness_regime_used",
+        "readiness_regime_family_used",
+        "readiness_range_like_session",
+        "sr_first_cycle_after_reset",
+        "sr_cold_start_guard_applied",
+        "sr_previous_support_anchor_used",
+        "sr_previous_support_anchor_source",
+        "sr_previous_resistance_anchor_used",
+        "sr_previous_resistance_anchor_source",
+        "sr_support_buffer_blocked",
+        "sr_resistance_buffer_blocked",
+        "regime",
+        "drift",
+        "adaptive_mode",
+        "adaptive_weights",
+        "directional_force",
+        "reversal_risk",
+        "historical_context_available",
+        "historical_context_updated_at",
+    }
+
+    sanitized = {key: market_state.get(key) for key in allowed_keys if key in market_state}
+    sanitized["signal_history"] = _trim_list(market_state.get("signal_history"), 24)
+    return sanitized
+
+
+def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(signals, dict):
+        return {}
+
+    sanitized: dict[str, Any] = {}
+
+    breakout = signals.get("breakout") if isinstance(signals.get("breakout"), dict) else {}
+    sanitized["breakout"] = {
+        "breakout_up": breakout.get("breakout_up"),
+        "breakout_down": breakout.get("breakout_down"),
+        "breakout_strength": breakout.get("breakout_strength"),
+        "breakout_candidate": breakout.get("breakout_candidate"),
+    }
+
+    trap = signals.get("trap") if isinstance(signals.get("trap"), dict) else {}
+    sanitized["trap"] = {
+        "trap_probability": trap.get("trap_probability"),
+        "trap_probability_pct": trap.get("trap_probability_pct"),
+        "trap_type": trap.get("trap_type"),
+        "trap_direction": trap.get("trap_direction"),
+        "trap_affected_level": trap.get("trap_affected_level"),
+        "show_affected_level": trap.get("show_affected_level"),
+        "trap_state": trap.get("trap_state"),
+        "trap_reason": trap.get("trap_reason"),
+        "support_reason": trap.get("support_reason"),
+    }
+
+    material_breach = (
+        signals.get("material_breach") if isinstance(signals.get("material_breach"), dict) else {}
+    )
+    sanitized["material_breach"] = {
+        "material_breach_confirmed": material_breach.get("material_breach_confirmed"),
+        "confirmation_type": material_breach.get("confirmation_type"),
+        "support_broken": material_breach.get("support_broken"),
+        "resistance_broken": material_breach.get("resistance_broken"),
+        "absorption_conflict": material_breach.get("absorption_conflict"),
+        "absorption_wins": material_breach.get("absorption_wins"),
+    }
+
+    support_absorption = (
+        signals.get("support_absorption") if isinstance(signals.get("support_absorption"), dict) else {}
+    )
+    sanitized["support_absorption"] = {
+        "absorption_detected": support_absorption.get("absorption_detected"),
+        "level": support_absorption.get("level"),
+        "message": support_absorption.get("message"),
+    }
+
+    sr = signals.get("sr") if isinstance(signals.get("sr"), dict) else {}
+    sanitized["sr"] = {
+        "support_range": sr.get("support_range"),
+        "resistance_range": sr.get("resistance_range"),
+        "support_center": sr.get("support_center"),
+        "resistance_center": sr.get("resistance_center"),
+    }
+
+    oi = signals.get("oi") if isinstance(signals.get("oi"), dict) else {}
+    sanitized["oi"] = {"oi_velocity_score": oi.get("oi_velocity_score")}
+
+    alignment_filter = (
+        signals.get("alignment_filter") if isinstance(signals.get("alignment_filter"), dict) else {}
+    )
+    sanitized["alignment_filter"] = {
+        "alignment_score": alignment_filter.get("alignment_score"),
+        "price_momentum": alignment_filter.get("price_momentum"),
+        "oi_shift_score": alignment_filter.get("oi_shift_score"),
+        "volume_expansion_score": alignment_filter.get("volume_expansion_score"),
+        "breakout_suppressed": alignment_filter.get("breakout_suppressed"),
+    }
+
+    momentum_exhaustion = (
+        signals.get("momentum_exhaustion") if isinstance(signals.get("momentum_exhaustion"), dict) else {}
+    )
+    sanitized["momentum_exhaustion"] = {
+        "momentum_exhaustion": momentum_exhaustion.get("momentum_exhaustion"),
+        "exhaustion_type": momentum_exhaustion.get("exhaustion_type"),
+    }
+
+    auto_exit = signals.get("auto_exit") if isinstance(signals.get("auto_exit"), dict) else {}
+    sanitized["auto_exit"] = {
+        "exit_signal": auto_exit.get("exit_signal"),
+        "exit_reason": auto_exit.get("exit_reason"),
+    }
+
+    expiry_adaptive = (
+        signals.get("expiry_adaptive") if isinstance(signals.get("expiry_adaptive"), dict) else {}
+    )
+    sanitized["expiry_adaptive"] = {
+        "expiry_mode": expiry_adaptive.get("expiry_mode"),
+        "expiry_multiplier": expiry_adaptive.get("expiry_multiplier"),
+        "adjustedMove": expiry_adaptive.get("adjustedMove"),
+    }
+
+    sanitized["breakout_candidate"] = signals.get("breakout_candidate")
+    sanitized["sr_breach_state"] = signals.get("sr_breach_state")
+    sanitized["alerts"] = _trim_list(signals.get("alerts"), 12)
+    sanitized["prioritized_signals"] = _trim_list(signals.get("prioritized_signals"), 8)
+    return sanitized
+
+
+def _sanitize_public_levels(levels: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(levels, dict):
+        return {}
+
+    def _compact_level(block: Any) -> dict[str, Any]:
+        if not isinstance(block, dict):
+            return {}
+        return {
+            "strike": block.get("strike"),
+            "immediate": block.get("immediate"),
+            "major": block.get("major"),
+            "range": block.get("range"),
+            "zone_pressure": block.get("zone_pressure"),
+            "zone_state": block.get("zone_state"),
+            "score": block.get("score"),
+        }
+
+    support = _compact_level(levels.get("support"))
+    resistance = _compact_level(levels.get("resistance"))
+    return {
+        "support": support,
+        "resistance": resistance,
+        "support_strike": levels.get("support_strike", support.get("strike")),
+        "resistance_strike": levels.get("resistance_strike", resistance.get("strike")),
+        "target_1": levels.get("target_1"),
+        "target_2": levels.get("target_2"),
+        "acceleration_zone": levels.get("acceleration_zone"),
+    }
+
+
+def _sanitize_public_v2_payload(v2_payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(v2_payload, dict):
+        return {}
+
+    sanitized: dict[str, Any] = {
+        "is_complete": bool(v2_payload.get("is_complete", True)),
+        "meta": v2_payload.get("meta", {}),
+        "warnings": _trim_list(v2_payload.get("warnings"), 48),
+        "market_insight": _trim_list(v2_payload.get("market_insight"), 20),
+        "institutional_structure": v2_payload.get("institutional_structure"),
+        "previous_support": v2_payload.get("previous_support"),
+        "current_support": v2_payload.get("current_support"),
+        "previous_resistance": v2_payload.get("previous_resistance"),
+        "current_resistance": v2_payload.get("current_resistance"),
+        "absorption_reference_level": v2_payload.get("absorption_reference_level"),
+        "decision_engine": v2_payload.get("decision_engine", {}),
+        "market_state": _sanitize_public_market_state(v2_payload.get("market_state", {})),
+        "levels": _sanitize_public_levels(v2_payload.get("levels", {})),
+        "signals": _sanitize_public_signals(v2_payload.get("signals", {})),
+        "trade_plan": v2_payload.get("trade_plan", {}),
+        "intraday_playbook": v2_payload.get("intraday_playbook", {}),
+        "daily_context": v2_payload.get("daily_context"),
+        "performance": v2_payload.get("performance"),
+    }
+    return sanitized
+
+
+def _parse_minute_bucket(bucket: Any) -> datetime | None:
+    text = str(bucket or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if fmt == "%Y-%m-%d %H:%M":
+                return parsed.replace(tzinfo=IST).astimezone(timezone.utc)
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _prune_runtime_maps() -> None:
+    now_utc = datetime.now(timezone.utc)
+    cutoff_utc = now_utc - timedelta(hours=2)
+    cutoff_ist = now_utc.astimezone(IST) - timedelta(hours=2)
+
+    for key, bucket in list(_last_cycle_log_minute.items()):
+        parsed = _parse_minute_bucket(bucket)
+        if parsed is None or parsed < cutoff_utc:
+            _last_cycle_log_minute.pop(key, None)
+
+    for key, bucket in list(_last_market_event_minute.items()):
+        parsed = _parse_minute_bucket(bucket)
+        if parsed is None or parsed < cutoff_utc:
+            _last_market_event_minute.pop(key, None)
+
+    for key, payload in list(_last_market_event_emitted.items()):
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            _last_market_event_emitted.pop(key, None)
+            continue
+        event_type, emitted_ts = payload
+        if not isinstance(emitted_ts, datetime):
+            _last_market_event_emitted.pop(key, None)
+            continue
+        emitted_utc = emitted_ts.astimezone(timezone.utc) if emitted_ts.tzinfo else emitted_ts.replace(tzinfo=IST).astimezone(timezone.utc)
+        if emitted_utc < cutoff_utc:
+            _last_market_event_emitted.pop(key, None)
+            continue
+        _last_market_event_emitted[key] = (event_type, emitted_ts)
+
+    for key, occurrences in list(_recent_market_event_occurrences.items()):
+        if not isinstance(occurrences, deque):
+            _recent_market_event_occurrences.pop(key, None)
+            continue
+        while occurrences and occurrences[0] < cutoff_ist:
+            occurrences.popleft()
+        while len(occurrences) > 512:
+            occurrences.popleft()
+        if not occurrences:
+            _recent_market_event_occurrences.pop(key, None)
 
 
 def _detect_support_absorption(
@@ -4753,7 +5095,6 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             "decision_input": decision_input,
             "master_decision": master_decision,
             "rows": rows,
-            "daily_context": daily_context,
         }
 
         v2_payload = _build_v2_intelligence(
@@ -4835,6 +5176,18 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             _calibrated_weights.update(updated)
             _last_calibrated_session.add(session_key)
 
+        public_v2_payload = _sanitize_public_v2_payload(v2_payload)
+        compact_interpretations = [
+            {
+                "strikePrice": row.get("strike"),
+                "ceLabel": row.get("CE_Interpretation"),
+                "peLabel": row.get("PE_Interpretation"),
+                "ceConfidence": row.get("CE_ConfidenceScore"),
+                "peConfidence": row.get("PE_ConfidenceScore"),
+            }
+            for row in rows
+        ]
+
         summary_section[key] = {
             "summary": summary_payload,
             "target_projection": {"meta": meta, "projection": target_projection},
@@ -4844,48 +5197,19 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
                     "instrument_type": instrument_type,
                     "expiry": expiry,
                 },
-                "interpretations": [
-                    {
-                        "strikePrice": row.get("strike"),
-                        "optionType": "CE",
-                        "signals": {
-                            "priceDirection": row.get("CE_PriceDir"),
-                            "oiDirection": row.get("CE_OIDir"),
-                            "volumeDirection": row.get("CE_VolDir"),
-                        },
-                        "interpretationLabel": row.get("CE_Interpretation"),
-                        "interpretationDescription": row.get("CE_InterpretationDesc"),
-                        "confidenceScore": row.get("CE_ConfidenceScore"),
-                    }
-                    for row in rows
-                ]
-                + [
-                    {
-                        "strikePrice": row.get("strike"),
-                        "optionType": "PE",
-                        "signals": {
-                            "priceDirection": row.get("PE_PriceDir"),
-                            "oiDirection": row.get("PE_OIDir"),
-                            "volumeDirection": row.get("PE_VolDir"),
-                        },
-                        "interpretationLabel": row.get("PE_Interpretation"),
-                        "interpretationDescription": row.get("PE_InterpretationDesc"),
-                        "confidenceScore": row.get("PE_ConfidenceScore"),
-                    }
-                    for row in rows
-                ],
+                "interpretations": compact_interpretations,
             },
-            "v2": v2_payload,
+            "v2": public_v2_payload,
         }
-        weighted_score = summary_section[key]["v2"].get("_internal", {}).get("smoothed_score")
+        weighted_score = v2_payload.get("_internal", {}).get("smoothed_score")
         if isinstance(weighted_score, (int, float)):
             await cache.set_previous_score(key, float(weighted_score))
             await cache.append_score_history(key, float(weighted_score))
-        current_state = summary_section[key]["v2"].get("_state", {})
+        current_state = v2_payload.get("_state", {})
         if isinstance(current_state, dict):
             await cache.set_previous_state(f"STATE::{key}", current_state)
             _persist_state_snapshot("STATE", key, current_state)
-        current_adaptive_state = summary_section[key]["v2"].get("_adaptive_state", {})
+        current_adaptive_state = v2_payload.get("_adaptive_state", {})
         if isinstance(current_adaptive_state, dict):
             await cache.set_previous_state(f"ADAPT::{key}", current_adaptive_state)
             _persist_state_snapshot("ADAPT", key, current_adaptive_state)
@@ -4898,6 +5222,7 @@ async def run_update_cycle() -> None:
         logger.debug("Skipping update cycle: previous fetch still in progress.")
         return
 
+    _prune_runtime_maps()
     started = time.perf_counter()
     try:
         option_chain_data: dict[str, Any] = {
@@ -4928,6 +5253,21 @@ async def run_update_cycle() -> None:
         await cache.update_cache(option_chain_data, summary_data)
         latency_ms = (time.perf_counter() - started) * 1000
         await cache.mark_fetch_success(latency_ms=latency_ms)
+
+        # Optional offline historical-zone snapshots. This is context-only and
+        # intentionally isolated from live SR/SPC decision flow.
+        for symbol in SYMBOLS:
+            try:
+                zone_job = await asyncio.to_thread(run_historical_zone_daily_if_due, symbol)
+                if isinstance(zone_job, dict) and zone_job.get("status") == "written":
+                    logger.info(
+                        "Historical zone snapshot written [%s]: %s",
+                        symbol,
+                        zone_job.get("path"),
+                    )
+            except Exception as zone_exc:
+                logger.warning("Historical zone scheduler failed for %s: %s", symbol, zone_exc)
+
         logger.info("Background refresh success in %.2f ms", latency_ms)
     except Exception as exc:
         await cache.mark_fetch_failure(str(exc))

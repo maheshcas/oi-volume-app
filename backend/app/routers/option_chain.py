@@ -13,6 +13,8 @@ from app.core.cache import cache, make_cache_key
 from app.engines.bias_probability_engine import compute_bias_probability
 from app.engines.simulation_engine import simulate_breakout_performance
 from app.services.engine_health import compute_engine_health
+from app.services.historical_zone_context import load_latest_historical_zone_context
+from app.services.historical_zone_scheduler import get_historical_zone_scheduler_status
 from pathlib import Path
 
 router = APIRouter()
@@ -256,6 +258,15 @@ async def nse_health_check():
     }
 
 
+@router.get("/health/historical-zones")
+async def historical_zone_health_check():
+    status = get_historical_zone_scheduler_status(symbols=sorted(_ALLOWED_SYMBOLS))
+    return {
+        "ok": bool(status.get("enabled", False)),
+        "scheduler": status,
+    }
+
+
 @router.get("/index-data")
 async def index_data(names: Optional[str] = None):
     data = await _require_cache_ready()
@@ -342,6 +353,13 @@ async def intelligence_summary_v2(
     market_state = response.get("market_state") or {}
     market_state["freshness_state"] = freshness["freshness_state"]
     market_state["delta_seconds"] = freshness["delta_seconds"]
+    historical_context = load_latest_historical_zone_context(symbol)
+    if historical_context:
+        market_state["historical_context_available"] = True
+        market_state["historical_context_updated_at"] = historical_context.get("generated_at_utc")
+        response["historical_zone_context"] = historical_context
+    else:
+        market_state["historical_context_available"] = False
     response["market_state"] = market_state
     meta = response.get("meta") or {}
     if not meta.get("expiry") and resolved_expiry:

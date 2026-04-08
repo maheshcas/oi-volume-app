@@ -53,6 +53,8 @@ REQUIRED_FIELDS = [
     "support_transition_active",
     "support_shift_cycle",
     "absorption_reference_level",
+    "previous_support",
+    "previous_resistance",
     "support_strike",
     "resistance_strike",
     "trap_probability",

@@ -118,6 +118,32 @@ type HistoryPoint = {
 };
 
 type IntelligenceResponse = {
+  historical_zone_context?: {
+    available?: boolean;
+    generated_at_utc?: string | null;
+    source_file?: string | null;
+    candles_count?: number | null;
+    dominant_full_window?: {
+      zone_low?: number | null;
+      zone_high?: number | null;
+      center?: number | null;
+      role?: string | null;
+      score?: number | null;
+      touches?: number | null;
+      first_date?: string | null;
+      last_date?: string | null;
+    } | null;
+    dominant_recent_window?: {
+      zone_low?: number | null;
+      zone_high?: number | null;
+      center?: number | null;
+      role?: string | null;
+      score?: number | null;
+      touches?: number | null;
+      first_date?: string | null;
+      last_date?: string | null;
+    } | null;
+  };
   market_state?: {
     bias: "Bullish" | "Bearish" | "Neutral";
     probability_bull: number;
@@ -210,6 +236,8 @@ type IntelligenceResponse = {
     previous_resistance?: number | null;
     current_support?: number | null;
     current_resistance?: number | null;
+    historical_context_available?: boolean;
+    historical_context_updated_at?: string | null;
     signal_history?: Array<{
       timestamp?: string;
       trade_action?: string;
@@ -3236,6 +3264,15 @@ export default function App() {
             trapRisk: `${displayTrapLevel} (${Math.round(Number(displayTrapRiskPct ?? 0))}%)`,
             watchNote: keyWatchNote,
             breakoutProbability: intelligence?.market_state?.breakout_probability,
+          }}
+          historicalContext={{
+            available: Boolean(intelligence?.market_state?.historical_context_available),
+            updatedAt:
+              intelligence?.market_state?.historical_context_updated_at ??
+              intelligence?.historical_zone_context?.generated_at_utc ??
+              null,
+            fullWindow: intelligence?.historical_zone_context?.dominant_full_window ?? null,
+            recentWindow: intelligence?.historical_zone_context?.dominant_recent_window ?? null,
           }}
           structure={{
             spotPrice: typeof spotValue === "number" ? spotValue : null,

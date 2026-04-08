@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import DecisionBanner from "./DecisionBanner";
+import HistoricalZoneContextCard from "./HistoricalZoneContextCard";
 import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
@@ -49,6 +50,30 @@ type DashboardLayoutProps = {
       upside_state?: string;
       downside_state?: string;
     };
+  };
+  historicalContext?: {
+    available?: boolean;
+    updatedAt?: string | null;
+    fullWindow?: {
+      zone_low?: number | null;
+      zone_high?: number | null;
+      center?: number | null;
+      role?: string | null;
+      score?: number | null;
+      touches?: number | null;
+      first_date?: string | null;
+      last_date?: string | null;
+    } | null;
+    recentWindow?: {
+      zone_low?: number | null;
+      zone_high?: number | null;
+      center?: number | null;
+      role?: string | null;
+      score?: number | null;
+      touches?: number | null;
+      first_date?: string | null;
+      last_date?: string | null;
+    } | null;
   };
   structure: {
     spotPrice: number | null;
@@ -127,6 +152,7 @@ export default function DashboardLayout({
   decision,
   decisionLayer,
   keyLevels,
+  historicalContext,
   structure,
   tradePlan,
   trap,
@@ -162,22 +188,30 @@ export default function DashboardLayout({
       <div className="ia-layout-decision-layer">{decisionLayer}</div>
 
       <div className="ia-layout-levels">
-        <KeyLevelsCard
-          support={keyLevels.support}
-          resistance={keyLevels.resistance}
-          supportDefenseRatio={keyLevels.supportDefenseRatio}
-          resistanceDefenseRatio={keyLevels.resistanceDefenseRatio}
-          majorSupport={keyLevels.majorSupport}
-          majorResistance={keyLevels.majorResistance}
-          breakoutTrigger={keyLevels.breakoutTrigger}
-          breakAbovePrimary={keyLevels.breakAbovePrimary}
-          breakAboveExtended={keyLevels.breakAboveExtended}
-          breakBelowPrimary={keyLevels.breakBelowPrimary}
-          breakBelowExtended={keyLevels.breakBelowExtended}
-          trapRisk={keyLevels.trapRisk}
-          watchNote={keyLevels.watchNote}
-          breakoutProbability={keyLevels.breakoutProbability}
-        />
+        <div className="ia-card-stack">
+          <KeyLevelsCard
+            support={keyLevels.support}
+            resistance={keyLevels.resistance}
+            supportDefenseRatio={keyLevels.supportDefenseRatio}
+            resistanceDefenseRatio={keyLevels.resistanceDefenseRatio}
+            majorSupport={keyLevels.majorSupport}
+            majorResistance={keyLevels.majorResistance}
+            breakoutTrigger={keyLevels.breakoutTrigger}
+            breakAbovePrimary={keyLevels.breakAbovePrimary}
+            breakAboveExtended={keyLevels.breakAboveExtended}
+            breakBelowPrimary={keyLevels.breakBelowPrimary}
+            breakBelowExtended={keyLevels.breakBelowExtended}
+            trapRisk={keyLevels.trapRisk}
+            watchNote={keyLevels.watchNote}
+            breakoutProbability={keyLevels.breakoutProbability}
+          />
+          <HistoricalZoneContextCard
+            available={Boolean(historicalContext?.available)}
+            updatedAt={historicalContext?.updatedAt ?? null}
+            fullWindow={historicalContext?.fullWindow ?? null}
+            recentWindow={historicalContext?.recentWindow ?? null}
+          />
+        </div>
       </div>
 
 
