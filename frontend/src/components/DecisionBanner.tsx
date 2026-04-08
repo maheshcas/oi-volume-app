@@ -144,14 +144,15 @@ export default function DecisionBanner({
       </div>
 
       <div className="ia-decision-banner-v2-body">
+        {showBlocker ? (
+          <div className="ia-decision-blocker-bar">
+            ⛔ Blocked: {friendlyBlockingReason(blockingReason)}
+          </div>
+        ) : null}
+
         <div className="ia-decision-banner-explanation">{displayExplanation}</div>
 
         <div className="ia-decision-meta-row">
-          {showBlocker ? (
-            <span className="ia-decision-meta-chip ia-decision-meta-chip-blocker">
-              Blocker: {friendlyBlockingReason(blockingReason)}
-            </span>
-          ) : null}
           <span className="ia-decision-meta-chip">{friendlyWinningEngine(winningEngine)}</span>
           {transitionLabel ? (
             <span className="ia-decision-meta-chip ia-decision-meta-chip-transition">{transitionLabel}</span>
@@ -163,10 +164,17 @@ export default function DecisionBanner({
             <span className="ia-readiness-label">Trade Readiness</span>
             <span className="ia-readiness-value">{Math.round(readinessPct)}%</span>
           </div>
-          <div className="ia-readiness-track">
+          <div
+            className="ia-readiness-track"
+            role="progressbar"
+            aria-valuenow={Math.round(readinessPct)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Trade readiness"
+          >
             <div className="ia-readiness-fill" style={{ width: `${readinessPct}%` }} />
             <div className="ia-readiness-threshold-wrap" style={{ left: "60%" }}>
-              <span className="ia-readiness-entry">60 entry</span>
+              <span className="ia-readiness-entry">60% min. entry</span>
               <div className="ia-readiness-threshold" />
             </div>
           </div>
@@ -182,27 +190,24 @@ export default function DecisionBanner({
               {Math.round(confidencePct)}% {confidenceTone}
             </span>
           </div>
-          <div className="ia-confidence-track">
-            <div className="ia-confidence-fill" style={{ width: `${confidencePct}%` }} />
-          </div>
         </div>
 
         <div className="ia-decision-grid">
-          <div className="ia-decision-grid-item">
+          <div className="ia-decision-grid-item ia-decision-grid-item-primary">
             <div className="ia-decision-grid-label">Bias</div>
-            <div className="ia-decision-grid-value ia-text-muted">{biasLabel}</div>
+            <div className="ia-decision-grid-value">{biasLabel}</div>
           </div>
-          <div className="ia-decision-grid-item">
+          <div className="ia-decision-grid-item ia-decision-grid-item-primary">
             <div className="ia-decision-grid-label">Pressure</div>
-            <div className="ia-decision-grid-value ia-text-muted">{pressureLabel}</div>
+            <div className="ia-decision-grid-value">{pressureLabel}</div>
           </div>
           <div className="ia-decision-grid-item">
             <div className="ia-decision-grid-label">Regime</div>
-            <div className="ia-decision-grid-value">{regime || "-"}</div>
+            <div className="ia-decision-grid-value ia-text-muted">{regime || "-"}</div>
           </div>
           <div className="ia-decision-grid-item">
             <div className="ia-decision-grid-label">Readiness State</div>
-            <div className={`ia-decision-grid-value ${readinessStateClass}`}>{readinessState || "-"}</div>
+            <div className={`ia-decision-grid-value ia-text-muted ${readinessStateClass}`}>{readinessState || "-"}</div>
           </div>
         </div>
 

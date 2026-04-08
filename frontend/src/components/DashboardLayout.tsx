@@ -5,15 +5,6 @@ import TrapCard from "./TrapCard";
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
 import TradePlanCard from "./TradePlanCard";
 
-type CandlePoint = {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-};
-
 type DashboardLayoutProps = {
   decision: {
     action: "WAIT" | "CAUTION" | "READY";
@@ -60,13 +51,14 @@ type DashboardLayoutProps = {
     };
   };
   structure: {
-    candles: CandlePoint[];
     spotPrice: number | null;
     dayOpen?: number | null;
     dayHigh?: number | null;
     dayLow?: number | null;
     supportLevel?: number | null;
     resistanceLevel?: number | null;
+    majorSupport?: number | null;
+    majorResistance?: number | null;
     supportDefenseRatio?: number | null;
     resistanceDefenseRatio?: number | null;
     supportStart: number | null;
@@ -82,6 +74,13 @@ type DashboardLayoutProps = {
     materialBreachConfirmed?: boolean;
     confirmationType?: string | null;
     sessionPhase?: string | null;
+    tradeAction?: string | null;
+    resolvedReason?: string | null;
+    decisionExplanation?: string | null;
+    decisionConfidence?: number | null;
+    supportTransitionActive?: boolean;
+    supportTransitionBadge?: boolean;
+    resistanceTransitionBadge?: boolean;
     bias: string;
     biasStrength: string;
     regime: string;
@@ -185,13 +184,14 @@ export default function DashboardLayout({
       <div className="ia-layout-structure">
         <div className="ia-card ia-structure-card">
           <StructuralPriceContextCard
-            candles={structure.candles}
             spotPrice={structure.spotPrice}
             dayOpen={structure.dayOpen}
             dayHigh={structure.dayHigh}
             dayLow={structure.dayLow}
             supportLevel={structure.supportLevel}
             resistanceLevel={structure.resistanceLevel}
+            majorSupport={structure.majorSupport}
+            majorResistance={structure.majorResistance}
             supportDefenseRatio={structure.supportDefenseRatio}
             resistanceDefenseRatio={structure.resistanceDefenseRatio}
             supportStart={structure.supportStart}
@@ -207,6 +207,13 @@ export default function DashboardLayout({
             materialBreachConfirmed={structure.materialBreachConfirmed}
             confirmationType={structure.confirmationType}
             sessionPhase={structure.sessionPhase}
+            tradeAction={structure.tradeAction}
+            resolvedReason={structure.resolvedReason}
+            decisionExplanation={structure.decisionExplanation}
+            decisionConfidence={structure.decisionConfidence}
+            supportTransitionActive={structure.supportTransitionActive}
+            supportTransitionBadge={structure.supportTransitionBadge}
+            resistanceTransitionBadge={structure.resistanceTransitionBadge}
             breakoutProbabilityUp={structure.breakoutProbabilityUp}
             breakoutProbabilityDown={structure.breakoutProbabilityDown}
             trapProbability={structure.trapProbability}
@@ -217,7 +224,6 @@ export default function DashboardLayout({
             bias={structure.bias}
             biasStrength={structure.biasStrength}
             regime={structure.regime}
-            showPremiumOverlay={false}
             trapZoneLabel={structure.trapZoneLabel}
             volumeLabel={structure.volumeLabel}
           />

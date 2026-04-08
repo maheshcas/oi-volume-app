@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import time
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from app.core.cache import cache, make_cache_key
 
 LOG_DIR = Path(__file__).resolve().parents[2] / "logs" / "stability"
 LOGGER_NAME = "optionlens.stability_logger"
+LOG_ROTATION_MAX_BYTES = max(1024, int(os.getenv("OPTIONLENS_LOG_ROTATION_MAX_BYTES", str(10 * 1024 * 1024))))
+LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP_COUNT", "2")))
 WATCH_FIELDS = [
     "trade_action",
     "regime",
@@ -58,6 +61,31 @@ REQUIRED_FIELDS = [
     "trap_affected_level",
     "breach_confirmed",
 ]
+_rotating_loggers: dict[str, logging.Logger] = {}
+
+
+def _get_rotating_logger(path: Path) -> logging.Logger:
+    cache_key = str(path.resolve())
+    existing = _rotating_loggers.get(cache_key)
+    if existing is not None:
+        return existing
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger_name = f"{LOGGER_NAME}.rotating.{len(_rotating_loggers)}"
+    rotating_logger = logging.getLogger(logger_name)
+    rotating_logger.setLevel(logging.INFO)
+    rotating_logger.propagate = False
+    rotating_logger.handlers.clear()
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=LOG_ROTATION_MAX_BYTES,
+        backupCount=LOG_ROTATION_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    rotating_logger.addHandler(handler)
+    _rotating_loggers[cache_key] = rotating_logger
+    return rotating_logger
 
 
 @dataclass
@@ -266,8 +294,8 @@ class StabilityLoggerService:
         return transitions
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True, default=str) + "\n")
+        rotating_logger = _get_rotating_logger(path)
+        rotating_logger.info(json.dumps(payload, ensure_ascii=True, default=str))
 
     def _missing_fields(self, record: dict[str, Any]) -> list[str]:
         missing = [field_name for field_name in REQUIRED_FIELDS if record.get(field_name) is None]

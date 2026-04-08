@@ -1,16 +1,6 @@
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
 
-type CandlePoint = {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-};
-
 type StructuralChartCardProps = {
-  candles: CandlePoint[];
   spotPrice: number | null;
   dayOpen?: number | null;
   dayHigh?: number | null;
@@ -57,7 +47,6 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
   return (
     <div className="ia-card ia-structure-card">
       <StructuralPriceContextCard
-        candles={props.candles}
         spotPrice={props.spotPrice}
         dayOpen={props.dayOpen}
         dayHigh={props.dayHigh}
@@ -96,7 +85,6 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         trapProbability={props.trapProbability}
         trapDirection={props.trapDirection}
         readinessScore={props.readinessScore}
-        showPremiumOverlay={false}
         trapZoneLabel={props.trapZoneLabel}
         volumeLabel={props.volumeLabel}
       />

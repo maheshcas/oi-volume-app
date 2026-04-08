@@ -1,16 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import SingleStructureCandleCard from "./SingleStructureCandleCard";
+import { useMemo } from "react";
 import StructureBand from "./StructureBand";
 
-type CandlePoint = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type Props = {
-  candles: CandlePoint[];
   spotPrice: number | null;
   dayOpen?: number | null;
   dayHigh?: number | null;
   dayLow?: number | null;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  majorSupport?: number | null;
+  majorResistance?: number | null;
   supportDefenseRatio?: number | null;
   resistanceDefenseRatio?: number | null;
   supportStart: number | null;
@@ -43,7 +42,6 @@ type Props = {
   trapProbability?: number | null;
   trapDirection?: "upside" | "downside" | "";
   readinessScore?: number | null;
-  showPremiumOverlay?: boolean;
   trapZoneLabel?: string;
   volumeLabel?: string;
 };
@@ -52,8 +50,6 @@ const fmt = (v: number | null | undefined, d = 0) =>
   typeof v === "number" && Number.isFinite(v)
     ? v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d })
     : "-";
-const dayKey = (ms: number) =>
-  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms));
 const phaseLabel = (v?: string | null) => {
   const t = String(v || "").trim();
   if (!t) return "Transition Phase";
@@ -263,54 +259,33 @@ const biasTone = (value?: string | null) => {
 };
 
 export default function StructuralPriceContextCard(props: Props) {
-  const [compact, setCompact] = useState(false);
-  const [showChart, setShowChart] = useState(false);
-  const chartDisabled = true;
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const media = window.matchMedia("(max-width: 900px)");
-    const sync = () => {
-      setCompact(media.matches);
-      if (chartDisabled) {
-        setShowChart(false);
-        return;
-      }
-      setShowChart((current) => (media.matches ? current : true));
-    };
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, [chartDisabled]);
 
-  const todayCandles = useMemo(() => {
-    if (!props.candles.length) return [] as CandlePoint[];
-    const today = dayKey(Date.now());
-    const set = props.candles.filter((c) => dayKey(c.time) === today);
-    if (set.length) return set;
-    const latest = props.candles[props.candles.length - 1];
-    return props.candles.filter((c) => dayKey(c.time) === dayKey(latest.time));
-  }, [props.candles]);
-
-  const ohlc = useMemo(() => {
-    if (todayCandles.length) {
-      return {
-        open: props.dayOpen ?? todayCandles[0].open,
-        high: props.dayHigh ?? Math.max(...todayCandles.map((c) => c.high)),
-        low: props.dayLow ?? Math.min(...todayCandles.map((c) => c.low)),
-        close: todayCandles[todayCandles.length - 1].close,
-      };
-    }
-    if (props.dayOpen != null && props.dayHigh != null && props.dayLow != null && props.spotPrice != null) {
-      return { open: props.dayOpen, high: props.dayHigh, low: props.dayLow, close: props.spotPrice };
-    }
-    return null;
-  }, [props.dayHigh, props.dayLow, props.dayOpen, props.spotPrice, todayCandles]);
 
   const summary = useMemo(() => {
-    if (props.spotPrice == null || props.supportLevel == null || props.resistanceLevel == null || props.resistanceLevel <= props.supportLevel) return null;
-    const support = props.supportLevel;
-    const resistance = props.resistanceLevel;
+    if (props.spotPrice == null || props.supportLevel == null || props.resistanceLevel == null) return null;
+    let support = props.supportLevel;
+    let resistance = props.resistanceLevel;
+
+    if (resistance <= support) {
+      const fallbackMajorResistance =
+        typeof props.majorResistance === "number" && Number.isFinite(props.majorResistance) && props.majorResistance > support
+          ? props.majorResistance
+          : null;
+      const fallbackMajorSupport =
+        typeof props.majorSupport === "number" && Number.isFinite(props.majorSupport) && props.majorSupport < resistance
+          ? props.majorSupport
+          : null;
+
+      if (fallbackMajorResistance != null) {
+        resistance = fallbackMajorResistance;
+      } else if (fallbackMajorSupport != null) {
+        support = fallbackMajorSupport;
+      } else {
+        return null;
+      }
+    }
+
     const prevS = typeof props.previousSupport === "number" && props.previousSupport !== support ? props.previousSupport : null;
     const prevR = typeof props.previousResistance === "number" && props.previousResistance !== resistance ? props.previousResistance : null;
     const band = resistance - support;
@@ -327,7 +302,15 @@ export default function StructuralPriceContextCard(props: Props) {
       resistanceShifted: prevR != null,
       upperThird: posRaw >= 67, lowerThird: posRaw <= 33,
     };
-  }, [props.previousResistance, props.previousSupport, props.resistanceLevel, props.spotPrice, props.supportLevel]);
+  }, [
+    props.majorResistance,
+    props.majorSupport,
+    props.previousResistance,
+    props.previousSupport,
+    props.resistanceLevel,
+    props.spotPrice,
+    props.supportLevel,
+  ]);
 
   const breachBanner = useMemo(() => {
     if (!summary) return null;
@@ -362,9 +345,6 @@ export default function StructuralPriceContextCard(props: Props) {
       <div className="spc-card">
         <div className="spc-head">
           <div><div className="spc-title">Structural Price Context</div></div>
-          {!chartDisabled ? (
-            <button type="button" className="spc-toggle" onClick={() => setShowChart((c) => !c)}>{showChart ? "Hide Chart" : "Show Chart"}</button>
-          ) : null}
         </div>
         <div className="spc-compact-panel"><div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div></div>
       </div>
@@ -417,9 +397,6 @@ export default function StructuralPriceContextCard(props: Props) {
         <div>
           <div className="spc-title">Structural Price Context</div>
         </div>
-        {!chartDisabled ? (
-          <button type="button" className="spc-toggle" onClick={() => setShowChart((c) => !c)}>{showChart ? "Hide Chart" : "Show Chart"}</button>
-        ) : null}
       </div>
       <div className="spc-compact-panel">
         <div className="spc-hero-row">
@@ -537,35 +514,6 @@ export default function StructuralPriceContextCard(props: Props) {
           <div className="spc-readiness-explain">{readinessExplainability}</div>
         ) : null}
       </div>
-      {!chartDisabled ? (
-        <div className={`spc-chart-wrap ${showChart ? "spc-chart-wrap-open" : "spc-chart-wrap-closed"}`}>
-          {showChart ? ohlc && props.spotPrice !== null ? (
-            <SingleStructureCandleCard
-              open={ohlc.open}
-              high={ohlc.high}
-              low={ohlc.low}
-              close={ohlc.close}
-              spot={props.spotPrice}
-              title="Structural Session Candle"
-              subtitle={props.trapZoneLabel ? `Trap Zone: ${props.trapZoneLabel}` : undefined}
-              bias={`${props.bias} (${props.biasStrength})`}
-              regime={props.regime}
-              support={props.supportLevel ?? null}
-              resistance={props.resistanceLevel ?? null}
-              previousSupport={props.previousSupport ?? null}
-              previousResistance={props.previousResistance ?? null}
-              supportStart={props.supportStart}
-              supportEnd={props.supportEnd}
-              resistanceStart={props.resistanceStart}
-              resistanceEnd={props.resistanceEnd}
-              target1={props.target1}
-              target2={props.target2}
-              height={compact ? 240 : 260}
-            />
-          ) : <div className="spc-empty">Waiting for today OHLC data...</div> : null}
-          {props.showPremiumOverlay ? <div className="spc-overlay"><div className="spc-overlay-panel"><h4>Premium Feature - Structural Price Context</h4><p>See structure in price, not just numbers.</p><button type="button">Upgrade to Pro</button></div></div> : null}
-        </div>
-      ) : null}
     </div>
   );
 }

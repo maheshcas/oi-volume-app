@@ -96,11 +96,6 @@ export default function TrapCard({
           <span className="trap-pct">{probability}%</span>
           <span
             className={`trap-badge lvl-${resolvedTrapLevel.toLowerCase()}`}
-            style={{
-              background: style.surface,
-              borderColor: resolvedTrapLevel === "High" ? "rgba(255, 68, 68, 0.30)" : style.border,
-              color: style.accent,
-            }}
           >
             {resolvedTrapLevel}
           </span>
@@ -109,7 +104,7 @@ export default function TrapCard({
         <div className="trap-bar-outer">
           <div
             className={`trap-bar-fill ${style.bar}`}
-            style={{ width: `${probability}%`, background: resolvedTrapLevel === "High" ? "#ff4444" : style.accent, opacity: resolvedTrapLevel === "High" ? 0.8 : 1 }}
+            style={{ width: `${probability}%` }}
           />
         </div>
 
@@ -123,48 +118,37 @@ export default function TrapCard({
         </div>
       </div>
 
-      <div className="trap-details" style={{ display: "grid", gap: 10 }}>
+      <div className="trap-details">
         {trap_reason ? (
-          <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-            <div className="trap-key" style={{ marginBottom: 4 }}>OI Imbalance Trap</div>
-            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{trap_reason}</div>
+          <div className="trap-row">
+            <div className="trap-key">OI Imbalance Trap</div>
+            <div className="trap-value">{trap_reason}</div>
           </div>
         ) : null}
 
         {support_reason ? (
-          <div className="trap-row" style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-            <div className="trap-key" style={{ marginBottom: 4 }}>Support Strength</div>
-            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{support_reason}</div>
+          <div className="trap-row">
+            <div className="trap-key">Support Strength</div>
+            <div className="trap-value">{support_reason}</div>
           </div>
         ) : null}
+
         {absorption_detected && absorption_message ? (
           <div
-            className="trap-row"
-            style={{
-              padding: "8px 12px",
-              borderRadius: 12,
-              background: style.surface,
-              border: `1px solid ${style.border}`,
-            }}
+            className="trap-row trap-row-accent"
+            style={{ background: style.surface, borderColor: style.border }}
           >
-            <div className="trap-key" style={{ marginBottom: 4, color: style.accent }}>Absorption Alert</div>
-            <div className="trap-value" style={{ fontWeight: 700, lineHeight: 1.5 }}>{absorption_message}</div>
+            <div className="trap-key" style={{ color: style.accent }}>Absorption Alert</div>
+            <div className="trap-value">{absorption_message}</div>
           </div>
         ) : null}
 
         <div
-          className="trap-action"
-          style={{
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: `1px solid ${style.border}`,
-            background: "rgba(255,255,255,0.04)",
-          }}
+          className="trap-action-box"
+          style={{ borderColor: style.border }}
         >
-          <div className="trap-action-key" style={{ marginBottom: 6 }}>Suggested Action</div>
-          <div className="trap-action-value" style={{ lineHeight: 1.42, fontWeight: 500 }}>
-            {suggested_action}
-          </div>
+          <div className="trap-action-key">Suggested Action</div>
+          <div className="trap-action-value">{suggested_action}</div>
         </div>
       </div>
     </section>

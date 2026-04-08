@@ -2270,26 +2270,30 @@ tbody tr:hover {
 .trap-details {
   margin: 0;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   font-size: 13px;
 }
 
 .trap-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.trap-row-accent {
+  border: 1px solid;
 }
 
 .trap-key {
   color: var(--muted);
   font-weight: 400;
+  margin-bottom: 4px;
 }
 
 .trap-value {
   color: #f8fafc;
-  font-weight: 500;
-  text-align: right;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .trap-action {
@@ -2297,9 +2301,16 @@ tbody tr:hover {
   padding-top: 6px;
 }
 
+.trap-action-box {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .trap-action-key {
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 6px;
   font-size: 11px;
   color: #94a3b8;
   letter-spacing: 0.04em;
@@ -2338,8 +2349,26 @@ tbody tr:hover {
 
 .trap-action-value {
   color: #f8fafc;
-  line-height: 1.4;
+  line-height: 1.42;
   font-weight: 500;
+}
+
+.lvl-low {
+  background: rgba(148, 163, 184, 0.10);
+  border-color: rgba(148, 163, 184, 0.24);
+  color: #9ca3af;
+}
+
+.lvl-moderate {
+  background: rgba(245, 158, 11, 0.10);
+  border-color: rgba(245, 158, 11, 0.24);
+  color: #f59e0b;
+}
+
+.lvl-high {
+  background: rgba(255, 68, 68, 0.15);
+  border-color: rgba(255, 68, 68, 0.30);
+  color: #ff4444;
 }
 
 /* IA layout */
@@ -2422,6 +2451,17 @@ tbody tr:hover {
 .ia-layout-trap { grid-area: trap; }
 .ia-layout-structure { grid-area: structure; }
 .ia-layout-playbook { grid-area: playbook; }
+
+@media (max-width: 1100px) {
+  .ia-dashboard-layout {
+    grid-template-columns: 1.2fr 1fr;
+    grid-template-areas:
+      "structure structure"
+      "decision trap"
+      "levels playbook"
+      "decisionlayer playbook";
+  }
+}
 
 .ia-decision-banner {
   min-height: 220px;
@@ -3701,6 +3741,17 @@ tbody tr:hover {
   margin-top: 6px;
 }
 
+.ia-banner-row-sub {
+  margin-top: 4px;
+}
+
+.ia-banner-row-sub .ia-pill {
+  font-size: 10px;
+  min-height: 24px;
+  padding: 3px 8px;
+  opacity: 0.75;
+}
+
 .ia-banner-regime-note {
   margin-top: 6px;
   color: #8ea4bc;
@@ -4339,6 +4390,30 @@ tbody tr:hover {
   border-color: rgba(240, 200, 95, 0.24);
   background: rgba(240, 200, 95, 0.12);
   color: #ffe09a;
+}
+
+.ia-decision-blocker-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255, 117, 136, 0.12);
+  border: 1px solid rgba(255, 117, 136, 0.34);
+  color: #ffc3cc;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ia-decision-grid-item-primary {
+  background: #1c3050;
+  border: 1px solid rgba(110, 160, 255, 0.14);
+}
+
+.ia-decision-grid-item-primary .ia-decision-grid-value {
+  font-size: 17px;
+  color: #e8f2fd;
 }
 
 .ia-confidence-strip {
@@ -5327,17 +5402,6 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
-  .ia-dashboard-layout {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "structure"
-      "trap"
-      "decision"
-      "levels"
-      "decisionlayer"
-      "playbook";
-  }
-
   .ia-decision-banner {
     min-height: auto;
   }
@@ -5600,10 +5664,10 @@ tbody tr:hover {
 }
 
 .ia-spot-dec {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 30px;
+  font-weight: 700;
   line-height: 1;
-  opacity: 0.6;
+  opacity: 0.85;
 }
 
 .ia-banner-group > span:last-child,

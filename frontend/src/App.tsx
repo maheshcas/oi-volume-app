@@ -1145,55 +1145,6 @@ export default function App() {
     (typeof indexRow?.LOW === "number" ? indexRow.LOW : undefined) ??
     (typeof indexRow?.low === "number" ? indexRow.low : undefined) ??
     null;
-  const structuralCandles = useMemo(() => {
-    const points = history
-      .map((h) => {
-        const totalVolume = h.rows.reduce(
-          (sum, row) => sum + (Number(row.CE_Volume) || 0) + (Number(row.PE_Volume) || 0),
-          0
-        );
-        return {
-          tsMs: h.fetchedAtMs || 0,
-          price: typeof h.spot === "number" ? h.spot : null,
-          volume: totalVolume,
-        };
-      })
-      .filter((p): p is { tsMs: number; price: number; volume: number } => p.price !== null && p.tsMs > 0)
-      .sort((a, b) => a.tsMs - b.tsMs);
-
-    if (!points.length) {
-      if (
-        typeof dayOpenValue === "number" &&
-        typeof dayHighValue === "number" &&
-        typeof dayLowValue === "number" &&
-        typeof spotValue === "number"
-      ) {
-        return [
-          {
-            time: Date.now(),
-            open: dayOpenValue,
-            high: Math.max(dayHighValue, spotValue, dayOpenValue),
-            low: Math.min(dayLowValue, spotValue, dayOpenValue),
-            close: spotValue,
-            volume: 0,
-          },
-        ] as Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
-      }
-      return [] as Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
-    }
-
-    const candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> = [];
-    let prevClose = points[0].price;
-    for (const point of points) {
-      const open = prevClose;
-      const close = point.price;
-      const high = Math.max(open, close);
-      const low = Math.min(open, close);
-      candles.push({ time: point.tsMs, open, high, low, close, volume: point.volume });
-      prevClose = close;
-    }
-    return candles;
-  }, [dayHighValue, dayLowValue, dayOpenValue, history, spotValue]);
   const strikesSorted = useMemo(
     () => [...displayRows].sort((a, b) => Number(a.strike) - Number(b.strike)),
     [displayRows]
@@ -2300,7 +2251,7 @@ export default function App() {
               <div className="bar-meta">
                 <span className="ladder-oi oi-value">{formatNumber(ceOi)}</span>
                 <span className={`oi-value ${row.CE_DeltaOI >= 0 ? "up" : "down"}`}>
-                  {row.CE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.CE_DeltaOI))}
+                  {row.CE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.CE_DeltaOI))}
                 </span>
               </div>
               <div className="bar-sub">
@@ -2327,7 +2278,7 @@ export default function App() {
               <div className="bar-meta">
                 <span className="ladder-oi oi-value">{formatNumber(peOi)}</span>
                 <span className={`oi-value ${row.PE_DeltaOI >= 0 ? "up" : "down"}`}>
-                  {row.PE_DeltaOI >= 0 ? "?" : "?"} {formatNumber(Math.abs(row.PE_DeltaOI))}
+                  {row.PE_DeltaOI >= 0 ? "▲" : "▼"} {formatNumber(Math.abs(row.PE_DeltaOI))}
                 </span>
               </div>
               <div className="bar-sub">
@@ -3287,13 +3238,16 @@ export default function App() {
             breakoutProbability: intelligence?.market_state?.breakout_probability,
           }}
           structure={{
-            candles: structuralCandles,
             spotPrice: typeof spotValue === "number" ? spotValue : null,
             dayOpen: dayOpenValue,
             dayHigh: dayHighValue,
             dayLow: dayLowValue,
             supportLevel: typeof displaySupport === "number" ? displaySupport : null,
             resistanceLevel: typeof displayResistance === "number" ? displayResistance : null,
+            majorSupport:
+              typeof intelligence?.levels?.support?.major === "number" ? intelligence.levels.support.major : null,
+            majorResistance:
+              typeof intelligence?.levels?.resistance?.major === "number" ? intelligence.levels.resistance.major : null,
             supportDefenseRatio,
             resistanceDefenseRatio,
             supportStart: activeSupportStart,
@@ -3309,6 +3263,13 @@ export default function App() {
             materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
             confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
             sessionPhase: displaySessionPhase,
+            tradeAction: mobileTradeAction,
+            resolvedReason: mobileResolvedReason,
+            decisionExplanation,
+            decisionConfidence,
+            supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
+            supportTransitionBadge: decisionSupportTransitionBadge,
+            resistanceTransitionBadge: decisionResistanceTransitionBadge,
             bias: String(displayPrimaryBias ?? displayBias),
             biasStrength: biasStrengthLabel,
             regime: displayRegime,

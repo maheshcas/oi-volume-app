@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import re
 import time
@@ -82,6 +83,9 @@ ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lowe
     "on",
 }
 STATE_SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "logs" / "state_snapshots"
+LOG_ROTATION_MAX_BYTES = max(1024, int(os.getenv("OPTIONLENS_LOG_ROTATION_MAX_BYTES", str(10 * 1024 * 1024))))
+LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP_COUNT", "2")))
+MAX_STATE_SNAPSHOTS_PER_SERIES = max(1, int(os.getenv("OPTIONLENS_MAX_STATE_SNAPSHOTS_PER_SERIES", "10")))
 IST = timezone(timedelta(hours=5, minutes=30))
 
 REGIME_MIN_HOLD_CYCLES = 3
@@ -136,6 +140,7 @@ _last_cycle_log_minute: dict[str, str] = {}
 _last_market_event_minute: dict[str, str] = {}
 _recent_market_event_occurrences: dict[str, deque[datetime]] = defaultdict(lambda: deque())
 _last_market_event_emitted: dict[str, tuple[str, datetime]] = {}
+_rotating_loggers: dict[str, logging.Logger] = {}
 
 
 def _utc_iso(dt: datetime | None) -> str | None:
@@ -150,6 +155,54 @@ _cache_key = make_cache_key
 def _state_snapshot_path(kind: str, key: str) -> Path:
     safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(key))
     return STATE_SNAPSHOT_DIR / f"{kind}_{safe_key}.json"
+
+
+def _snapshot_family_glob(kind: str, key: str) -> str:
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(key))
+    family_key = safe_key.rsplit("_", 1)[0] if "_" in safe_key else safe_key
+    return f"{kind}_{family_key}_*.json"
+
+
+def _cleanup_old_snapshots(kind: str, key: str, max_keep: int = MAX_STATE_SNAPSHOTS_PER_SERIES) -> None:
+    try:
+        files = sorted(
+            STATE_SNAPSHOT_DIR.glob(_snapshot_family_glob(kind, key)),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for old in files[max_keep:]:
+            old.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning("State snapshot cleanup failed [%s][%s]: %s", kind, key, exc)
+
+
+def _get_rotating_logger(path: Path) -> logging.Logger:
+    cache_key = str(path.resolve())
+    existing = _rotating_loggers.get(cache_key)
+    if existing is not None:
+        return existing
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logger_name = f"optionlens.rotating.{len(_rotating_loggers)}"
+    rotating_logger = logging.getLogger(logger_name)
+    rotating_logger.setLevel(logging.INFO)
+    rotating_logger.propagate = False
+    rotating_logger.handlers.clear()
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=LOG_ROTATION_MAX_BYTES,
+        backupCount=LOG_ROTATION_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    rotating_logger.addHandler(handler)
+    _rotating_loggers[cache_key] = rotating_logger
+    return rotating_logger
+
+
+def _append_rotating_line(path: Path, line: str) -> None:
+    rotating_logger = _get_rotating_logger(path)
+    rotating_logger.info(line)
 
 
 def _load_persisted_state(kind: str, key: str) -> dict[str, Any]:
@@ -169,6 +222,7 @@ def _persist_state_snapshot(kind: str, key: str, state: dict[str, Any]) -> None:
     try:
         STATE_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, ensure_ascii=True, default=str), encoding="utf-8")
+        _cleanup_old_snapshots(kind, key)
     except Exception as exc:
         logger.warning("State snapshot persist failed [%s][%s]: %s", kind, key, exc)
 
@@ -317,9 +371,7 @@ def _append_cycle_log(entry: dict[str, Any]) -> None:
     if not ENABLE_CYCLE_LOG:
         return
     try:
-        CYCLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with CYCLE_LOG_PATH.open("a", encoding="utf-8") as fp:
-            fp.write(json.dumps(entry, ensure_ascii=True, default=str) + "\n")
+        _append_rotating_line(CYCLE_LOG_PATH, json.dumps(entry, ensure_ascii=True, default=str))
     except Exception as exc:
         logger.warning("Cycle log append failed: %s", exc)
 
@@ -358,14 +410,11 @@ def _append_market_event(*, timestamp: datetime | None, event: str, symbol: str,
         return
     _last_market_event_minute[dedupe_key] = minute_bucket
     try:
-        EVENT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not EVENT_LOG_PATH.exists()
-        with EVENT_LOG_PATH.open("a", encoding="utf-8") as fp:
-            if new_file:
-                fp.write("Time      Event\n")
-                fp.write("--------------------------------\n")
-            label = f"{symbol} {expiry}".strip() if expiry else symbol
-            fp.write(f"{ts.strftime('%H:%M')}     [{label}] {event_text}\n")
+        label = f"{symbol} {expiry}".strip() if expiry else symbol
+        if not EVENT_LOG_PATH.exists() or EVENT_LOG_PATH.stat().st_size == 0:
+            _append_rotating_line(EVENT_LOG_PATH, "Time      Event")
+            _append_rotating_line(EVENT_LOG_PATH, "--------------------------------")
+        _append_rotating_line(EVENT_LOG_PATH, f"{ts.strftime('%H:%M')}     [{label}] {event_text}")
     except Exception as exc:
         logger.warning("Market event log append failed: %s", exc)
 
@@ -398,9 +447,7 @@ def _append_market_event_record(event_record: dict[str, Any]) -> None:
     if not ENABLE_EVENT_LOG:
         return
     try:
-        EVENT_STREAM_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with EVENT_STREAM_PATH.open("a", encoding="utf-8") as fp:
-            fp.write(json.dumps(event_record, ensure_ascii=True, default=str) + "\n")
+        _append_rotating_line(EVENT_STREAM_PATH, json.dumps(event_record, ensure_ascii=True, default=str))
     except Exception as exc:
         logger.warning("Market event stream append failed: %s", exc)
 

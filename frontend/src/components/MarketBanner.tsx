@@ -68,6 +68,17 @@ export default function MarketBanner(props: MarketBannerProps) {
             ? "BLOCKED"
             : "CHECKING";
 
+  const liveTitle =
+    props.liveStatus === "live"
+      ? "Live — data updated within seconds"
+      : props.liveStatus === "stale"
+        ? "Stale — last update >30s ago, use with caution"
+        : props.liveStatus === "delayed"
+          ? "Delayed — data is 1+ min old, do not trade on this"
+          : props.liveStatus === "blocked"
+            ? "Blocked — data feed unavailable"
+            : "Checking — waiting for data connection";
+
   const pctDown = isNegativeDelta(props.pctChange) || isNegativeDelta(props.spotDelta);
   const openDeltaDown = isNegativeDelta(props.fromOpenDelta);
   const projectionTone = props.projection?.toLowerCase().includes("down")
@@ -103,7 +114,7 @@ export default function MarketBanner(props: MarketBannerProps) {
     <div className="ia-status-bar">
       <div className="ia-banner-row ia-banner-row-primary">
         <span className="ia-inline-pill">{props.indexName}</span>
-        <span className={`ia-live-badge ${liveTone}`}>
+        <span className={`ia-live-badge ${liveTone}`} title={liveTitle}>
           <span className={`ia-live-dot ${liveTone}`} />
           {liveLabel}
         </span>
@@ -124,12 +135,12 @@ export default function MarketBanner(props: MarketBannerProps) {
           <span className="ia-banner-label">Vs Prev Close</span>
           {props.spotDelta ? <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.spotDelta}</span> : <span>-</span>}
         </span>
-        {props.fromOpenDelta ? (
-          <span className="ia-banner-group ia-banner-group-compact">
-            <span className="ia-banner-label">From Open</span>
-            <span className={openDeltaDown ? "ia-text-bear" : "ia-text-bull"}>{props.fromOpenDelta}</span>
-          </span>
-        ) : null}
+        <span className="ia-banner-group ia-banner-group-compact">
+          <span className="ia-banner-label">From Open</span>
+          {props.fromOpenDelta
+            ? <span className={openDeltaDown ? "ia-text-bear" : "ia-text-bull"}>{props.fromOpenDelta}</span>
+            : <span>-</span>}
+        </span>
         <span className="ia-banner-group ia-banner-group-compact">
           <span className="ia-banner-label">Updated</span>
           <span>{props.updatedAt}</span>
@@ -141,6 +152,10 @@ export default function MarketBanner(props: MarketBannerProps) {
           Regime: {props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day")}
         </span>
         {props.expiryMode ? <span className="ia-pill ia-pill-active">Expiry Mode</span> : null}
+        <span className={`ia-pill ia-pill-active ${phaseTone}`}>Phase: {phaseLabel}</span>
+      </div>
+
+      <div className="ia-banner-row ia-banner-row-secondary ia-banner-row-sub">
         {props.showProjection === false ? null : (
           <span className={`ia-pill ia-pill-status ${projectionTone ? "ia-pill-status-emphasis" : ""}`}>
             Projection: {props.projection ?? "Range"}
@@ -152,7 +167,6 @@ export default function MarketBanner(props: MarketBannerProps) {
         <span className={`ia-pill ia-pill-trend ${toneForTrend(props.longTrend)}`}>
           Long: {props.longTrend ?? "-"}
         </span>
-        <span className={`ia-pill ia-pill-active ${phaseTone}`}>Phase: {phaseLabel}</span>
       </div>
       {props.regimeExplanation ? (
         <div className="ia-banner-regime-note">{props.regimeExplanation}</div>
