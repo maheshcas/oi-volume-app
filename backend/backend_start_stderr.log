@@ -2495,3 +2495,9 @@ ValidationWarnings[FINNIFTY 26-May-2026] rejection_wick_score_stuck_zero
 ResponseWarnings[FINNIFTY 26-May-2026] Signal conflict detected,Support strike dominance inconsistent,Resistance strike dominance inconsistent
 ValidationWarnings[FINNIFTY 30-Jun-2026] rejection_wick_score_stuck_zero
 ResponseWarnings[FINNIFTY 30-Jun-2026] Signal conflict detected,Support strike dominance inconsistent,Resistance strike dominance inconsistent
+ValidationWarnings[NIFTY 13-Apr-2026] rejection_wick_score_stuck_zero
+ResponseWarnings[NIFTY 13-Apr-2026] Signal conflict detected,Support strike dominance inconsistent,Resistance strike dominance inconsistent
+ValidationWarnings[NIFTY 21-Apr-2026] rejection_wick_score_stuck_zero
+ResponseWarnings[NIFTY 21-Apr-2026] Signal conflict detected,Support strike dominance inconsistent,Resistance strike dominance inconsistent
+ValidationWarnings[NIFTY 28-Apr-2026] rejection_wick_score_stuck_zero
+ResponseWarnings[NIFTY 28-Apr-2026] Signal conflict detected,Support strike dominance inconsistent,Resistance strike dominance inconsistent
