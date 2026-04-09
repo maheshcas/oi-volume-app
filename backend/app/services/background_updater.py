@@ -105,6 +105,7 @@ TRAP_STABLE_MID_MIN = 55.0
 TRAP_STABLE_MID_MAX = 65.0
 READINESS_TRANSITION_FLAP_MAX_DROP = 8.0
 READINESS_TRANSITION_FLAP_FLOOR = 36.0
+RESPONSE_WARNING_THROTTLE_SECONDS = max(30, int(os.getenv("OPTIONLENS_RESPONSE_WARNING_THROTTLE_SECONDS", "300")))
 
 REGIME_FAMILY_MAP: dict[str, str] = {
     "Range Play": "RANGE",
@@ -141,6 +142,7 @@ _last_cycle_log_minute: dict[str, str] = {}
 _last_market_event_minute: dict[str, str] = {}
 _recent_market_event_occurrences: dict[str, deque[datetime]] = defaultdict(lambda: deque())
 _last_market_event_emitted: dict[str, tuple[str, datetime]] = {}
+_last_response_warning_emitted: dict[str, tuple[str, datetime]] = {}
 _rotating_loggers: dict[str, logging.Logger] = {}
 
 
@@ -872,6 +874,39 @@ def _prune_runtime_maps() -> None:
             occurrences.popleft()
         if not occurrences:
             _recent_market_event_occurrences.pop(key, None)
+
+    for key, payload in list(_last_response_warning_emitted.items()):
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            _last_response_warning_emitted.pop(key, None)
+            continue
+        _, emitted_ts = payload
+        if not isinstance(emitted_ts, datetime):
+            _last_response_warning_emitted.pop(key, None)
+            continue
+        emitted_utc = emitted_ts.astimezone(timezone.utc) if emitted_ts.tzinfo else emitted_ts.replace(tzinfo=timezone.utc)
+        if emitted_utc < cutoff_utc:
+            _last_response_warning_emitted.pop(key, None)
+
+
+def _should_emit_response_warning(
+    *,
+    symbol: str,
+    expiry: str | None,
+    warnings: list[str],
+    timestamp: datetime | None,
+) -> bool:
+    warning_signature = ",".join(str(item) for item in (warnings or []) if item)
+    if not warning_signature:
+        return False
+    key = f"{symbol}::{expiry or 'AUTO'}"
+    now = (timestamp or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    prior = _last_response_warning_emitted.get(key)
+    if prior:
+        previous_signature, previous_ts = prior
+        if previous_signature == warning_signature and (now - previous_ts).total_seconds() < RESPONSE_WARNING_THROTTLE_SECONDS:
+            return False
+    _last_response_warning_emitted[key] = (warning_signature, now)
+    return True
 
 
 def _detect_support_absorption(
@@ -2363,6 +2398,12 @@ def _validate_response_consistency(
     resistance_level: float | None,
     stable_bias: str,
     market_structure_score: float,
+    structural_state: str | None = None,
+    market_state_label: str | None = None,
+    conflict_market_state: str | None = None,
+    trap_state: str | None = None,
+    no_edge: bool = False,
+    range_locked: bool = False,
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -2385,10 +2426,27 @@ def _validate_response_consistency(
 
     support_label = str((support_row or {}).get("strike_interpretation_label", "") or "")
     resistance_label = str((resistance_row or {}).get("strike_interpretation_label", "") or "")
+    support_strength = str((support_row or {}).get("strike_interpretation_strength", "") or "")
+    resistance_strength = str((resistance_row or {}).get("strike_interpretation_strength", "") or "")
 
-    if support_row and support_label not in {"PE Dominant", "Mixed"}:
+    structural_state_normalized = str(structural_state or "").strip().upper()
+    market_state_normalized = str(market_state_label or "").strip().upper()
+    conflict_market_state_normalized = str(conflict_market_state or "").strip().upper()
+    trap_state_normalized = str(trap_state or "").strip().upper()
+
+    guarded_structure = structural_state_normalized in {"TRANSITION", "ABSORPTION", "TRAP_RISK"}
+    guarded_no_edge = (
+        bool(no_edge)
+        or bool(range_locked)
+        or market_state_normalized == "NO_EDGE"
+        or conflict_market_state_normalized == "NO_EDGE"
+    )
+    guarded_trap = trap_state_normalized in {"TRAP_RISK", "STABLE_MID"}
+    allow_dominance_checks = not (guarded_structure or guarded_no_edge or guarded_trap)
+
+    if allow_dominance_checks and support_row and support_label == "CE Dominant" and support_strength in {"Medium", "High"}:
         warnings.append("Support strike dominance inconsistent")
-    if resistance_row and resistance_label not in {"CE Dominant", "Mixed"}:
+    if allow_dominance_checks and resistance_row and resistance_label == "PE Dominant" and resistance_strength in {"Medium", "High"}:
         warnings.append("Resistance strike dominance inconsistent")
 
     if (market_structure_score <= 3.0 and stable_bias == "Bullish") or (
@@ -4449,8 +4507,19 @@ def _build_v2_intelligence(
         resistance_level=resistance_level,
         stable_bias=stable_bias,
         market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
+        structural_state=str(decision.get("structural_state") or ""),
+        market_state_label=str(decision.get("market_state") or ""),
+        conflict_market_state=str(decision.get("conflict_market_state") or ""),
+        trap_state=str(decision.get("trap_state") or ""),
+        no_edge=bool(decision.get("no_edge", False)),
+        range_locked=bool(decision.get("range_locked", False)),
     )
-    if response_warnings:
+    if response_warnings and _should_emit_response_warning(
+        symbol=symbol,
+        expiry=expiry,
+        warnings=response_warnings,
+        timestamp=evaluation_time,
+    ):
         logger.warning(
             "ResponseWarnings[%s %s] %s",
             symbol,
