@@ -23,8 +23,14 @@ _stability_logger = StabilityLoggerService()
 # of frontend URLs (e.g. "https://your-app.netlify.app,http://localhost:5173").
 # Never use wildcard ("*") together with allow_credentials=True.
 # ---------------------------------------------------------------------------
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000,https://oi-volume-app.netlify.app",
+)
 ALLOWED_ORIGINS: list[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+ALLOWED_ORIGIN_REGEX = (
+    os.getenv("ALLOWED_ORIGIN_REGEX", r"^https://[a-z0-9-]+--oi-volume-app\.netlify\.app$").strip() or None
+)
 
 
 @asynccontextmanager
@@ -71,6 +77,7 @@ app.add_middleware(SupabaseAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
