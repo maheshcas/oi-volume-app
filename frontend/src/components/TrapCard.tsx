@@ -68,35 +68,32 @@ export default function TrapCard({
   const resolvedTrapLevel = levelStyles[trap_level] ? trap_level : "Moderate";
   const style = levelStyles[resolvedTrapLevel];
   const isRejection = trap_direction === "downside";
-  const directionSymbol =
-    trap_direction === "downside"
-      ? "\u2191"
-      : trap_direction === "upside"
-        ? "\u2193"
-        : "\u2014";
   const trapTypeLabel =
     trap_direction === "downside" && trap_type.toLowerCase().includes("breakout failure")
       ? "Breakdown Failure"
       : trap_type || "-";
+
+  const directionLabel = isRejection ? "Resistance rejection" : "Support absorption";
+  const mergedTypeLabel = trapTypeLabel !== "-"
+    ? trap_direction ? `${trapTypeLabel} → ${directionLabel}` : trapTypeLabel
+    : trap_direction ? directionLabel : "-";
+
+  const affectedLabel = trap_direction === "downside"
+    ? `Resistance at risk: ${trap_zone.toLocaleString("en-IN")}`
+    : trap_direction === "upside"
+      ? `Support at risk: ${trap_zone.toLocaleString("en-IN")}`
+      : `Level: ${trap_zone.toLocaleString("en-IN")}`;
 
   return (
     <section className={`trap-card ${style.glow}`}>
       <div className="trap-header">
         <div className="trap-title-row">
           <span className="trap-lbl">Trap Risk</span>
-          {trap_direction ? (
-            <span className={`dir-pill ${isRejection ? "dp-rejection" : "dp-absorption"}`}>
-              <span className="dir-arrow">{directionSymbol}</span>
-              <span>{isRejection ? "Resistance rejection" : "Support absorption"}</span>
-            </span>
-          ) : null}
         </div>
 
         <div className="trap-pct-row">
           <span className="trap-pct">{probability}%</span>
-          <span
-            className={`trap-badge lvl-${resolvedTrapLevel.toLowerCase()}`}
-          >
+          <span className={`trap-badge lvl-${resolvedTrapLevel.toLowerCase()}`}>
             {resolvedTrapLevel}
           </span>
         </div>
@@ -109,16 +106,24 @@ export default function TrapCard({
         </div>
 
         <div className="trap-meta-row">
-          <span className="trap-type">{trapTypeLabel}</span>
+          <span className="trap-type">{mergedTypeLabel}</span>
           {show_affected_level ? (
-            <span className="trap-affected">
-              Affected {trap_zone.toLocaleString("en-IN")}
-            </span>
+            <span className="trap-affected">{affectedLabel}</span>
           ) : null}
         </div>
       </div>
 
       <div className="trap-details">
+        {absorption_detected && absorption_message ? (
+          <div
+            className="trap-row trap-row-accent"
+            style={{ background: style.surface, borderColor: style.border }}
+          >
+            <div className="trap-key" style={{ color: style.accent }}>Absorption Alert</div>
+            <div className="trap-value">{absorption_message}</div>
+          </div>
+        ) : null}
+
         {trap_reason ? (
           <div className="trap-row">
             <div className="trap-key">OI Imbalance Trap</div>
@@ -130,16 +135,6 @@ export default function TrapCard({
           <div className="trap-row">
             <div className="trap-key">Support Strength</div>
             <div className="trap-value">{support_reason}</div>
-          </div>
-        ) : null}
-
-        {absorption_detected && absorption_message ? (
-          <div
-            className="trap-row trap-row-accent"
-            style={{ background: style.surface, borderColor: style.border }}
-          >
-            <div className="trap-key" style={{ color: style.accent }}>Absorption Alert</div>
-            <div className="trap-value">{absorption_message}</div>
           </div>
         ) : null}
 

@@ -169,10 +169,10 @@ const buildAlertMessage = ({
     distToSupport: summary.distS,
     distToResistance: summary.distR,
   });
-  if (labelState === "BELOW_SUPPORT") return `Below support - watching for continuation under ${fmt(summary.support)}`;
-  if (labelState === "ABOVE_RESISTANCE") return `Above resistance - watching for acceptance over ${fmt(summary.resistance)}`;
-  if (labelState === "NEAR_SUPPORT") return `Approaching support at ${fmt(summary.support)}`;
-  if (labelState === "NEAR_RESISTANCE") return `Approaching resistance at ${fmt(summary.resistance)}`;
+  if (labelState === "BELOW_SUPPORT") return `Below support at ${fmt(summary.support)} — watch for failed reclaim or continuation breakdown`;
+  if (labelState === "ABOVE_RESISTANCE") return `Above resistance at ${fmt(summary.resistance)} — watch for acceptance or false breakout reversal`;
+  if (labelState === "NEAR_SUPPORT") return `Approaching support at ${fmt(summary.support)} — watch for absorption or rejection`;
+  if (labelState === "NEAR_RESISTANCE") return `Approaching resistance at ${fmt(summary.resistance)} — watch for rejection or breakout attempt`;
   return null;
 };
 const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
@@ -423,10 +423,8 @@ export default function StructuralPriceContextCard(props: Props) {
             <div className="spc-compact-value-row">
               <strong className="spc-compact-token">S</strong>
               <strong className="spc-compact-level">{fmt(summary.support)}</strong>
-              {summary.supportShifted ? <span className="spc-compact-state-badge">NEW</span> : null}
             </div>
-            {typeof props.supportDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.supportDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />PE/CE {props.supportDefenseRatio.toFixed(2)}x</em> : null}
-            {summary.prevS != null ? <em className="spc-compact-prev">prev S {fmt(summary.prevS)}</em> : null}
+            {typeof props.supportDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.supportDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />PE/CE {props.supportDefenseRatio.toFixed(2)}x ({props.supportDefenseRatio >= 1 ? "Defended" : "Exposed"})</em> : null}
           </div>
           <div className="spc-compact-metric spc-compact-metric-spot">
             <span>Spot</span>
@@ -438,12 +436,20 @@ export default function StructuralPriceContextCard(props: Props) {
             <div className="spc-compact-value-row">
               <strong className="spc-compact-token">R</strong>
               <strong className="spc-compact-level">{fmt(summary.resistance)}</strong>
-              {summary.resistanceShifted ? <span className="spc-compact-state-badge">NEW</span> : null}
             </div>
-            {typeof props.resistanceDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />CE/PE {props.resistanceDefenseRatio.toFixed(2)}x</em> : null}
-            {summary.prevR != null ? <em className="spc-compact-prev">prev R {fmt(summary.prevR)}</em> : null}
+            {typeof props.resistanceDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />CE/PE {props.resistanceDefenseRatio.toFixed(2)}x ({props.resistanceDefenseRatio >= 1 ? "Defended" : "Exposed"})</em> : null}
           </div>
         </div>
+        {(summary.supportShifted && summary.prevS != null) || (summary.resistanceShifted && summary.prevR != null) ? (
+          <div className="spc-level-shift-notice">
+            {summary.supportShifted && summary.prevS != null ? (
+              <div className="spc-shift-line spc-shift-line-support">Support shifted {fmt(summary.prevS)} → {fmt(summary.support)}</div>
+            ) : null}
+            {summary.resistanceShifted && summary.prevR != null ? (
+              <div className="spc-shift-line spc-shift-line-resistance">Resistance shifted {fmt(summary.prevR)} → {fmt(summary.resistance)}</div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="spc-range-meta">
           <span className="spc-range-label">Defended Support</span>
           <span className="spc-range-label">Active Zone</span>
@@ -478,6 +484,9 @@ export default function StructuralPriceContextCard(props: Props) {
             <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
           </div>
         </div>
+        {readinessExplainability ? (
+          <div className="spc-readiness-explain">{readinessExplainability}</div>
+        ) : null}
         {breachBanner ? <div className={breachBanner.className}><span className="spc-breach-dot" /><span>{breachBanner.text}</span></div> : null}
         <div className="spc-range-foot spc-range-foot-dense">
           <div className="spc-foot-col spc-foot-col-left">
@@ -510,9 +519,6 @@ export default function StructuralPriceContextCard(props: Props) {
             ) : null}
           </div>
         </div>
-        {readinessExplainability ? (
-          <div className="spc-readiness-explain">{readinessExplainability}</div>
-        ) : null}
       </div>
     </div>
   );

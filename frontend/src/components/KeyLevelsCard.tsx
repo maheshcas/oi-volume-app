@@ -74,8 +74,11 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
             <div className="ia-kpi-label">Support</div>
             <div className="ia-level-support ia-emphasis-high">{props.support}</div>
             {supportDefenseMeta ? (
-              <div className={`ia-key-defense-copy ${supportDefenseMeta.className}`}>
-                {supportDefenseMeta.label} ({props.supportDefenseRatio?.toFixed(2)}x)
+              <div
+                className={`ia-key-defense-copy ${supportDefenseMeta.className}`}
+                title="PE/CE OI ratio — above 1.0 means put writers are actively defending this support level"
+              >
+                {supportDefenseMeta.label} · PE/CE {props.supportDefenseRatio?.toFixed(2)}x
               </div>
             ) : null}
             {showMajorSupport ? (
@@ -86,8 +89,11 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
             <div className="ia-kpi-label">Resistance</div>
             <div className="ia-level-resistance ia-emphasis-high">{props.resistance}</div>
             {resistanceDefenseMeta ? (
-              <div className={`ia-key-defense-copy ${resistanceDefenseMeta.className}`}>
-                {resistanceDefenseMeta.label} ({props.resistanceDefenseRatio?.toFixed(2)}x)
+              <div
+                className={`ia-key-defense-copy ${resistanceDefenseMeta.className}`}
+                title="CE/PE OI ratio — above 1.0 means call writers are actively defending this resistance level"
+              >
+                {resistanceDefenseMeta.label} · CE/PE {props.resistanceDefenseRatio?.toFixed(2)}x
               </div>
             ) : null}
             {showBreakoutTrigger ? (
@@ -103,10 +109,10 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
           <div className="ia-kpi-label">Breakout Probability</div>
           <div className="ia-key-breakout-probability-grid">
             <span className="ia-status-chip">
-              Down: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.downside ?? 0)}% (${props.breakoutProbability.downside_state ?? 'Low'})` : '-'}
+              Down: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.downside ?? 0)}%` : '-'}
             </span>
             <span className="ia-status-chip">
-              Up: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.upside ?? 0)}% (${props.breakoutProbability.upside_state ?? 'Low'})` : '-'}
+              Up: {props.breakoutProbability ? `${Math.round(props.breakoutProbability.upside ?? 0)}%` : '-'}
             </span>
           </div>
         </div>
@@ -118,13 +124,17 @@ export default function KeyLevelsCard(props: KeyLevelsCardProps) {
         <div className="ia-key-target-grid">
           <div className="ia-key-level-block">
             <div className="ia-kpi-label">Below Support</div>
+            <div className="ia-kpi-label ia-key-target-tier">Primary target</div>
             <div className="ia-kpi-value ia-key-target-primary">{formatRoundedZone(props.breakBelowPrimary)}</div>
-            <div className="ia-kpi-label ia-key-target-secondary">Extended: {props.breakBelowExtended}</div>
+            <div className="ia-kpi-label ia-key-target-tier">Extended target</div>
+            <div className="ia-kpi-label ia-key-target-secondary">{props.breakBelowExtended}</div>
           </div>
           <div className="ia-key-level-block">
             <div className="ia-kpi-label">Above Resistance</div>
+            <div className="ia-kpi-label ia-key-target-tier">Primary target</div>
             <div className="ia-kpi-value ia-key-target-primary">{formatRoundedZone(props.breakAbovePrimary)}</div>
-            <div className="ia-kpi-label ia-key-target-secondary">Extended: {props.breakAboveExtended}</div>
+            <div className="ia-kpi-label ia-key-target-tier">Extended target</div>
+            <div className="ia-kpi-label ia-key-target-secondary">{props.breakAboveExtended}</div>
           </div>
         </div>
 

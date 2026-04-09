@@ -2664,11 +2664,20 @@ tbody tr:hover {
 }
 
 .ia-key-target-secondary {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 11px;
   line-height: 1.35;
   color: #8fa4b9;
   overflow-wrap: anywhere;
+}
+
+.ia-key-target-tier {
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5a7a96;
 }
 
 .ia-key-footer-grid {
@@ -5812,10 +5821,34 @@ input[type="number"] {
 }
 
 .spc-readiness-explain {
-  margin-top: 8px;
+  margin-top: 6px;
+  margin-bottom: 2px;
   color: #9cc4e8;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.spc-level-shift-notice {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 200, 80, 0.07);
+  border: 1px solid rgba(255, 200, 80, 0.22);
+}
+
+.spc-shift-line {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.spc-shift-line-support {
+  color: #6ee7b7;
+}
+
+.spc-shift-line-resistance {
+  color: #fca5a5;
 }
 
 /* StructureBand (sb-*) */
