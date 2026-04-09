@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -45,6 +45,8 @@ class RetracementZone:
     role: str
     first_date: str
     last_date: str
+    dominant: bool = False
+    dominance_ratio: float | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +59,20 @@ class _WorkingZone:
     last_index: int
     is_broken: bool = False
     merge_count: int = 0
+
+
+def _recency_weight(candle_date: str, today: str, half_life_days: int = 45) -> float:
+    if half_life_days <= 0:
+        return 1.0
+    try:
+        candle_dt = date.fromisoformat(str(candle_date))
+        today_dt = date.fromisoformat(str(today))
+    except ValueError:
+        return 1.0
+
+    days_ago = max(0, (today_dt - candle_dt).days)
+    # ln(2) half-life decay: 45d => 0.5x, 90d => 0.25x
+    return math.exp((-math.log(2.0) * float(days_ago)) / float(half_life_days))
 
 
 def _to_float(value: Any) -> float | None:
@@ -317,6 +333,8 @@ def detect_retracement_zones(
     price_step: float | None = None,
     top_n: int = 8,
     recent_window: int | None = None,
+    recency_half_life_days: int = 45,
+    min_score_gap: float = 1.5,
 ) -> list[dict[str, Any]]:
     if not candles:
         return []
@@ -326,6 +344,7 @@ def detect_retracement_zones(
         return []
 
     step = float(price_step or _auto_price_step(scope))
+    reference_date = scope[-1].date
     min_price = min(candle.low for candle in scope)
     max_price = max(candle.high for candle in scope)
     start_center = math.floor(min_price / step) * step
@@ -342,27 +361,46 @@ def detect_retracement_zones(
         close_accepts = 0
         support_rejections = 0
         resistance_rejections = 0
+        weighted_touches = 0.0
+        weighted_close_accepts = 0.0
+        weighted_support_rejections = 0.0
+        weighted_resistance_rejections = 0.0
         touched_dates: list[str] = []
 
         for candle in scope:
+            weight = _recency_weight(candle.date, reference_date, recency_half_life_days)
             if candle.low <= center <= candle.high:
                 touches += 1
+                weighted_touches += weight
                 touched_dates.append(candle.date)
-            if abs(candle.close - center) <= (step * 0.5):
+
+            support_rejection_this_candle = (
+                abs(candle.low - center) <= (step * 0.6) and candle.close >= center + (step * 0.8)
+            )
+            resistance_rejection_this_candle = (
+                abs(candle.high - center) <= (step * 0.6) and candle.close <= center - (step * 0.8)
+            )
+            is_rejection = support_rejection_this_candle or resistance_rejection_this_candle
+
+            if abs(candle.close - center) <= (step * 0.5) and not is_rejection:
                 close_accepts += 1
+                weighted_close_accepts += weight
                 touched_dates.append(candle.date)
-            if abs(candle.low - center) <= (step * 0.6) and candle.close >= center + (step * 0.8):
+
+            if support_rejection_this_candle:
                 support_rejections += 1
+                weighted_support_rejections += weight
                 touched_dates.append(candle.date)
-            if abs(candle.high - center) <= (step * 0.6) and candle.close <= center - (step * 0.8):
+            if resistance_rejection_this_candle:
                 resistance_rejections += 1
+                weighted_resistance_rejections += weight
                 touched_dates.append(candle.date)
 
         score = (
-            float(touches)
-            + (float(close_accepts) * 1.5)
-            + (float(support_rejections) * 2.0)
-            + (float(resistance_rejections) * 2.0)
+            float(weighted_touches)
+            + (float(weighted_close_accepts) * 1.5)
+            + (float(weighted_support_rejections) * 2.0)
+            + (float(weighted_resistance_rejections) * 2.0)
         )
         center_stats.append(
             {
@@ -395,12 +433,12 @@ def detect_retracement_zones(
         cluster_dates = sorted({date_text for item in cluster for date_text in item["dates"]})
         support_bias = sum(int(item["support_rejections"]) for item in cluster)
         resistance_bias = sum(int(item["resistance_rejections"]) for item in cluster)
-        if support_bias > resistance_bias * 1.25:
+        if support_bias > resistance_bias * 1.5:
             role = "support"
-        elif resistance_bias > support_bias * 1.25:
+        elif resistance_bias > support_bias * 1.5:
             role = "resistance"
         else:
-            role = "acceptance"
+            role = "key_level"
 
         zones.append(
             RetracementZone(
@@ -419,6 +457,11 @@ def detect_retracement_zones(
         )
 
     zones.sort(key=lambda zone: zone.score, reverse=True)
+    if len(zones) >= 2:
+        runner_up = max(float(zones[1].score), 1.0)
+        dominance_ratio = float(zones[0].score) / runner_up
+        zones[0].dominance_ratio = round(dominance_ratio, 2)
+        zones[0].dominant = dominance_ratio >= float(min_score_gap)
     return [asdict(zone) for zone in zones]
 
 
@@ -427,12 +470,15 @@ def analyze_historical_sr_zones(
     *,
     recent_window: int = 12,
     price_step: float | None = None,
+    recency_half_life_days: int = 45,
+    min_score_gap: float = 1.5,
     pivot_lookback: int = 10,
     zone_width_multiplier: float = 2.0,
     min_tests: int = 2,
     max_zones: int = 10,
     max_height_multiplier: float = 5.0,
 ) -> dict[str, Any]:
+    shared_step = float(price_step) if price_step is not None else _auto_price_step(candles)
     return {
         "pine_style": run_pine_style_zone_classifier(
             candles,
@@ -442,10 +488,17 @@ def analyze_historical_sr_zones(
             max_zones=max_zones,
             max_height_multiplier=max_height_multiplier,
         ),
-        "retracement_full_window": detect_retracement_zones(candles, price_step=price_step),
+        "retracement_full_window": detect_retracement_zones(
+            candles,
+            price_step=shared_step,
+            recency_half_life_days=recency_half_life_days,
+            min_score_gap=min_score_gap,
+        ),
         "retracement_recent_window": detect_retracement_zones(
             candles,
-            price_step=price_step,
+            price_step=shared_step,
             recent_window=recent_window,
+            recency_half_life_days=recency_half_life_days,
+            min_score_gap=min_score_gap,
         ),
     }

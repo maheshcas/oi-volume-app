@@ -37,6 +37,8 @@ def _safe_zone_entry(zone: dict[str, Any] | None) -> dict[str, Any] | None:
         "role": zone.get("role"),
         "score": zone.get("score"),
         "touches": zone.get("touches"),
+        "dominant": zone.get("dominant"),
+        "dominance_ratio": zone.get("dominance_ratio"),
         "first_date": zone.get("first_date"),
         "last_date": zone.get("last_date"),
     }

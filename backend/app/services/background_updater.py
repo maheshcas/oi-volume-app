@@ -103,6 +103,8 @@ TRAP_SMOOTH_PREV_WEIGHT = 0.7
 TRAP_SMOOTH_NEW_WEIGHT = 0.3
 TRAP_STABLE_MID_MIN = 55.0
 TRAP_STABLE_MID_MAX = 65.0
+REVERSAL_DECAY = 0.65
+REVERSAL_DECAY_CYCLES = 2
 READINESS_TRANSITION_FLAP_MAX_DROP = 8.0
 READINESS_TRANSITION_FLAP_FLOOR = 36.0
 RESPONSE_WARNING_THROTTLE_SECONDS = max(30, int(os.getenv("OPTIONLENS_RESPONSE_WARNING_THROTTLE_SECONDS", "300")))
@@ -595,6 +597,10 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "alignment_score",
         "alignment_ratio",
         "pressure_state",
+        "directional_pressure_score",
+        "dps_adjusted",
+        "oi_scenario",
+        "dps_scenario_multiplier",
         "trade_action",
         "trade_readiness",
         "readiness_state",
@@ -1165,7 +1171,10 @@ def _compute_directional_pressure_score(
     alignment_score: float,
     market_structure_score: float,
     oi_bias: float,
+    oi_velocity_score: float,
     volume_expansion_score: float,
+    ce_rvr: float | None = None,
+    pe_rvr: float | None = None,
     trap_probability: float,
     previous_alignment_score: float | None = None,
     previous_directional_dominance: str | None = None,
@@ -1174,7 +1183,21 @@ def _compute_directional_pressure_score(
     bear_force = max(0.0, min(1.0, float(directional_force.get("bear", 0.0) or 0.0) / 100.0))
     alignment = float(alignment_score or 0.0)
     oi_bias_value = float(oi_bias or 0.0)
+    oi_velocity = max(0.0, min(1.0, float(oi_velocity_score or 0.0)))
     volume_expansion = max(0.0, min(1.0, float(volume_expansion_score or 0.0)))
+    # Directional volume:
+    # - bullish confirmation from PE-side participation
+    # - bearish confirmation from CE-side participation
+    bull_volume = (
+        max(0.0, min(1.0, float(pe_rvr or 0.0)))
+        if isinstance(pe_rvr, (int, float))
+        else volume_expansion
+    )
+    bear_volume = (
+        max(0.0, min(1.0, float(ce_rvr or 0.0)))
+        if isinstance(ce_rvr, (int, float))
+        else volume_expansion
+    )
     mss_component = max(0.0, min(10.0, float(market_structure_score or 0.0) / 10.0))
     trap_penalty = max(0.0, min(1.0, float(trap_probability or 0.0) / 100.0)) * 0.2
 
@@ -1182,19 +1205,44 @@ def _compute_directional_pressure_score(
         (bull_force * 0.35)
         + (max(0.0, alignment) * 0.25)
         + (max(0.0, oi_bias_value) * 0.15)
-        + (volume_expansion * 0.10)
+        + (bull_volume * 0.10)
         + (mss_component * 0.10)
     )
     bear_score = (
         (bear_force * 0.35)
         + (max(0.0, -alignment) * 0.25)
         + (max(0.0, -oi_bias_value) * 0.15)
-        + (volume_expansion * 0.10)
+        + (bear_volume * 0.10)
         + (mss_component * 0.10)
     )
 
     dps = bull_score - bear_score
-    dps_adjusted = dps * (1.0 - trap_penalty)
+
+    # OI scenario quality modifier:
+    # Short-covering and long-unwinding moves are treated as weaker directional
+    # pressure than equivalent price-only movement.
+    oi_building = oi_velocity > 0.55
+    oi_unwinding = oi_velocity < 0.25
+    price_up = dps > 0.1
+    price_down = dps < -0.1
+    if price_up and oi_building:
+        scenario = "LONG_BUILDUP"
+        scenario_multiplier = 1.0
+    elif price_up and oi_unwinding:
+        scenario = "SHORT_COVERING"
+        scenario_multiplier = 0.65
+    elif price_down and oi_building:
+        scenario = "SHORT_BUILDUP"
+        scenario_multiplier = 1.0
+    elif price_down and oi_unwinding:
+        scenario = "LONG_UNWINDING"
+        scenario_multiplier = 0.65
+    else:
+        scenario = "NEUTRAL"
+        scenario_multiplier = 1.0
+
+    dps_scenario_adjusted = dps * scenario_multiplier
+    dps_adjusted = dps_scenario_adjusted * (1.0 - trap_penalty)
     current_alignment_sign = 1 if alignment > 0 else -1 if alignment < 0 else 0
     previous_alignment_value = float(previous_alignment_score or 0.0)
     previous_alignment_sign = 1 if previous_alignment_value > 0 else -1 if previous_alignment_value < 0 else 0
@@ -1205,39 +1253,48 @@ def _compute_directional_pressure_score(
         or (previous_dominance in {"bullish", "bearish"} and current_directional_dominance != previous_dominance)
     )
     if reversal_detected:
-        dps *= 0.5
-        dps_adjusted *= 0.5
+        dps *= REVERSAL_DECAY
+        dps_adjusted *= REVERSAL_DECAY
 
-    if dps_adjusted > 0.5:
-        pressure_state = "Strong Bull Pressure"
-    elif dps_adjusted > 0.35:
-        pressure_state = "Mild Bull Pressure"
-    elif dps_adjusted < -0.5:
-        pressure_state = "Strong Bear Pressure"
-    elif dps_adjusted < -0.35:
-        pressure_state = "Mild Bear Pressure"
-    else:
-        pressure_state = "Balanced Pressure"
-
-    if dps_adjusted > 0.35:
-        trade_action = "LONG BIAS"
-        explanation = "Upside pressure building across OI and alignment."
-    elif dps_adjusted < -0.35:
-        trade_action = "SHORT BIAS"
-        explanation = "Downside pressure increasing across writer activity."
-    else:
-        trade_action = "WAIT"
-        explanation = "Directional pressure remains balanced."
+    pressure_state, trade_action, explanation = _pressure_labels_from_dps_adjusted(dps_adjusted)
 
     return {
         "directional_pressure_score": round(dps, 4),
+        "dps_scenario_adjusted": round(dps_scenario_adjusted, 4),
         "dps_adjusted": round(dps_adjusted, 4),
+        "oi_scenario": scenario,
+        "oi_scenario_multiplier": round(float(scenario_multiplier), 4),
         "pressure_state": pressure_state,
         "trade_action": trade_action,
         "pressure_explanation": explanation,
         "directional_dominance": current_directional_dominance,
         "dps_decay_applied": reversal_detected,
     }
+
+
+def _pressure_labels_from_dps_adjusted(dps_adjusted: float) -> tuple[str, str, str]:
+    adjusted = float(dps_adjusted or 0.0)
+    if adjusted > 0.5:
+        pressure_state = "Strong Bull Pressure"
+    elif adjusted > 0.35:
+        pressure_state = "Mild Bull Pressure"
+    elif adjusted < -0.5:
+        pressure_state = "Strong Bear Pressure"
+    elif adjusted < -0.35:
+        pressure_state = "Mild Bear Pressure"
+    else:
+        pressure_state = "Balanced Pressure"
+
+    if adjusted > 0.35:
+        trade_action = "LONG BIAS"
+        explanation = "Upside pressure building across OI and alignment."
+    elif adjusted < -0.35:
+        trade_action = "SHORT BIAS"
+        explanation = "Downside pressure increasing across writer activity."
+    else:
+        trade_action = "WAIT"
+        explanation = "Directional pressure remains balanced."
+    return pressure_state, trade_action, explanation
 
 
 def _compute_trade_readiness(
@@ -1288,10 +1345,12 @@ def _clamp_score_0_100(value: float) -> float:
 READINESS_V2_PILLAR_ALPHA = 0.28
 READINESS_V2_FINAL_ALPHA = 0.35
 READINESS_V2_DEADBAND = 2.0
-READINESS_V2_PILLAR_UP_STEP = 10.0
-READINESS_V2_PILLAR_DOWN_STEP = 15.0
+READINESS_V2_PILLAR_UP_STEP = 5.0
+READINESS_V2_PILLAR_DOWN_STEP = 8.0
 READINESS_V2_FINAL_UP_STEP = 5.0
 READINESS_V2_FINAL_DOWN_STEP = 10.0
+READINESS_ACTIVE_ON_THRESHOLD = 62.0
+READINESS_ACTIVE_OFF_THRESHOLD = 52.0
 
 
 def _is_invalid_readiness_sr_geometry(
@@ -1789,9 +1848,9 @@ def _compute_readiness_v2(
 
     readiness_state_v2 = _readiness_v2_state(final_score)
     prev_active_v2 = bool((previous_state or {}).get("readiness_active_v2", False))
-    if not prev_active_v2 and final_score >= 60.0:
+    if not prev_active_v2 and final_score >= READINESS_ACTIVE_ON_THRESHOLD:
         readiness_active_v2 = True
-    elif prev_active_v2 and final_score < 55.0:
+    elif prev_active_v2 and final_score < READINESS_ACTIVE_OFF_THRESHOLD:
         readiness_active_v2 = False
     else:
         readiness_active_v2 = prev_active_v2
@@ -3569,26 +3628,54 @@ def _build_v2_intelligence(
         alignment_score=alignment_score,
         market_structure_score=float(mss.get("market_structure_score", 0.0) or 0.0),
         oi_bias=oi_score,
+        oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
         volume_expansion_score=volume_expansion_score,
+        ce_rvr=float((volume.get("rvr", {}) or {}).get("ce", 0.0) or 0.0),
+        pe_rvr=float((volume.get("rvr", {}) or {}).get("pe", 0.0) or 0.0),
         trap_probability=trap_probability,
         previous_alignment_score=previous_alignment,
         previous_directional_dominance=(previous_state or {}).get("directional_force_dominance"),
     )
+    reversal_decay_cycles = int((previous_state or {}).get("reversal_decay_cycles", 0) or 0)
+    reversal_detected_now = bool(dps.get("dps_decay_applied", False))
+    if reversal_detected_now:
+        reversal_decay_cycles = REVERSAL_DECAY_CYCLES
+    elif reversal_decay_cycles > 0:
+        reversal_decay_cycles -= 1
+        dps_value = float(dps.get("directional_pressure_score", 0.0) or 0.0) * REVERSAL_DECAY
+        dps_scenario_value = float(
+            dps.get("dps_scenario_adjusted", dps.get("directional_pressure_score", 0.0)) or 0.0
+        ) * REVERSAL_DECAY
+        dps_adjusted_value = float(dps.get("dps_adjusted", 0.0) or 0.0) * REVERSAL_DECAY
+        dps["directional_pressure_score"] = round(dps_value, 4)
+        dps["dps_scenario_adjusted"] = round(dps_scenario_value, 4)
+        dps["dps_adjusted"] = round(dps_adjusted_value, 4)
+        pressure_state, trade_action, pressure_explanation = _pressure_labels_from_dps_adjusted(dps_adjusted_value)
+        dps["pressure_state"] = pressure_state
+        dps["trade_action"] = trade_action
+        dps["pressure_explanation"] = pressure_explanation
+        dps["dps_decay_applied"] = True
     previous_bias = str((previous_state or {}).get("previous_bias") or "Neutral")
     current_bias_for_dps = str(decision.get("bias", "Neutral") or "Neutral")
     if previous_bias != "Neutral" and current_bias_for_dps != previous_bias:
         dps["directional_pressure_score"] = 0.0
+        dps["dps_scenario_adjusted"] = 0.0
         dps["dps_adjusted"] = 0.0
         dps["pressure_state"] = "Balanced Pressure"
         dps["trade_action"] = "WAIT"
         dps["pressure_explanation"] = "Directional pressure reset after bias reversal."
     decision["directional_pressure_score"] = dps["directional_pressure_score"]
+    decision["dps_scenario_adjusted"] = dps.get("dps_scenario_adjusted")
     decision["dps_adjusted"] = dps["dps_adjusted"]
+    decision["oi_scenario"] = dps.get("oi_scenario")
+    decision["oi_scenario_multiplier"] = dps.get("oi_scenario_multiplier")
+    decision["dps_scenario_multiplier"] = dps.get("oi_scenario_multiplier")
     decision["pressure_state"] = dps["pressure_state"]
     decision["trade_action"] = dps["trade_action"]
     decision["pressure_explanation"] = dps["pressure_explanation"]
     decision["directional_force_dominance"] = dps["directional_dominance"]
     decision["dps_decay_applied"] = bool(dps.get("dps_decay_applied"))
+    decision["reversal_decay_cycles"] = int(reversal_decay_cycles)
     wall_break_pre = detect_wall_break(
         spot=spot,
         support=support_level,
@@ -3971,6 +4058,7 @@ def _build_v2_intelligence(
         )
         _apply_stabilized_trap(trap, trap_stability_payload)
         trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
+        trap["trap_trend_adjustment_applied"] = True
     else:
         trap["confidence_factor"] = 1.0
     trap["is_trap"] = bool(trap["trap_probability_pct"] >= 60)
@@ -4672,6 +4760,9 @@ def _build_v2_intelligence(
         "alignment_score": round(float(alignment_score), 4),
         "directional_pressure_score": decision.get("directional_pressure_score"),
         "dps_adjusted": decision.get("dps_adjusted"),
+        "oi_scenario": decision.get("oi_scenario"),
+        "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
+        "reversal_decay_cycles": decision.get("reversal_decay_cycles"),
         "pressure_state": decision.get("pressure_state"),
         "trade_action": decision.get("trade_action"),
         "trade_readiness": decision.get("trade_readiness"),
@@ -4771,6 +4862,8 @@ def _build_v2_intelligence(
         "decision_engine": {
             "directional_pressure_score": decision.get("directional_pressure_score"),
             "dps_adjusted": decision.get("dps_adjusted"),
+            "oi_scenario": decision.get("oi_scenario"),
+            "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "pressure_explanation": decision.get("pressure_explanation"),
@@ -4866,6 +4959,10 @@ def _build_v2_intelligence(
             "decision_confidence": decision_confidence,
             "sr_breach_state": sr_breach_state,
             "alignment_score": round(float(alignment_score), 4),
+            "directional_pressure_score": decision.get("directional_pressure_score"),
+            "dps_adjusted": decision.get("dps_adjusted"),
+            "oi_scenario": decision.get("oi_scenario"),
+            "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "trade_readiness": decision.get("trade_readiness"),
@@ -5017,13 +5114,18 @@ def _build_v2_intelligence(
             "volume_prev_ts": (volume.get("volume_state", {}) or {}).get("volume_prev_ts"),
             "volume_history": (volume.get("volume_state", {}) or {}).get("volume_history", []),
             "trap_raw_prev": round(float(trap.get("trap_smoothed", trap.get("trap_raw", 0.0)) or 0.0), 4),
+            "trap_smoothed_prev": round(
+                float(trap.get("trap_smoothed_prev", trap.get("trap_smoothed", trap.get("trap_raw", 0.0))) or 0.0), 4
+            ),
             "trap_state": str(trap.get("trap_state") or trap.get("trap_level") or ""),
+            "trap_trend_adjustment_applied": bool(trap.get("trap_trend_adjustment_applied", False)),
             "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
             "previous_bias": stable_bias,
             "previous_projection": stable_projection,
             "bias_change_counter": int(bias_change_counter),
             "projection_change_counter": int(projection_change_counter),
             "bias_stability_cycles": int(bias_stability_cycles),
+            "reversal_decay_cycles": int(decision.get("reversal_decay_cycles", 0) or 0),
             "market_structure_score_prev": float(mss.get("market_structure_score", 0.0) or 0.0),
             "force_strength": round(float(force_strength), 4),
             "material_breach": material_breach,

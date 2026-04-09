@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from typing import Any
 
+NO_BREAKOUT_VALIDITY_FLOOR = 0.55
+
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -114,6 +116,13 @@ def trap_engine_v2(
         + (0.20 * oi_shift_score)
         + (0.15 * volume_expansion_score)
     )
+    no_breakout_validity_floor_applied = False
+    if float(breakout_strength) <= 1e-6:
+        # Quiet sessions can otherwise inherit an artificial trap baseline from
+        # structural-failure weighting despite no real breakout attempt.
+        if validity_score < NO_BREAKOUT_VALIDITY_FLOOR:
+            validity_score = NO_BREAKOUT_VALIDITY_FLOOR
+            no_breakout_validity_floor_applied = True
 
     # Liquidity absorption detection.
     absorption_score = 0.0
@@ -194,6 +203,7 @@ def trap_engine_v2(
         "trap_level": trap_level,
         "trap_type": trap_type,
         "validity_score": round(validity_score, 4),
+        "no_breakout_validity_floor_applied": bool(no_breakout_validity_floor_applied),
         "absorption_score": round(absorption_score, 4),
         "trap_raw": round(trap_raw, 4),
         "warmup_active": bool(warmup_active),
@@ -309,11 +319,20 @@ def _rejection_wick_score(
     low = min(prices)
     close = prices[-1]
     candle_range = max(1e-9, high - low)
-    _ = level, direction  # level-aware filtering can be layered later if needed.
+    _ = level  # level-aware filtering can be layered later if needed.
 
     upper_wick = max(0.0, high - max(open_price, close))
     lower_wick = max(0.0, min(open_price, close) - low)
-    wick_ratio = max(upper_wick, lower_wick) / candle_range
+    # Direction-aware rejection wick:
+    # - upside breakout rejection should print upper wick.
+    # - downside breakdown rejection should print lower wick.
+    direction_text = str(direction or "").strip().lower()
+    if direction_text == "up":
+        wick_ratio = upper_wick / candle_range
+    elif direction_text == "down":
+        wick_ratio = lower_wick / candle_range
+    else:
+        wick_ratio = max(upper_wick, lower_wick) / candle_range
     return max(0.0, min(1.0, wick_ratio * 2.0))
 
 
@@ -469,12 +488,20 @@ def run_trap_engine(
         warmup_active=warmup_active,
     )
     trap_raw = float(trap_v2.get("trap_raw", 0.0) or 0.0)
-    prev_trap_raw = trap_raw
+    prev_trap_smoothed = trap_raw
     if isinstance(previous_state, dict):
-        prev_trap_raw = float(previous_state.get("trap_raw_prev", trap_raw) or trap_raw)
-    trap_smoothed = _clamp01((0.7 * prev_trap_raw) + (0.3 * trap_raw))
+        prev_trap_smoothed = float(
+            previous_state.get(
+                "trap_smoothed_prev",
+                previous_state.get("trap_smoothed", previous_state.get("trap_raw_prev", trap_raw)),
+            )
+            or trap_raw
+        )
+    prev_trap_smoothed = _clamp01(prev_trap_smoothed)
+    trap_smoothed = _clamp01((0.7 * prev_trap_smoothed) + (0.3 * trap_raw))
 
     trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
+    trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
     trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
 
     if in_open_window:
@@ -490,13 +517,13 @@ def run_trap_engine(
         trap_type = None
         trap_message = "No active trap setup."
 
+    trap_direction = "upside" if direction == "up" else "downside"
     resolved_trap_type = str(trap_type or trap_v2.get("trap_type") or "")
     # When smoothed trap_risk is elevated but no type was resolved (e.g. no active
     # breakout but prior high-trap state carried forward), supply a contextual label
     # so the UI doesn't render an empty badge at meaningful risk levels.
     if not resolved_trap_type and trap_risk >= 45:
         resolved_trap_type = "False-Break Risk" if trap_direction == "upside" else "Breakdown Risk"
-    trap_direction = "upside" if direction == "up" else "downside"
 
     return {
         "is_trap": is_trap,
@@ -504,6 +531,7 @@ def run_trap_engine(
         "trap_risk": int(trap_risk),
         "trap_raw": round(trap_raw, 4),
         "trap_smoothed": round(trap_smoothed, 4),
+        "trap_smoothed_prev": round(trap_smoothed, 4),
         "trap_type": resolved_trap_type,
         "trap_direction": trap_direction,
         "trap_message": trap_message,
@@ -523,5 +551,7 @@ def run_trap_engine(
         "warmup_active": bool(warmup_active),
         "spot_sample_count": int(spot_sample_count),
         "observation_window_seconds": int(observation_window_seconds),
+        "no_breakout_validity_floor_applied": bool(trap_v2.get("no_breakout_validity_floor_applied", False)),
+        "trap_trend_adjustment_applied": bool(trap_trend_adjustment_applied),
         "weight_distribution": trap_v2.get("weight_distribution", {}),
     }

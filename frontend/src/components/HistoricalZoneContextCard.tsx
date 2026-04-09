@@ -5,6 +5,8 @@ type ZoneSummary = {
   role?: string | null;
   score?: number | null;
   touches?: number | null;
+  dominant?: boolean | null;
+  dominance_ratio?: number | null;
   first_date?: string | null;
   last_date?: string | null;
 };
@@ -28,23 +30,17 @@ function formatNumber(value: number | null | undefined): string {
   return value.toLocaleString("en-IN", { maximumFractionDigits: 0 });
 }
 
-function resolveFixed100PointRange(zone?: ZoneSummary | null): Range100 | null {
+function resolveZoneRange(zone?: ZoneSummary | null): Range100 | null {
   if (!zone) return null;
-  const center =
-    typeof zone.center === "number" && Number.isFinite(zone.center)
-      ? zone.center
-      : typeof zone.zone_low === "number" &&
-          Number.isFinite(zone.zone_low) &&
-          typeof zone.zone_high === "number" &&
-          Number.isFinite(zone.zone_high)
-        ? (zone.zone_low + zone.zone_high) / 2
-        : null;
-  if (center === null) return null;
+  const zoneLow =
+    typeof zone.zone_low === "number" && Number.isFinite(zone.zone_low) ? zone.zone_low : null;
+  const zoneHigh =
+    typeof zone.zone_high === "number" && Number.isFinite(zone.zone_high) ? zone.zone_high : null;
+  if (zoneLow === null || zoneHigh === null) return null;
 
-  const centerRounded = Math.round(center / 50) * 50;
   return {
-    low: centerRounded - 50,
-    high: centerRounded + 50,
+    low: Math.min(zoneLow, zoneHigh),
+    high: Math.max(zoneLow, zoneHigh),
   };
 }
 
@@ -53,6 +49,7 @@ function formatRole(role?: string | null): string {
   if (!text) return "-";
   if (text === "support") return "Support";
   if (text === "resistance") return "Resistance";
+  if (text === "key_level" || text === "key level") return "Key Level";
   if (text === "acceptance") return "Acceptance";
   return role || "-";
 }
@@ -70,8 +67,8 @@ function formatTimeLabel(value?: string | null): string {
 }
 
 function ZoneBlock({ title, zone }: { title: string; zone?: ZoneSummary | null }) {
-  const fixedRange = resolveFixed100PointRange(zone);
-  const hasZone = Boolean(fixedRange);
+  const range = resolveZoneRange(zone);
+  const hasZone = Boolean(range);
 
   return (
     <div className="ia-hzc-zone">
@@ -79,12 +76,13 @@ function ZoneBlock({ title, zone }: { title: string; zone?: ZoneSummary | null }
       {hasZone ? (
         <>
           <div className="ia-kpi-value-sm">
-            {formatNumber(fixedRange?.low)} - {formatNumber(fixedRange?.high)}
+            {formatNumber(range?.low)} - {formatNumber(range?.high)}
           </div>
           <div className="ia-hzc-meta">
             <span>{formatRole(zone?.role)}</span>
             <span>Score {Math.round(Number(zone?.score ?? 0))}</span>
             <span>Touches {Math.round(Number(zone?.touches ?? 0))}</span>
+            <span>{zone?.dominant ? "Strong Zone" : "Contested Zone"}</span>
           </div>
         </>
       ) : (

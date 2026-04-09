@@ -45,6 +45,7 @@ HISTORICAL_ZONE_MAX_ZONES = max(1, int(os.getenv("OPTIONLENS_HISTORICAL_ZONE_MAX
 HISTORICAL_ZONE_MAX_HEIGHT_MULTIPLIER = max(
     1.0, float(os.getenv("OPTIONLENS_HISTORICAL_ZONE_MAX_HEIGHT_MULTIPLIER", "5"))
 )
+HISTORICAL_ZONE_MIN_SCORE_GAP = max(1.0, float(os.getenv("OPTIONLENS_HISTORICAL_ZONE_MIN_SCORE_GAP", "1.5")))
 HISTORICAL_ZONE_OUTPUT_DIR = Path(
     os.getenv(
         "OPTIONLENS_HISTORICAL_ZONE_OUTPUT_DIR",
@@ -222,6 +223,7 @@ def run_historical_zone_daily_if_due(symbol: str, now_utc: datetime | None = Non
         min_tests=HISTORICAL_ZONE_MIN_TESTS,
         max_zones=HISTORICAL_ZONE_MAX_ZONES,
         max_height_multiplier=HISTORICAL_ZONE_MAX_HEIGHT_MULTIPLIER,
+        min_score_gap=HISTORICAL_ZONE_MIN_SCORE_GAP,
     )
     payload = {
         "meta": {
@@ -239,6 +241,7 @@ def run_historical_zone_daily_if_due(symbol: str, now_utc: datetime | None = Non
                 "min_tests": HISTORICAL_ZONE_MIN_TESTS,
                 "max_zones": HISTORICAL_ZONE_MAX_ZONES,
                 "max_height_multiplier": HISTORICAL_ZONE_MAX_HEIGHT_MULTIPLIER,
+                "min_score_gap": HISTORICAL_ZONE_MIN_SCORE_GAP,
             },
         },
         "analysis": analysis,
@@ -288,6 +291,7 @@ def get_historical_zone_scheduler_status(
             "min_tests": HISTORICAL_ZONE_MIN_TESTS,
             "max_zones": HISTORICAL_ZONE_MAX_ZONES,
             "max_height_multiplier": HISTORICAL_ZONE_MAX_HEIGHT_MULTIPLIER,
+            "min_score_gap": HISTORICAL_ZONE_MIN_SCORE_GAP,
         },
         "output_dir": str(HISTORICAL_ZONE_OUTPUT_DIR),
         "checked_at_utc": _iso(now),

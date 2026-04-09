@@ -39,6 +39,7 @@ def main() -> None:
     parser.add_argument("--min-tests", type=int, default=2, help="Minimum Pine-style tests to keep in output.")
     parser.add_argument("--max-zones", type=int, default=10, help="Maximum active zones per type for the Pine-style classifier.")
     parser.add_argument("--max-height-multiplier", type=float, default=5.0, help="Maximum Pine-style merged zone height multiplier.")
+    parser.add_argument("--min-score-gap", type=float, default=1.5, help="Dominance ratio threshold for marking the top zone as dominant.")
     args = parser.parse_args()
 
     candles = load_nse_history_file(Path(args.file))
@@ -51,6 +52,7 @@ def main() -> None:
         min_tests=args.min_tests,
         max_zones=args.max_zones,
         max_height_multiplier=args.max_height_multiplier,
+        min_score_gap=args.min_score_gap,
     )
 
     output_doc = {
@@ -66,6 +68,7 @@ def main() -> None:
                 "min_tests": args.min_tests,
                 "max_zones": args.max_zones,
                 "max_height_multiplier": args.max_height_multiplier,
+                "min_score_gap": args.min_score_gap,
             },
         },
         "analysis": payload,
