@@ -25,11 +25,21 @@ _stability_logger = StabilityLoggerService()
 # ---------------------------------------------------------------------------
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000,https://oi-volume-app.netlify.app",
+    (
+        "http://localhost:5173,"
+        "http://localhost:3000,"
+        "https://oi-volume-app.netlify.app,"
+        "https://optionlens.in,"
+        "https://www.optionlens.in"
+    ),
 )
 ALLOWED_ORIGINS: list[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 ALLOWED_ORIGIN_REGEX = (
-    os.getenv("ALLOWED_ORIGIN_REGEX", r"^https://[a-z0-9-]+--oi-volume-app\.netlify\.app$").strip() or None
+    os.getenv(
+        "ALLOWED_ORIGIN_REGEX",
+        r"^https://([a-z0-9-]+--oi-volume-app\.netlify\.app|(?:www\.)?optionlens\.in)$",
+    ).strip()
+    or None
 )
 
 
