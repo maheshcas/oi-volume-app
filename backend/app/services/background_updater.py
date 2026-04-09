@@ -2676,6 +2676,10 @@ def _apply_first_cycle_sr_buffer_guard(
     Resistance rule:
       Do not allow upward resistance promotion if spot is still below old_resistance + 25.
 
+    Zero/invalid spot: if spot is absent or clearly invalid (< 1000 for Indian indices),
+    force SR levels back to previous anchors entirely — the SR engine output from a
+    zero-spot tick is meaningless and would otherwise broadcast extreme guard defaults.
+
     This runs after SR engine selection, so even if the first OI read misses
     previous immediate state internally, downstream engines still receive guarded SR.
     """
@@ -2683,9 +2687,39 @@ def _apply_first_cycle_sr_buffer_guard(
     support_obj = dict(sr_out.get("support") or {})
     resistance_obj = dict(sr_out.get("resistance") or {})
 
+    spot_value = _safe_float(spot)
+
+    # Hard guard: zero or implausibly small spot means the data tick is corrupt.
+    # Restore previous anchors unconditionally and return early.
+    if spot_value is None or spot_value < 1000:
+        prev_sup, _ = _resolve_sr_anchor(previous_state, "support")
+        prev_res, _ = _resolve_sr_anchor(previous_state, "resistance")
+        if prev_sup and prev_sup > 0:
+            support_obj["strike"] = prev_sup
+            support_obj["immediate"] = prev_sup
+            support_obj["major"] = prev_sup
+        if prev_res and prev_res > 0:
+            resistance_obj["strike"] = prev_res
+            resistance_obj["immediate"] = prev_res
+            resistance_obj["major"] = prev_res
+        sr_out["support"] = support_obj
+        sr_out["resistance"] = resistance_obj
+        return {
+            "sr": sr_out,
+            "sr_cold_start_guard_applied": True,
+            "sr_previous_support_anchor_used": prev_sup,
+            "sr_previous_support_anchor_source": "zero_spot_guard",
+            "sr_previous_resistance_anchor_used": prev_res,
+            "sr_previous_resistance_anchor_source": "zero_spot_guard",
+            "sr_support_buffer_blocked": True,
+            "sr_resistance_buffer_blocked": True,
+        }
+
     support_range = list(sr_out.get("support_range") or [])
     resistance_range = list(sr_out.get("resistance_range") or [])
 
+    # spot_value already validated above (zero-spot early return). Recompute for
+    # the remainder of the normal guard path (spot is valid and >= 1000 here).
     spot_value = _safe_float(spot)
 
     prev_support_anchor, prev_support_source = _resolve_sr_anchor(previous_state, "support")

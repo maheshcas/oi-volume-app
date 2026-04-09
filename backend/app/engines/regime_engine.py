@@ -17,11 +17,11 @@ def classify_session_regime(oi: dict[str, Any], volume: dict[str, Any], breakout
 
 
 def _normalize_regime_type(regime: str) -> str:
-    if regime in ("Trend Day", "Breakdown", "Breakdown Day", "Short Covering"):
+    if regime in ("Trend Day", "Breakdown", "Breakdown Day", "Short Covering", "Opening Drive", "Trend Expansion"):
         return "trend"
-    if regime == "Range Day":
+    if regime in ("Range Day", "Range Play", "Balanced / Wait", "Balanced Structure"):
         return "range"
-    if regime == "Transition":
+    if regime in ("Transition", "Transition Phase"):
         return "transition"
     if regime in ("Trap Risk", "Trap Day"):
         return "trap"
@@ -92,6 +92,13 @@ def _apply_regime_hysteresis(
     if not committed:
         return detected, None, 0
     if detected == committed:
+        return committed, None, 0
+    # Same-family: treat as stable — canonicalize to the already-committed label.
+    # This prevents "Range Day" (from regime_engine) vs "Range Play" (canonical label
+    # from background_updater) from permanently diverging on every poll cycle.
+    detected_family = _normalize_regime_type(detected)
+    committed_family = _normalize_regime_type(committed)
+    if detected_family == committed_family and detected_family != "neutral":
         return committed, None, 0
     if candidate and detected == candidate:
         count += 1

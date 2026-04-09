@@ -491,6 +491,11 @@ def run_trap_engine(
         trap_message = "No active trap setup."
 
     resolved_trap_type = str(trap_type or trap_v2.get("trap_type") or "")
+    # When smoothed trap_risk is elevated but no type was resolved (e.g. no active
+    # breakout but prior high-trap state carried forward), supply a contextual label
+    # so the UI doesn't render an empty badge at meaningful risk levels.
+    if not resolved_trap_type and trap_risk >= 45:
+        resolved_trap_type = "False-Break Risk" if trap_direction == "upside" else "Breakdown Risk"
     trap_direction = "upside" if direction == "up" else "downside"
 
     return {
