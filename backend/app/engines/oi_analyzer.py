@@ -120,6 +120,23 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
     else:
         oi_bias = 0.0
 
+    # Absolute OI scale context — percentile rank vs rolling 20-cycle window.
+    # Lets downstream engines distinguish NIFTY (millions of OI) from thin symbols.
+    total_chain_oi = sum(
+        float(r.get("CE_OI") or 0.0) + float(r.get("PE_OI") or 0.0) for r in rows
+    )
+    oi_scale_history: list[float] = [
+        float(x) for x in (prev.get("oi_scale_history", []) or []) if isinstance(x, (int, float))
+    ]
+    oi_scale_history = (oi_scale_history + [total_chain_oi])[-20:]
+    scale_rank = sum(1 for v in oi_scale_history if v <= total_chain_oi) / max(1, len(oi_scale_history))
+    if scale_rank >= 0.8:
+        oi_scale_label = "High OI session"
+    elif scale_rank <= 0.2:
+        oi_scale_label = "Low OI session"
+    else:
+        oi_scale_label = "Normal OI session"
+
     return {
         "alignment": alignment,
         "buildup_type": detect_buildup_type(atm_row),
@@ -134,10 +151,14 @@ def run_oi_analysis(features: dict[str, Any], previous_state: dict[str, Any] | N
         "oi_velocity_score": oi_velocity_score,
         "writer_balance_score": writer_balance_score,
         "oi_bias": round(max(-1.0, min(1.0, oi_bias)), 4),
+        "total_chain_oi": round(total_chain_oi, 0),
+        "oi_scale_percentile": round(scale_rank, 4),
+        "oi_scale_label": oi_scale_label,
         "oi_state": {
             "oi_prev_value": round(current_oi, 4),
             "oi_prev_ts": current_ts,
             "oi_velocity_history": [round(v, 6) for v in velocity_history],
             "oi_shift_history": [round(v, 4) for v in shift_history],
+            "oi_scale_history": [round(v, 0) for v in oi_scale_history],
         },
     }

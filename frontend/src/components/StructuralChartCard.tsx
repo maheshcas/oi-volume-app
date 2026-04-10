@@ -38,6 +38,9 @@ type StructuralChartCardProps = {
   breakoutProbabilityDown?: number | null;
   trapProbability?: number | null;
   trapDirection?: "upside" | "downside" | "";
+  spcState?: string | null;
+  moveQuality?: string | null;
+  spcDecision?: string | null;
   readinessScore?: number | null;
   trapZoneLabel?: string;
   volumeLabel?: string;
@@ -84,6 +87,9 @@ export default function StructuralChartCard(props: StructuralChartCardProps) {
         breakoutProbabilityDown={props.breakoutProbabilityDown}
         trapProbability={props.trapProbability}
         trapDirection={props.trapDirection}
+        spcState={props.spcState}
+        moveQuality={props.moveQuality}
+        spcDecision={props.spcDecision}
         readinessScore={props.readinessScore}
         trapZoneLabel={props.trapZoneLabel}
         volumeLabel={props.volumeLabel}

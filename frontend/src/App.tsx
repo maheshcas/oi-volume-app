@@ -219,6 +219,27 @@ type IntelligenceResponse = {
     readiness_cap_reason?: string | null;
     readiness_floor_reason?: string | null;
     session_phase?: string;
+    iv_rank?: number | null;
+    iv_context?: string | null;
+    selling_favoured?: boolean;
+    strike_guidance?: {
+      recommended_action: string;
+      option_type: string;
+      delta_range: [number, number];
+      suggested_strikes: Array<{
+        strike: number;
+        delta: number;
+        theta: number;
+        iv: number;
+        ltp: number;
+        moneyness: string;
+      }>;
+      warnings: string[];
+      theta_warning: boolean;
+      days_to_expiry: number;
+      iv_rank: number | null;
+      risk_reward_note: string | null;
+    };
     session_phase_confidence?: number;
     breakout_probability?: {
       upside?: number;
@@ -232,6 +253,14 @@ type IntelligenceResponse = {
     support_transition_active?: boolean;
     support_transition_badge?: boolean;
     resistance_transition_badge?: boolean;
+    spc_state?: string;
+    move_quality?: string;
+    spc_decision?: string;
+    entry_zone?: string;
+    stop_zone?: string;
+    target_zone?: string;
+    execution_mode?: string;
+    delta_strike_guidance?: string;
     previous_support?: number | null;
     previous_resistance?: number | null;
     current_support?: number | null;
@@ -333,8 +362,14 @@ type IntelligenceResponse = {
     strategy_type?: string;
     entry_zone?: string;
     stop_hint?: string;
+    stop_zone?: string;
     target_primary?: number | null;
     target_extended?: number | null;
+    target_zone?: string;
+    execution_mode?: string;
+    delta_band?: string;
+    delta_strike_guidance?: string;
+    avoid_buying_premium?: boolean;
     caution_note?: string;
   };
   intraday_playbook?: {
@@ -2045,8 +2080,24 @@ export default function App() {
     strategy_type: tradePlan?.strategy_type ?? "Balanced / Selective",
     entry_zone: tradePlan?.entry_zone ?? "Wait for confirmation near key levels.",
     stop_hint: tradePlan?.stop_hint ?? "Use defined risk beyond nearby structure.",
+    stop_zone: tradePlan?.stop_zone ?? "Break of nearby structure invalidates setup.",
     target_primary: tradePlan?.target_primary ?? displayTarget1,
     target_extended: tradePlan?.target_extended ?? displayTarget2,
+    target_zone:
+      tradePlan?.target_zone ??
+      (typeof displayTarget1 === "number" && typeof displayTarget2 === "number"
+        ? `${formatNumber(displayTarget1)} - ${formatNumber(displayTarget2)}`
+        : "Wait for clean target projection."),
+    execution_mode: tradePlan?.execution_mode ?? "Selective execution",
+    delta_strike_guidance:
+      tradePlan?.delta_strike_guidance ??
+      (String(
+        intelligence?.market_state?.trade_action ??
+        intelligence?.decision_engine?.trade_action ??
+        "WAIT"
+      ).toUpperCase() === "WAIT"
+        ? "Avoid buying premium until directional expansion confirms."
+        : "Use selective directional entries."),
     caution_note: tradePlan?.caution_note ?? "Keep size controlled when signals are mixed.",
   };
   const playbook = intelligence?.intraday_playbook;
@@ -3265,15 +3316,6 @@ export default function App() {
             watchNote: keyWatchNote,
             breakoutProbability: intelligence?.market_state?.breakout_probability,
           }}
-          historicalContext={{
-            available: Boolean(intelligence?.market_state?.historical_context_available),
-            updatedAt:
-              intelligence?.market_state?.historical_context_updated_at ??
-              intelligence?.historical_zone_context?.generated_at_utc ??
-              null,
-            fullWindow: intelligence?.historical_zone_context?.dominant_full_window ?? null,
-            recentWindow: intelligence?.historical_zone_context?.dominant_recent_window ?? null,
-          }}
           structure={{
             spotPrice: typeof spotValue === "number" ? spotValue : null,
             dayOpen: dayOpenValue,
@@ -3304,6 +3346,7 @@ export default function App() {
             resolvedReason: mobileResolvedReason,
             decisionExplanation,
             decisionConfidence,
+            blockingReason: decisionBlockingReason,
             supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
             supportTransitionBadge: decisionSupportTransitionBadge,
             resistanceTransitionBadge: decisionResistanceTransitionBadge,
@@ -3318,9 +3361,17 @@ export default function App() {
               (typeof displayBearProbability === "number" ? displayBearProbability : null),
             trapProbability: typeof displayTrapRiskPct === "number" ? displayTrapRiskPct : null,
             trapDirection,
+            spcState: intelligence?.market_state?.spc_state ?? null,
+            moveQuality: intelligence?.market_state?.move_quality ?? null,
+            spcDecision: intelligence?.market_state?.spc_decision ?? null,
             readinessScore: displayReadinessScore,
             readinessState: displayReadinessState,
             readinessExplainability: displayReadinessExplainability,
+            entryZone: intelligence?.market_state?.entry_zone ?? displayTradePlan.entry_zone,
+            stopZone: intelligence?.market_state?.stop_zone ?? displayTradePlan.stop_zone,
+            targetZone: intelligence?.market_state?.target_zone ?? displayTradePlan.target_zone,
+            executionMode: intelligence?.market_state?.execution_mode ?? displayTradePlan.execution_mode,
+            deltaGuidance: intelligence?.market_state?.delta_strike_guidance ?? displayTradePlan.delta_strike_guidance,
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel,
           }}
@@ -3329,6 +3380,11 @@ export default function App() {
             regime: displayRegime,
             plan: String(playbookPlan),
             trapRisk: String(displayTrapLevel),
+            executionMode: String(displayTradePlan.execution_mode),
+            entryZone: String(displayTradePlan.entry_zone),
+            stopZone: String(displayTradePlan.stop_zone),
+            targetZone: String(displayTradePlan.target_zone),
+            deltaGuidance: String(displayTradePlan.delta_strike_guidance),
             bullishTrigger: typeof displayResistance === "number"
               ? `Acceptance above active resistance ${formatNumber(displayResistance)}.`
               : undefined,
@@ -3351,6 +3407,15 @@ export default function App() {
             show_affected_level: showTrapAffectedLevel,
           }}
           alerts={displayAlerts}
+          strikeGuidance={
+            intelligence?.market_state?.strike_guidance
+              ? {
+                  ...intelligence.market_state.strike_guidance,
+                  iv_context: intelligence.market_state.iv_context ?? null,
+                  selling_favoured: intelligence.market_state.selling_favoured ?? false,
+                }
+              : null
+          }
         />
 
         <div className="ia-section-gap">
@@ -3654,6 +3719,13 @@ export default function App() {
     </>
   );
 }
+
+
+
+
+
+
+
 
 
 

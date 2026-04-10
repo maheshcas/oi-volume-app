@@ -32,11 +32,13 @@ export type SignalHistoryItem = {
 export function friendlyBlockingReason(reason: DecisionBlockingReason): string {
   switch (reason) {
     case "TRAP_HIGH":
-      return "Trap risk elevated";
+      return "Fake breakout risk";
     case "ABSORPTION_ACTIVE":
       return "Support absorption active";
     case "NO_BREAK_CONFIRMATION":
-      return "Breakout not confirmed";
+      return "No breakout confirmation";
+    case "NO_BREACH_CONFIRMATION":
+      return "No breakout confirmation";
     case "LONG_BIAS_GUARD":
       return "Promotion guard active";
     case "LOW_READINESS":

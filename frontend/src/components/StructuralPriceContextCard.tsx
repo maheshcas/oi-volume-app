@@ -29,6 +29,7 @@ type Props = {
   resolvedReason?: string | null;
   decisionExplanation?: string | null;
   decisionConfidence?: number | null;
+  blockingReason?: string | null;
   readinessState?: string | null;
   readinessExplainability?: string | null;
   supportTransitionActive?: boolean;
@@ -41,9 +42,17 @@ type Props = {
   breakoutProbabilityDown?: number | null;
   trapProbability?: number | null;
   trapDirection?: "upside" | "downside" | "";
+  spcState?: string | null;
+  moveQuality?: string | null;
+  spcDecision?: string | null;
   readinessScore?: number | null;
   trapZoneLabel?: string;
   volumeLabel?: string;
+  entryZone?: string | null;
+  stopZone?: string | null;
+  targetZone?: string | null;
+  executionMode?: string | null;
+  deltaGuidance?: string | null;
 };
 
 const fmt = (v: number | null | undefined, d = 0) =>
@@ -185,10 +194,15 @@ const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
   if (normalized === "low") return 0.28;
   return 0.16;
 };
+const compactValue = (value?: string | null, fallback = "-") => {
+  const t = String(value || "").trim();
+  return t ? t : fallback;
+};
 const formatReason = ({
   resolvedReason,
   decisionExplanation,
   action,
+  blockingReason,
   phase,
   supportTransition,
   resistanceTransition,
@@ -198,12 +212,25 @@ const formatReason = ({
   resolvedReason?: string | null;
   decisionExplanation?: string | null;
   action: string;
+  blockingReason?: string | null;
   phase?: string | null;
   supportTransition: boolean;
   resistanceTransition: boolean;
   trapRisk: number;
   bias: string;
 }) => {
+  const blocker = String(blockingReason || "").trim().toUpperCase();
+  if (blocker && blocker !== "NONE") {
+    if (blocker === "TRAP_HIGH") return "Fake breakout risk";
+    if (blocker === "NO_BREAK_CONFIRMATION" || blocker === "NO_BREACH_CONFIRMATION") {
+      return "No breakout confirmation";
+    }
+    if (blocker === "ABSORPTION_ACTIVE") return "Support absorption active";
+    if (blocker === "SUPPORT_TRANSITION") return "Support transition active";
+    if (blocker === "RESISTANCE_TRANSITION") return "Resistance transition active";
+    if (blocker === "RANGE_CONFLICT") return "Range conflict";
+    if (blocker === "LOW_READINESS") return "Readiness below threshold";
+  }
   const resolved = human(resolvedReason, "");
   if (resolved && resolved.toLowerCase() !== "no clear signal") return resolved;
   const explanation = human(decisionExplanation, "");
@@ -255,6 +282,27 @@ const biasTone = (value?: string | null) => {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized.includes("bearish")) return "bearish";
   if (normalized.includes("bullish")) return "bullish";
+  return "neutral";
+};
+const compactTagLabel = (value?: string | null, fallback = "-") => {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  return raw.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+};
+const compactTagTone = (kind: "state" | "quality" | "decision", value?: string | null) => {
+  const t = String(value || "").trim().toUpperCase();
+  if (kind === "quality") {
+    if (t === "TRUSTED") return "ok";
+    if (t === "FAKE") return "bad";
+    return "warn";
+  }
+  if (kind === "decision") {
+    if (t === "ACT") return "ok";
+    if (t === "DISTRUST") return "bad";
+    return "warn";
+  }
+  if (t.includes("CONFIRMED")) return "ok";
+  if (t.includes("ATTEMPT") || t.includes("PRESSURE") || t.includes("DEFENSE")) return "warn";
   return "neutral";
 };
 
@@ -360,6 +408,7 @@ export default function StructuralPriceContextCard(props: Props) {
     resolvedReason: props.resolvedReason,
     decisionExplanation: props.decisionExplanation,
     action: act,
+    blockingReason: props.blockingReason,
     phase: props.sessionPhase,
     supportTransition,
     resistanceTransition,
@@ -370,6 +419,10 @@ export default function StructuralPriceContextCard(props: Props) {
     summary,
     fallbackReason: baseReason,
   });
+  const dominantMessage =
+    String(props.blockingReason || "").trim().toUpperCase() !== "NONE"
+      ? `${baseReason} - ${act}`
+      : reason;
   const confLabel = confidenceLabel(props.decisionConfidence);
   const phaseBadge = formatPhaseBadge({
     phase: props.sessionPhase,
@@ -402,7 +455,7 @@ export default function StructuralPriceContextCard(props: Props) {
         <div className="spc-hero-row">
           <div className="spc-hero-copy spc-hero-copy-decision">
             <div className={`spc-action-label spc-action-${actionTone(act)}`}>{act}</div>
-            <div className="spc-hero-state">{reason}</div>
+            <div className="spc-hero-state">{dominantMessage}</div>
           </div>
           <div className="spc-hero-side">
             <div className="spc-hero-side-row">
@@ -417,6 +470,19 @@ export default function StructuralPriceContextCard(props: Props) {
             {trapRisk <= 10 ? "No Trap - clean structure" : trapBadge(props.trapProbability)}
           </span>
         </div>
+        {(props.spcState || props.moveQuality || props.spcDecision) ? (
+          <div className="spc-status-row spc-status-row-compact">
+            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("state", props.spcState)}`}>
+              SPC: {compactTagLabel(props.spcState)}
+            </span>
+            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("quality", props.moveQuality)}`}>
+              Quality: {compactTagLabel(props.moveQuality)}
+            </span>
+            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("decision", props.spcDecision)}`}>
+              Decision: {compactTagLabel(props.spcDecision)}
+            </span>
+          </div>
+        ) : null}
         <div className="spc-compact-head">
           <div className="spc-compact-metric spc-compact-metric-support">
             <span>Support</span>
@@ -519,6 +585,26 @@ export default function StructuralPriceContextCard(props: Props) {
             ) : null}
           </div>
         </div>
+        {(props.entryZone || props.stopZone || props.targetZone || props.deltaGuidance || props.executionMode) ? (
+          <div className="spc-execution-row">
+            <div className="spc-execution-item">
+              <span className="spc-execution-label">Entry</span>
+              <span className="spc-execution-value">{compactValue(props.entryZone)}</span>
+            </div>
+            <div className="spc-execution-item">
+              <span className="spc-execution-label">Stop</span>
+              <span className="spc-execution-value">{compactValue(props.stopZone)}</span>
+            </div>
+            <div className="spc-execution-item">
+              <span className="spc-execution-label">Target</span>
+              <span className="spc-execution-value">{compactValue(props.targetZone)}</span>
+            </div>
+            <div className="spc-execution-item spc-execution-item-wide">
+              <span className="spc-execution-label">Delta</span>
+              <span className="spc-execution-value">{compactValue(props.deltaGuidance, props.executionMode ? compactValue(props.executionMode) : "-")}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

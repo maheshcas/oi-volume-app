@@ -65,6 +65,7 @@ def run_decision_engine_v4(
     bias_stability_score: float,
     writer_bias: float | None = None,
     regime_type: str | None = None,
+    regime_age_cycles: int | None = None,
     volatility_ratio: float | None = None,
     session_phase: str | None = None,
     previous_primary_bias: str | None = None,
@@ -228,15 +229,24 @@ def run_decision_engine_v4(
     # Axis 3: Execution Risk
     # -------------------------
     regime_penalty_map = {
-        "Trend": 20.0,
-        "Trend Day": 20.0,
-        "Breakdown": 25.0,
-        "Range": 35.0,
-        "Range Day": 35.0,
+        "Trend": 15.0,
+        "Trend Day": 15.0,
+        "Breakdown": 35.0,
+        "Range": 25.0,
+        "Range Day": 25.0,
+        "Range Play": 25.0,
+        "Balanced / Wait": 25.0,
+        "Balanced Structure": 25.0,
         "Transition": 45.0,
+        "Transition Phase": 45.0,
         "Trap Risk": 65.0,
     }
-    regime_penalty = _clamp(regime_penalty_map.get(str(regime_type or "Transition"), 35.0), 0.0, 100.0)
+    base_regime_penalty = _clamp(regime_penalty_map.get(str(regime_type or "Transition"), 35.0), 0.0, 100.0)
+    # Dynamic regime transition cost: a regime that just changed (age ≤ 3 cycles) gets
+    # a 15-point transition surcharge that decays linearly to zero by cycle 10.
+    age = int(regime_age_cycles) if isinstance(regime_age_cycles, (int, float)) and regime_age_cycles >= 0 else 10
+    transition_surcharge = _clamp((1.0 - min(age, 10) / 10.0) * 15.0, 0.0, 15.0)
+    regime_penalty = _clamp(base_regime_penalty + transition_surcharge, 0.0, 100.0)
     volatility_spike_factor = 20.0
     if isinstance(volatility_ratio, (int, float)) and volatility_ratio > 0:
         volatility_spike_factor = _clamp(abs(float(volatility_ratio) - 1.0) * 100.0, 0.0, 100.0)
@@ -269,7 +279,7 @@ def run_decision_engine_v4(
     history = history[-4:]  # keep only previous cycles; current will be appended
     clarity_history = clarity_history[-4:]
     if "midday" in phase:
-        force_threshold = 75.0
+        force_threshold = 72.0
         clarity_threshold = 60.0
     else:
         force_threshold = 68.0
@@ -397,6 +407,7 @@ def run_decision_engine_v3(
     alignment_ratio: float,
     bias_stability_score: float,
     regime_type: str | None = None,
+    regime_age_cycles: int | None = None,
     volatility_ratio: float | None = None,
     session_phase: str | None = None,
     previous_primary_bias: str | None = None,
@@ -423,6 +434,7 @@ def run_decision_engine_v3(
         bias_stability_score=bias_stability_score,
         writer_bias=sr_score,
         regime_type=regime_type,
+        regime_age_cycles=regime_age_cycles,
         volatility_ratio=volatility_ratio,
         session_phase=session_phase,
         previous_primary_bias=previous_primary_bias,

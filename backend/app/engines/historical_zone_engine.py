@@ -502,3 +502,70 @@ def analyze_historical_sr_zones(
             min_score_gap=min_score_gap,
         ),
     }
+
+
+def get_intraday_zones(
+    *,
+    session_high: float | None,
+    session_low: float | None,
+    opening_high: float | None,
+    opening_low: float | None,
+    spot: float | None,
+    previous_close: float | None = None,
+    vwap: float | None = None,
+) -> dict[str, Any]:
+    """
+    Build intraday structural zones from session data.
+
+    Tracks:
+    - Opening Range (first ~15 min high/low): strong intraday S/R
+    - Session Range (running high/low): context for breakout targets
+    - Previous close: overnight gap context
+    - VWAP: institutional reference level (if available)
+
+    These complement daily candle-derived historical zones with
+    intraday price structure that the historical zone engine misses.
+    """
+    zones: list[dict[str, Any]] = []
+
+    def _add(label: str, level: float | None, role: str) -> None:
+        if level is not None and float(level) > 0:
+            zones.append({"label": label, "level": round(float(level), 2), "role": role})
+
+    _add("Opening Range High", opening_high, "resistance")
+    _add("Opening Range Low", opening_low, "support")
+    _add("Session High", session_high, "resistance")
+    _add("Session Low", session_low, "support")
+    _add("Previous Close", previous_close, "key_level")
+    _add("VWAP", vwap, "key_level")
+
+    # Identify which intraday zone spot is currently nearest to.
+    nearest: dict[str, Any] | None = None
+    if spot is not None and zones:
+        spot_f = float(spot)
+        nearest = min(zones, key=lambda z: abs(z["level"] - spot_f))
+
+    # Opening range context (did price escape the opening range?).
+    opening_range_broken: str | None = None
+    if opening_high is not None and opening_low is not None and spot is not None:
+        s = float(spot)
+        oh = float(opening_high)
+        ol = float(opening_low)
+        if s > oh:
+            opening_range_broken = "upside"
+        elif s < ol:
+            opening_range_broken = "downside"
+        else:
+            opening_range_broken = "inside"
+
+    return {
+        "zones": zones,
+        "nearest_intraday_zone": nearest,
+        "opening_range_broken": opening_range_broken,
+        "opening_range_width": round(float(opening_high) - float(opening_low), 2)
+        if opening_high is not None and opening_low is not None
+        else None,
+        "session_range_width": round(float(session_high) - float(session_low), 2)
+        if session_high is not None and session_low is not None
+        else None,
+    }

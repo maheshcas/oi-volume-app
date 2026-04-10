@@ -71,6 +71,10 @@ export default function PrimarySignalCard({
     String(tradeAction || "").toUpperCase() === "WAIT" && String(sessionPhase || "").trim()
       ? `${tradeAction} — ${sessionPhase}`
       : tradeAction || "WAIT";
+  const dominantMessage =
+    blockingReason !== "NONE"
+      ? `${friendlyBlockingReason(blockingReason)} — ${tradeAction || "WAIT"}`
+      : resolvedReason || "Trap risk elevated. Market still lacks confirmed directional expansion.";
 
   return (
     <section className="mx-3 rounded-2xl border border-white/10 bg-[#111e2c] px-4 py-4">
@@ -82,15 +86,10 @@ export default function PrimarySignalCard({
         </div>
       </div>
       <div className="mb-3 text-[12px] leading-6 text-slate-400">
-        {resolvedReason || "Trap risk elevated. Market still lacks confirmed directional expansion."}
+        {dominantMessage}
       </div>
 
       <div className="mb-3 flex flex-wrap gap-2">
-        {blockingReason !== "NONE" ? (
-          <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-2.5 py-1 text-[10px] font-medium text-rose-200">
-            Blocker: {friendlyBlockingReason(blockingReason)}
-          </span>
-        ) : null}
         <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[10px] font-medium text-sky-200">
           {friendlyWinningEngine(winningEngine)}
         </span>

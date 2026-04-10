@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import DecisionBanner from "./DecisionBanner";
-import HistoricalZoneContextCard from "./HistoricalZoneContextCard";
 import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
 import TradePlanCard from "./TradePlanCard";
+import StrikeGuidanceCard from "./StrikeGuidanceCard";
 
 type DashboardLayoutProps = {
   decision: {
@@ -51,30 +51,6 @@ type DashboardLayoutProps = {
       downside_state?: string;
     };
   };
-  historicalContext?: {
-    available?: boolean;
-    updatedAt?: string | null;
-    fullWindow?: {
-      zone_low?: number | null;
-      zone_high?: number | null;
-      center?: number | null;
-      role?: string | null;
-      score?: number | null;
-      touches?: number | null;
-      first_date?: string | null;
-      last_date?: string | null;
-    } | null;
-    recentWindow?: {
-      zone_low?: number | null;
-      zone_high?: number | null;
-      center?: number | null;
-      role?: string | null;
-      score?: number | null;
-      touches?: number | null;
-      first_date?: string | null;
-      last_date?: string | null;
-    } | null;
-  };
   structure: {
     spotPrice: number | null;
     dayOpen?: number | null;
@@ -103,6 +79,7 @@ type DashboardLayoutProps = {
     resolvedReason?: string | null;
     decisionExplanation?: string | null;
     decisionConfidence?: number | null;
+    blockingReason?: string | null;
     supportTransitionActive?: boolean;
     supportTransitionBadge?: boolean;
     resistanceTransitionBadge?: boolean;
@@ -113,17 +90,30 @@ type DashboardLayoutProps = {
     breakoutProbabilityDown?: number | null;
     trapProbability?: number | null;
     trapDirection?: "upside" | "downside" | "";
+    spcState?: string | null;
+    moveQuality?: string | null;
+    spcDecision?: string | null;
     readinessScore?: number | null;
     readinessState?: string | null;
     readinessExplainability?: string | null;
     trapZoneLabel?: string;
     volumeLabel?: string;
+    entryZone?: string | null;
+    stopZone?: string | null;
+    targetZone?: string | null;
+    executionMode?: string | null;
+    deltaGuidance?: string | null;
   };
   tradePlan: {
     bias: string;
     regime?: string;
     plan: string;
     trapRisk: string;
+    executionMode?: string;
+    entryZone?: string;
+    stopZone?: string;
+    targetZone?: string;
+    deltaGuidance?: string;
     bullishTrigger?: string;
     bearishTrigger?: string;
     invalidation?: string;
@@ -146,17 +136,29 @@ type DashboardLayoutProps = {
     type: "primary" | "counter";
     severity: "info" | "watch" | "high";
   }>;
+  strikeGuidance?: {
+    recommended_action: string;
+    option_type: string;
+    suggested_strikes: any[];
+    warnings: string[];
+    theta_warning: boolean;
+    days_to_expiry: number;
+    iv_rank: number | null;
+    iv_context: string | null;
+    risk_reward_note: string | null;
+    selling_favoured: boolean;
+  } | null;
 };
 
 export default function DashboardLayout({
   decision,
   decisionLayer,
   keyLevels,
-  historicalContext,
   structure,
   tradePlan,
   trap,
   alerts,
+  strikeGuidance,
 }: DashboardLayoutProps) {
   return (
     <div className="ia-dashboard-layout">
@@ -205,12 +207,6 @@ export default function DashboardLayout({
             watchNote={keyLevels.watchNote}
             breakoutProbability={keyLevels.breakoutProbability}
           />
-          <HistoricalZoneContextCard
-            available={Boolean(historicalContext?.available)}
-            updatedAt={historicalContext?.updatedAt ?? null}
-            fullWindow={historicalContext?.fullWindow ?? null}
-            recentWindow={historicalContext?.recentWindow ?? null}
-          />
         </div>
       </div>
 
@@ -245,6 +241,7 @@ export default function DashboardLayout({
             resolvedReason={structure.resolvedReason}
             decisionExplanation={structure.decisionExplanation}
             decisionConfidence={structure.decisionConfidence}
+            blockingReason={structure.blockingReason}
             supportTransitionActive={structure.supportTransitionActive}
             supportTransitionBadge={structure.supportTransitionBadge}
             resistanceTransitionBadge={structure.resistanceTransitionBadge}
@@ -252,6 +249,9 @@ export default function DashboardLayout({
             breakoutProbabilityDown={structure.breakoutProbabilityDown}
             trapProbability={structure.trapProbability}
             trapDirection={structure.trapDirection}
+            spcState={structure.spcState}
+            moveQuality={structure.moveQuality}
+            spcDecision={structure.spcDecision}
             readinessScore={structure.readinessScore}
             readinessState={structure.readinessState}
             readinessExplainability={structure.readinessExplainability}
@@ -260,6 +260,11 @@ export default function DashboardLayout({
             regime={structure.regime}
             trapZoneLabel={structure.trapZoneLabel}
             volumeLabel={structure.volumeLabel}
+            entryZone={structure.entryZone}
+            stopZone={structure.stopZone}
+            targetZone={structure.targetZone}
+            executionMode={structure.executionMode}
+            deltaGuidance={structure.deltaGuidance}
           />
         </div>
       </div>
@@ -270,11 +275,32 @@ export default function DashboardLayout({
           regime={tradePlan.regime}
           plan={tradePlan.plan}
           trapRisk={tradePlan.trapRisk}
+          executionMode={tradePlan.executionMode}
+          entryZone={tradePlan.entryZone}
+          stopZone={tradePlan.stopZone}
+          targetZone={tradePlan.targetZone}
+          deltaGuidance={tradePlan.deltaGuidance}
           bullishTrigger={tradePlan.bullishTrigger}
           bearishTrigger={tradePlan.bearishTrigger}
           invalidation={tradePlan.invalidation}
         />
       </div>
+      {strikeGuidance ? (
+        <div className="ia-layout-strike-guidance">
+          <StrikeGuidanceCard
+            recommended_action={strikeGuidance.recommended_action}
+            option_type={strikeGuidance.option_type}
+            suggested_strikes={strikeGuidance.suggested_strikes}
+            warnings={strikeGuidance.warnings}
+            theta_warning={strikeGuidance.theta_warning}
+            days_to_expiry={strikeGuidance.days_to_expiry}
+            iv_rank={strikeGuidance.iv_rank}
+            iv_context={strikeGuidance.iv_context}
+            risk_reward_note={strikeGuidance.risk_reward_note}
+            selling_favoured={strikeGuidance.selling_favoured}
+          />
+        </div>
+      ) : null}
 
       <div className="ia-layout-trap">
         <div className="ia-card">

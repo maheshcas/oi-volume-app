@@ -2441,7 +2441,9 @@ tbody tr:hover {
   grid-template-columns: minmax(320px, 1.35fr) minmax(240px, 0.9fr) minmax(240px, 0.9fr);
   grid-template-areas:
     "structure structure trap"
+    "strike strike trap"
     "decision levels playbook"
+    "decisionlayer levels playbook"
     "decisionlayer levels playbook";
 }
 
@@ -2451,12 +2453,14 @@ tbody tr:hover {
 .ia-layout-trap { grid-area: trap; }
 .ia-layout-structure { grid-area: structure; }
 .ia-layout-playbook { grid-area: playbook; }
+.ia-layout-strike-guidance { grid-area: strike; }
 
 @media (max-width: 1100px) {
   .ia-dashboard-layout {
     grid-template-columns: 1.2fr 1fr;
     grid-template-areas:
       "structure structure"
+      "strike strike"
       "decision trap"
       "levels playbook"
       "decisionlayer playbook";
@@ -2849,6 +2853,43 @@ tbody tr:hover {
 
 .spc-status-row-decision {
   margin-top: 0;
+}
+
+.spc-status-row-compact {
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.spc-chip-compact {
+  padding: 4px 8px;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.spc-chip-compact-neutral {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(71, 85, 105, 0.16);
+  color: #c6d3e4;
+}
+
+.spc-chip-compact-ok {
+  border: 1px solid rgba(38, 168, 105, 0.28);
+  background: rgba(38, 168, 105, 0.12);
+  color: #98edb8;
+}
+
+.spc-chip-compact-warn {
+  border: 1px solid rgba(243, 180, 90, 0.28);
+  background: rgba(243, 180, 90, 0.12);
+  color: #ffd39b;
+}
+
+.spc-chip-compact-bad {
+  border: 1px solid rgba(224, 92, 106, 0.3);
+  background: rgba(224, 92, 106, 0.12);
+  color: #f2aab5;
 }
 
 .spc-compact-head {
@@ -3600,6 +3641,37 @@ tbody tr:hover {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.06em;
+}
+
+.spc-execution-row {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(160px, 1.2fr);
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.spc-execution-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spc-execution-item-wide {
+  grid-column: span 1;
+}
+
+.spc-execution-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(168, 182, 196, 0.8);
+}
+
+.spc-execution-value {
+  font-size: 12px;
+  color: #e7edf7;
 }
 
 .spc-market-summary {
@@ -5408,11 +5480,13 @@ tbody tr:hover {
     grid-template-columns: 1fr;
     grid-template-areas:
       "structure"
+      "strike"
       "trap"
       "decision"
       "levels"
       "decisionlayer"
-      "playbook";
+      "playbook"
+      ;
   }
 }
 
@@ -6311,3 +6385,47 @@ input[type="number"] {
   text-transform: uppercase;
   z-index: 35;
 }
+
+/* ── Strike Guidance Card ───────────────────────────────── */
+.strike-guidance-card { padding: 14px 16px; }
+
+.sgc-action-badge {
+  font-size: 11px; font-weight: 600; padding: 4px 10px;
+  border-radius: 6px; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.sgc-buy    { background: rgba(34,197,94,0.15);  color: #16a34a; border: 0.5px solid rgba(34,197,94,0.4); }
+.sgc-sell   { background: rgba(239,68,68,0.12);  color: #dc2626; border: 0.5px solid rgba(239,68,68,0.35); }
+.sgc-wait   { background: var(--color-background-secondary); color: var(--color-text-secondary); border: 0.5px solid var(--color-border-secondary); }
+
+.sgc-iv-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; }
+.sgc-iv-bar-wrap { flex: 1; height: 4px; background: var(--color-background-secondary); border-radius: 99px; overflow: hidden; }
+.sgc-iv-bar  { height: 100%; border-radius: 99px; transition: width 0.3s; }
+.sgc-iv-label { font-size: 12px; font-weight: 500; color: var(--color-text-primary); white-space: nowrap; }
+.sgc-iv-context { font-size: 11px; color: var(--color-text-secondary); white-space: nowrap; }
+
+.sgc-meta-row { margin: 6px 0; }
+.sgc-expiry { font-size: 12px; color: var(--color-text-secondary); }
+.sgc-expiry-warn { color: #d97706; font-weight: 500; }
+
+.sgc-strikes { margin: 10px 0; border: 0.5px solid var(--color-border-tertiary); border-radius: 8px; overflow: hidden; }
+.sgc-strikes-header {
+  display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+  padding: 6px 10px; font-size: 11px; color: var(--color-text-tertiary);
+  background: var(--color-background-secondary);
+}
+.sgc-strike-row {
+  display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+  padding: 8px 10px; font-size: 12px; color: var(--color-text-primary);
+  border-top: 0.5px solid var(--color-border-tertiary);
+}
+.sgc-strike-val { display: flex; flex-direction: column; gap: 2px; }
+.sgc-moneyness { font-size: 10px; color: var(--color-text-tertiary); }
+.sgc-theta { color: #dc2626; }
+
+.sgc-rr-note {
+  font-size: 12px; color: var(--color-text-secondary);
+  background: var(--color-background-secondary);
+  border-radius: 6px; padding: 6px 10px; margin: 8px 0;
+}
+.sgc-warnings { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.sgc-warning-item { font-size: 12px; color: #d97706; }

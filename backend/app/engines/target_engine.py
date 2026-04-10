@@ -94,6 +94,28 @@ def _infer_session_phase(timestamp_text: str | None) -> str:
     return "Transition"
 
 
+def _volatility_adjusted_multiplier(base_multiplier: float, atr_ratio: float) -> float:
+    """
+    Scale phase multiplier up/down based on current ATR vs rolling average.
+    atr_ratio > 1 means expanding volatility → stretch targets.
+    atr_ratio < 1 means contracting volatility → compress targets.
+    Capped at ±30% deviation from the base phase multiplier.
+    """
+    if atr_ratio <= 0:
+        return base_multiplier
+    vol_adjustment = _clamp(atr_ratio, 0.7, 1.3)
+    return _clamp(base_multiplier * vol_adjustment, base_multiplier * 0.5, base_multiplier * 1.6)
+
+
+def _compute_rr_ratio(entry: float, stop: float, target: float) -> float:
+    """Return reward-to-risk ratio. Returns 0 if stop == entry."""
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    if risk < 1e-9:
+        return 0.0
+    return round(reward / risk, 2)
+
+
 def run_target_engine(
     features: dict[str, Any],
     sr: dict[str, Any],
@@ -116,7 +138,14 @@ def run_target_engine(
     atm_ce_ltp = _to_float(atm_row.get("CE_LastPrice"), 0.0)
     atm_pe_ltp = _to_float(atm_row.get("PE_LastPrice"), 0.0)
     expected_move = max(1.0, atm_ce_ltp + atm_pe_ltp)
-    multiplier = PHASE_MULTIPLIER_MAP.get(session_phase, 1.0)
+    base_multiplier = PHASE_MULTIPLIER_MAP.get(session_phase, 1.0)
+
+    # Volatility-adaptive multiplier: adjust phase target size by realized vol.
+    atr_ratio = _to_float(features.get("meta", {}).get("atr_ratio"), 1.0)
+    if atr_ratio <= 0:
+        atr_ratio = 1.0
+    multiplier = _volatility_adjusted_multiplier(base_multiplier, atr_ratio)
+
     adjusted_move = expected_move * multiplier
     band_width = max(1.0, resistance - support)
 
@@ -233,6 +262,22 @@ def run_target_engine(
         1.0,
     )
 
+    # R:R ratio relative to nearest structural stop.
+    rr_primary: float | None = None
+    rr_extended: float | None = None
+    if bias == "Bullish" and support > 0 and spot > 0:
+        stop = support
+        if primary_target is not None:
+            rr_primary = _compute_rr_ratio(spot, stop, primary_target)
+        if extended_target is not None:
+            rr_extended = _compute_rr_ratio(spot, stop, extended_target)
+    elif bias == "Bearish" and resistance > 0 and spot > 0:
+        stop = resistance
+        if primary_target is not None:
+            rr_primary = _compute_rr_ratio(spot, stop, primary_target)
+        if extended_target is not None:
+            rr_extended = _compute_rr_ratio(spot, stop, extended_target)
+
     return {
         "support": round(support, 2),
         "resistance": round(resistance, 2),
@@ -247,8 +292,12 @@ def run_target_engine(
         "lower": round(spot - adjusted_move, 2),
         "session_phase": session_phase,
         "phase_multiplier_used": round(multiplier, 2),
+        "phase_base_multiplier": round(base_multiplier, 2),
+        "atr_ratio_used": round(atr_ratio, 4),
         "primary_target": round(primary_target, 2) if primary_target is not None else None,
         "extended_target": round(extended_target, 2) if extended_target is not None else None,
         "gap_strength": round(gap_strength, 4),
         "expansion_score": round(expansion_score, 4),
+        "rr_primary": rr_primary,
+        "rr_extended": rr_extended,
     }

@@ -4,6 +4,47 @@ from typing import Any
 NO_BREAKOUT_VALIDITY_FLOOR = 0.55
 
 
+def estimate_iv_realized_ratio(
+    *,
+    atm_ce_ltp: float,
+    atm_pe_ltp: float,
+    band_width: float,
+    atr: float,
+) -> dict[str, Any]:
+    """
+    Estimate an implied vs realized volatility ratio from market-observable inputs.
+
+    IV proxy  = ATM straddle price (CE_LTP + PE_LTP) expressed as % of midpoint.
+    RV proxy  = Current ATR expressed as % of midpoint (band_width / 2 ≈ midpoint offset).
+
+    ratio > 1.15 → IV elevated vs realized (options expensive, crush risk high).
+    ratio < 0.85 → IV depressed vs realized (options cheap, expansion risk).
+    0.85–1.15   → balanced.
+    """
+    straddle = max(0.0, float(atm_ce_ltp) + float(atm_pe_ltp))
+    bw = max(1.0, float(band_width))
+    rv_proxy = max(1e-9, float(atr))
+    # Express both as fractions of band_width to make them comparable.
+    iv_proxy = straddle / bw
+    rv_frac = rv_proxy / bw
+    ratio = iv_proxy / max(1e-9, rv_frac)
+
+    if ratio > 1.15:
+        iv_state = "IV_elevated"        # premium decay risk; traps more likely to resolve fast
+    elif ratio < 0.85:
+        iv_state = "IV_depressed"       # expansion risk; breakouts may carry further
+    else:
+        iv_state = "IV_balanced"
+
+    return {
+        "iv_realized_ratio": round(ratio, 4),
+        "iv_state": iv_state,
+        "iv_proxy": round(iv_proxy, 6),
+        "rv_proxy_frac": round(rv_frac, 6),
+        "straddle_price": round(straddle, 2),
+    }
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
@@ -336,6 +377,87 @@ def _rejection_wick_score(
     return max(0.0, min(1.0, wick_ratio * 2.0))
 
 
+def _multi_bar_wick_score(
+    observations: list[dict[str, float]],
+    level: float,
+    *,
+    direction: str,
+    sub_window_size: int = 5,
+) -> float:
+    """
+    Detect repeated rejection wicks across multiple sequential sub-windows.
+    A 3-bar rejection sequence at the same level is a much stronger trap signal
+    than a single-bar wick. Returns 0–1; 0.4+ = meaningful multi-bar pattern.
+
+    Splits the observation window into sub-windows and counts how many consecutive
+    sub-windows each show a rejection wick above the threshold.
+    """
+    if len(observations) < sub_window_size * 2:
+        return 0.0
+
+    n = len(observations)
+    step = max(1, n // 4)  # divide into ~4 sub-windows
+    wick_scores: list[float] = []
+    for start in range(0, n - sub_window_size + 1, step):
+        sub = observations[start: start + sub_window_size]
+        if len(sub) < 2:
+            continue
+        wick_scores.append(_rejection_wick_score(sub, level, direction=direction))
+
+    if not wick_scores:
+        return 0.0
+
+    # Count sub-windows with significant wick (> 0.4 threshold).
+    significant = sum(1 for w in wick_scores if w > 0.4)
+    ratio = significant / len(wick_scores)
+    # Amplify: if ≥ 75% of sub-windows show rejection, this is a strong multi-bar pattern.
+    return min(1.0, ratio * 1.3)
+
+
+def _pullback_depth_ratio(
+    observations: list[dict[str, float]],
+    breakout_level: float,
+    *,
+    direction: str,
+) -> float:
+    """
+    Measure how far price retracted back into the range after crossing the breakout level.
+    A valid breakout should NOT retrace more than 50% of the breakout distance.
+    A deep pullback (> 70%) strongly suggests the breakout was a fake.
+
+    Returns a [0, 1] score where 1.0 = full pullback back through the level.
+    """
+    if len(observations) < 3 or breakout_level <= 0:
+        return 0.0
+
+    prices = [float(x["spot"]) for x in observations]
+    direction_text = str(direction or "").strip().lower()
+
+    if direction_text == "up":
+        # Find the highest excursion above the breakout level, then measure retracement.
+        max_above = max((p for p in prices if p > breakout_level), default=None)
+        if max_above is None:
+            return 0.0
+        excursion = max_above - breakout_level
+        if excursion < 1e-9:
+            return 0.0
+        # How far has price pulled back from the high?
+        current = prices[-1]
+        pullback = max(0.0, max_above - current)
+        return min(1.0, pullback / excursion)
+    elif direction_text == "down":
+        min_below = min((p for p in prices if p < breakout_level), default=None)
+        if min_below is None:
+            return 0.0
+        excursion = breakout_level - min_below
+        if excursion < 1e-9:
+            return 0.0
+        current = prices[-1]
+        pullback = max(0.0, current - min_below)
+        return min(1.0, pullback / excursion)
+    return 0.0
+
+
 def run_trap_engine(
     features: dict[str, Any],
     breakout: dict[str, Any],
@@ -459,9 +581,16 @@ def run_trap_engine(
     if reference_level is not None:
         time_ratio = _time_ratio(observations, reference_level, mode=mode)
         wick_score = _rejection_wick_score(observations, reference_level, direction=direction)
+        multi_bar_wick = _multi_bar_wick_score(observations, reference_level, direction=direction)
+        pullback_depth = _pullback_depth_ratio(observations, reference_level, direction=direction)
     else:
         time_ratio = 0.0
         wick_score = 0.0
+        multi_bar_wick = 0.0
+        pullback_depth = 0.0
+
+    # Blend multi-bar wick into single-bar wick score (takes higher of the two).
+    effective_wick_score = max(wick_score, multi_bar_wick * 0.85)
     spot_sample_count = len(observations)
     if observations:
         observation_window_seconds = int(max(0.0, float(observations[-1]["ts"]) - float(observations[0]["ts"])))
@@ -477,7 +606,7 @@ def run_trap_engine(
         atm_participation_score=float(volume.get("atm_participation", 0.0) or 0.0),
         oi_shift_score=float(oi_shift_score),
         volume_expansion_score=float(volume_expansion_score),
-        rejection_wick_score=float(wick_score),
+        rejection_wick_score=float(effective_wick_score),
         time_above_level_ratio=float(time_ratio),
         volatility_factor=float(volatility_factor),
         current_price=float(spot) if isinstance(spot, (int, float)) else None,
@@ -488,6 +617,13 @@ def run_trap_engine(
         warmup_active=warmup_active,
     )
     trap_raw = float(trap_v2.get("trap_raw", 0.0) or 0.0)
+
+    # Deep pullback (> 70%) after a breakout is strong evidence of a trap.
+    # Boost trap_raw proportionally when pullback depth is significant.
+    if pullback_depth > 0.70 and breakout_trigger:
+        pullback_boost = (pullback_depth - 0.70) * 0.30  # max +0.09 at full pullback
+        trap_raw = _clamp01(trap_raw + pullback_boost)
+
     prev_trap_smoothed = trap_raw
     if isinstance(previous_state, dict):
         prev_trap_smoothed = float(
@@ -503,6 +639,17 @@ def run_trap_engine(
     trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
     trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
     trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
+
+    atm_row_data = features.get("atm_row") or {}
+    atm_ce_ltp = float(atm_row_data.get("CE_LastPrice") or 0.0)
+    atm_pe_ltp = float(atm_row_data.get("PE_LastPrice") or 0.0)
+    band_width_est = max(1.0, float(resistance or 0) - float(support or 0)) if resistance and support else max(1.0, threshold_points * 4)
+    iv_rv = estimate_iv_realized_ratio(
+        atm_ce_ltp=atm_ce_ltp,
+        atm_pe_ltp=atm_pe_ltp,
+        band_width=band_width_est,
+        atr=float(breakout.get("atr_threshold", threshold_points) or threshold_points),
+    )
 
     if in_open_window:
         trap_type = None
@@ -539,7 +686,10 @@ def run_trap_engine(
         "trap_level": trap_v2.get("trap_level"),
         "trap_affected_level": reference_level,
         "breakout_strength": round(float(breakout_strength), 4),
-        "rejection_wick_score": round(float(wick_score), 4),
+        "rejection_wick_score": round(float(effective_wick_score), 4),
+        "single_bar_wick_score": round(float(wick_score), 4),
+        "multi_bar_wick_score": round(float(multi_bar_wick), 4),
+        "pullback_depth_ratio": round(float(pullback_depth), 4),
         "rejection_wick_status": "provisional" if warmup_active else "final",
         "time_above_level_ratio": round(float(time_ratio), 4),
         "time_above_level_status": "provisional" if warmup_active else "final",
@@ -554,4 +704,7 @@ def run_trap_engine(
         "no_breakout_validity_floor_applied": bool(trap_v2.get("no_breakout_validity_floor_applied", False)),
         "trap_trend_adjustment_applied": bool(trap_trend_adjustment_applied),
         "weight_distribution": trap_v2.get("weight_distribution", {}),
+        "iv_realized_ratio": iv_rv.get("iv_realized_ratio"),
+        "iv_state": iv_rv.get("iv_state"),
+        "straddle_price": iv_rv.get("straddle_price"),
     }

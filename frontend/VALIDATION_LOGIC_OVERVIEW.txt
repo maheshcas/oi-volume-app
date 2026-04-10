@@ -1,0 +1,97 @@
+OptionLens Frontend Validation Logic Overview
+
+Maintenance rule
+- Update this file whenever frontend logic changes affect payload mapping, SPC rendering behavior, readiness display rules, symbol routing, or validation/debug visibility.
+
+Current Frontend Data Contract
+- Frontend consumes backend v2 summary payloads from:
+  - `/api/v2/intelligence/summary?symbol=<SYMBOL>`
+- Primary rendering relies on:
+  - `market_state`
+  - `levels`
+  - `signals` (notably `trap`, `material_breach`, `support_absorption`)
+
+Core Frontend Validation Priorities
+
+1. SPC (Structural Price Context) correctness
+- SPC card must never render contradictory text/state for the same snapshot.
+- Required alignment:
+  - center spot proximity label
+  - breach/near-state banner
+  - StructureBand orb/extension state
+- Broken-state precedence:
+  - below support -> "Below support ..."
+  - above resistance -> "Above resistance ..."
+  - near labels only when not broken.
+
+2. StructureBand state integrity
+frontend/src/components/StructureBand.tsx
+- Active structure rail is support -> resistance.
+- Extension renders on one side only:
+  - support breach -> left extension
+  - resistance breach -> right extension
+- Trap overlay is localized by trap direction and affected level.
+- Previous levels render as memory markers, not active structure.
+- Orb is primary visual priority.
+
+3. Readiness display contract
+- Active display uses backend `market_state.trade_readiness` / `readiness_state`.
+- Backend currently promotes Readiness V2 into primary keys.
+- V2 diagnostics may be shown/used when present:
+  - `trade_readiness_v2`
+  - `readiness_state_v2`
+  - `readiness_active_v2`
+  - cap/floor reason mappings
+
+4. Market pressure / DPS visibility
+- UI-visible pressure fields should align with backend output:
+  - `directional_pressure_score`
+  - `dps_adjusted`
+  - `pressure_state`
+  - `trade_action`
+- New interpretability fields expected from backend:
+  - `oi_scenario`
+  - `dps_scenario_multiplier`
+  - `reversal_decay_cycles` (when exposed in market_state)
+
+5. Trap display consistency
+- Trap card/SPC trap chips must use canonical backend trap fields:
+  - `trap_probability_pct` / `trap_risk`
+  - `trap_type`
+  - `trap_direction`
+  - `trap_affected_level`
+- Directional wording should match side:
+  - downside -> resistance rejection context
+  - upside -> support failure context
+
+Symbol and Routing Validation
+
+Symbol toggle support
+frontend/src/App.tsx
+- Supported symbols include:
+  - `NIFTY`
+  - `BANKNIFTY`
+  - `FINNIFTY`
+  - `SENSEX`
+- Symbol selection is persisted in localStorage and reused on reload.
+
+Backend/Frontend symbol compatibility
+- Frontend symbol must map cleanly to backend query param `symbol`.
+- Validation target:
+  - changing symbol updates all dependent cards without null crashes.
+
+Historical Zone Context (HZC)
+frontend/src/components/HistoricalZoneContextCard.tsx
+- Card is informational context only (higher timeframe), not intraday decision override.
+- Validate:
+  - values render only when payload exists
+  - stale/no-data state displays clean fallback copy
+  - no interaction with live SPC trade-action logic.
+
+Validation Checklist (Frontend)
+- SPC card renders with non-null support/resistance/spot.
+- SPC state text and rail state never contradict each other.
+- Pressure and trade-action chips reflect backend values.
+- Trap chip/labels align with trap direction and level.
+- Readiness block reflects primary readiness keys and does not regress to stale fallback values.
+- Symbol switch (including SENSEX) updates data and keeps UI stable.

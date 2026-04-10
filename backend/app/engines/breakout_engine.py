@@ -7,15 +7,26 @@ def atr_based_threshold(atr_value: float, atr_multiplier: float = 1.2) -> float:
 
 def detect_breakout(spot: float | None, support: float | None, resistance: float | None, threshold: float) -> dict[str, Any]:
     if spot is None or support is None or resistance is None:
-        return {"breakout_up": False, "breakout_down": False, "threshold_points": threshold}
+        return {
+            "breakout_up": False,
+            "breakout_down": False,
+            "threshold_points": threshold,
+            "invalid_sr_geometry": False,
+        }
+    if resistance <= support:
+        return {
+            "breakout_up": False,
+            "breakout_down": False,
+            "threshold_points": round(threshold, 2),
+            "invalid_sr_geometry": True,
+        }
     breakout_up = spot > (resistance + threshold)
     breakout_down = spot < (support - threshold)
-    if breakout_up and breakout_down:
-        breakout_up = breakout_down = False
     return {
         "breakout_up": breakout_up,
         "breakout_down": breakout_down,
         "threshold_points": round(threshold, 2),
+        "invalid_sr_geometry": False,
     }
 
 

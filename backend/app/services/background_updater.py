@@ -41,9 +41,11 @@ from app.engines.material_breach_engine import detect_material_breach
 from app.engines.wall_break_engine import detect_wall_break
 from app.engines.trap_engine import adjust_trap_by_confidence, run_trap_engine
 from app.engines.volume_analyzer import run_volume_analysis
+from app.engines.greeks_engine import compute_chain_greeks
+from app.engines.iv_rank_engine import compute_iv_rank
+from app.engines.strike_selector_engine import generate_strike_guidance
 from app.services.decision_engine import build_decision_input, master_decision_engine
 from app.services.daily_context import get_daily_context
-from app.services.historical_zone_scheduler import run_historical_zone_daily_if_due
 from app.services.intraday_performance_tracker import tracker
 from app.services.bse_fetcher import get_sensex_option_chain
 from app.services.bse_adapter import (
@@ -83,6 +85,12 @@ ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lowe
     "yes",
     "on",
 }
+ENABLE_HZC = os.getenv("OPTIONLENS_ENABLE_HZC", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 STATE_SNAPSHOT_DIR = Path(__file__).resolve().parents[2] / "logs" / "state_snapshots"
 LOG_ROTATION_MAX_BYTES = max(1024, int(os.getenv("OPTIONLENS_LOG_ROTATION_MAX_BYTES", str(10 * 1024 * 1024))))
 LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP_COUNT", "2")))
@@ -92,12 +100,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 REGIME_MIN_HOLD_CYCLES = 3
 REGIME_SWITCH_CONFIRM_CYCLES = 2
 RANGE_REGIME_CANONICAL_LABEL = "Range Play"
-NON_COMMITTABLE_REGIMES: frozenset[str] = frozenset({"Balanced / Wait", "Balanced Structure", "Standby"})
+NON_COMMITTABLE_REGIMES: frozenset[str] = frozenset(
+    {"Balanced / Wait", "Balanced Structure", "Standby", "Transition Phase"}
+)
 RANGE_LOCK_TRAP_MIN = 55
 RANGE_LOCK_READINESS_MAX = 45
 NO_EDGE_TRAP_MIN = 55
 NO_EDGE_READINESS_CENTER = 50
-NO_EDGE_READINESS_BAND = 15
+NO_EDGE_READINESS_BAND = 10
 TRAP_HYSTERESIS_DEADBAND = 3.0
 TRAP_SMOOTH_PREV_WEIGHT = 0.7
 TRAP_SMOOTH_NEW_WEIGHT = 0.3
@@ -105,6 +115,8 @@ TRAP_STABLE_MID_MIN = 55.0
 TRAP_STABLE_MID_MAX = 65.0
 REVERSAL_DECAY = 0.65
 REVERSAL_DECAY_CYCLES = 2
+PINNING_SCENARIO_MULTIPLIER = 0.50
+PINNING_TRAP_MODIFIER_POINTS = 5.0
 READINESS_TRANSITION_FLAP_MAX_DROP = 8.0
 READINESS_TRANSITION_FLAP_FLOOR = 36.0
 RESPONSE_WARNING_THROTTLE_SECONDS = max(30, int(os.getenv("OPTIONLENS_RESPONSE_WARNING_THROTTLE_SECONDS", "300")))
@@ -138,6 +150,7 @@ REGIME_FAMILY_MAP: dict[str, str] = {
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
+_iv_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=90))
 _calibrated_weights: dict[str, float] = load_adaptive_weights()
 _last_calibrated_session: set[str] = set()
 _last_cycle_log_minute: dict[str, str] = {}
@@ -587,6 +600,13 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "resistance_zone_state",
         "target1",
         "target2",
+        "entry_zone",
+        "stop_zone",
+        "target_zone",
+        "execution_mode",
+        "delta_band",
+        "delta_strike_guidance",
+        "avoid_buying_premium",
         "summary_line",
         "decision_explanation",
         "resolved_reason",
@@ -601,6 +621,11 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "dps_adjusted",
         "oi_scenario",
         "dps_scenario_multiplier",
+        "spc_state",
+        "move_quality",
+        "spc_decision",
+        "pinning_active",
+        "pinning_trap_modifier_points",
         "trade_action",
         "trade_readiness",
         "readiness_state",
@@ -640,6 +665,10 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "readiness_regime_used",
         "readiness_regime_family_used",
         "readiness_range_like_session",
+        "iv_rank",
+        "iv_context",
+        "selling_favoured",
+        "strike_guidance",
         "sr_first_cycle_after_reset",
         "sr_cold_start_guard_applied",
         "sr_previous_support_anchor_used",
@@ -654,9 +683,14 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "adaptive_weights",
         "directional_force",
         "reversal_risk",
-        "historical_context_available",
-        "historical_context_updated_at",
     }
+    if ENABLE_HZC:
+        allowed_keys.update(
+            {
+                "historical_context_available",
+                "historical_context_updated_at",
+            }
+        )
 
     sanitized = {key: market_state.get(key) for key in allowed_keys if key in market_state}
     sanitized["signal_history"] = _trim_list(market_state.get("signal_history"), 24)
@@ -755,6 +789,7 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "expiry_multiplier": expiry_adaptive.get("expiry_multiplier"),
         "adjustedMove": expiry_adaptive.get("adjustedMove"),
     }
+    sanitized["chain_greeks"] = _trim_list(signals.get("chain_greeks"), 20)
 
     sanitized["breakout_candidate"] = signals.get("breakout_candidate")
     sanitized["sr_breach_state"] = signals.get("sr_breach_state")
@@ -934,18 +969,41 @@ def _detect_support_absorption(
     breakout_score = float(breakout_strength or 0.0)
     trap_prob = float(trap_probability or 0.0)
 
-    absorption_detected = bool(
+    # Proximity check: price must still be near (or below) support — hard prerequisite.
+    near_support = (
         spot_value is not None
         and support_value is not None
-        and spot_value < (support_value - absorption_offset)
-        and pe_change > 10.0
-        and volume_score > 0.6
-        and breakout_score < 0.35
-        and trap_prob > 55.0
+        and spot_value < (support_value + absorption_offset)
     )
+    if not near_support:
+        return {
+            "absorption_detected": False,
+            "absorption_score": 0.0,
+            "level": support_value,
+            "offset": round(absorption_offset, 2),
+            "message": None,
+        }
+
+    # Weighted scoring replaces the hard AND gate.
+    # Each signal contributes a partial score; any two strong signals can fire.
+    pe_score = min(1.0, max(0.0, pe_change / 20.0))           # 10%→0.5, 20%→1.0
+    vol_score = min(1.0, max(0.0, (volume_score - 0.4) / 0.6)) # 0.4→0, 1.0→1.0
+    no_breakout_score = min(1.0, max(0.0, 1.0 - breakout_score / 0.5))  # <0.25→high
+    trap_score = min(1.0, max(0.0, (trap_prob - 40.0) / 40.0))  # 40→0, 80→1.0
+
+    absorption_score = (
+        (pe_score * 0.35)
+        + (vol_score * 0.25)
+        + (no_breakout_score * 0.20)
+        + (trap_score * 0.20)
+    )
+
+    # Trigger at 0.45 (replaces requiring all four conditions).
+    absorption_detected = absorption_score >= 0.45
 
     return {
         "absorption_detected": absorption_detected,
+        "absorption_score": round(absorption_score, 4),
         "level": support_value,
         "offset": round(absorption_offset, 2),
         "message": "Support absorption detected — breakdown likely fake" if absorption_detected else None,
@@ -1175,6 +1233,7 @@ def _compute_directional_pressure_score(
     volume_expansion_score: float,
     ce_rvr: float | None = None,
     pe_rvr: float | None = None,
+    oi_buildup_type: str | None = None,
     trap_probability: float,
     previous_alignment_score: float | None = None,
     previous_directional_dominance: str | None = None,
@@ -1221,11 +1280,15 @@ def _compute_directional_pressure_score(
     # OI scenario quality modifier:
     # Short-covering and long-unwinding moves are treated as weaker directional
     # pressure than equivalent price-only movement.
+    buildup_text = str(oi_buildup_type or "").strip().lower()
     oi_building = oi_velocity > 0.55
     oi_unwinding = oi_velocity < 0.25
     price_up = dps > 0.1
     price_down = dps < -0.1
-    if price_up and oi_building:
+    if buildup_text == "two-sided writing":
+        scenario = "PINNING"
+        scenario_multiplier = PINNING_SCENARIO_MULTIPLIER
+    elif price_up and oi_building:
         scenario = "LONG_BUILDUP"
         scenario_multiplier = 1.0
     elif price_up and oi_unwinding:
@@ -1264,6 +1327,7 @@ def _compute_directional_pressure_score(
         "dps_adjusted": round(dps_adjusted, 4),
         "oi_scenario": scenario,
         "oi_scenario_multiplier": round(float(scenario_multiplier), 4),
+        "pinning_active": scenario == "PINNING",
         "pressure_state": pressure_state,
         "trade_action": trade_action,
         "pressure_explanation": explanation,
@@ -1295,6 +1359,155 @@ def _pressure_labels_from_dps_adjusted(dps_adjusted: float) -> tuple[str, str, s
         trade_action = "WAIT"
         explanation = "Directional pressure remains balanced."
     return pressure_state, trade_action, explanation
+
+
+def _resolve_spc_state(
+    *,
+    spot: float | None,
+    support_level: float | None,
+    resistance_level: float | None,
+    support_broken: bool,
+    resistance_broken: bool,
+    material_breach_confirmed: bool,
+    near_threshold_points: float = 30.0,
+) -> str:
+    if (
+        spot is None
+        or support_level is None
+        or resistance_level is None
+        or resistance_level <= support_level
+    ):
+        return "WITHIN_STRUCTURE"
+
+    if material_breach_confirmed and (support_broken ^ resistance_broken):
+        return "CONFIRMED_EXPANSION"
+    if resistance_broken and not support_broken:
+        return "BREAKOUT_ATTEMPT"
+    if support_broken and not resistance_broken:
+        return "BREAKDOWN_ATTEMPT"
+
+    threshold = max(1.0, float(near_threshold_points or 30.0))
+    dist_to_support = float(spot) - float(support_level)
+    dist_to_resistance = float(resistance_level) - float(spot)
+
+    if dist_to_support >= 0 and dist_to_support <= threshold:
+        return "SUPPORT_DEFENSE"
+    if dist_to_resistance >= 0 and dist_to_resistance <= threshold:
+        return "RESISTANCE_PRESSURE"
+    return "WITHIN_STRUCTURE"
+
+
+def _resolve_move_quality(
+    *,
+    spc_state: str,
+    trap_probability: float,
+    absorption_detected: bool,
+    material_breach_confirmed: bool,
+    support_transition_active: bool,
+    resistance_transition_active: bool,
+) -> str:
+    trap_value = max(0.0, min(100.0, float(trap_probability or 0.0)))
+    structural_transition = bool(support_transition_active or resistance_transition_active)
+
+    if absorption_detected:
+        return "FAKE"
+
+    if spc_state == "CONFIRMED_EXPANSION":
+        if material_breach_confirmed and trap_value < 60.0 and not structural_transition:
+            return "TRUSTED"
+        if trap_value >= 70.0:
+            return "FAKE"
+        return "SUSPECT"
+
+    if spc_state in {"BREAKOUT_ATTEMPT", "BREAKDOWN_ATTEMPT"}:
+        if trap_value >= 70.0:
+            return "FAKE"
+        if structural_transition or trap_value >= 55.0 or not material_breach_confirmed:
+            return "SUSPECT"
+        return "TRUSTED"
+
+    if spc_state in {"SUPPORT_DEFENSE", "RESISTANCE_PRESSURE"}:
+        if trap_value >= 72.0:
+            return "FAKE"
+        if structural_transition or trap_value >= 58.0:
+            return "SUSPECT"
+        return "TRUSTED"
+
+    return "SUSPECT"
+
+
+def _derive_spc_decision(
+    *,
+    spc_state: str,
+    move_quality: str,
+    trade_readiness: float,
+    readiness_active: bool,
+) -> str:
+    readiness = max(0.0, min(100.0, float(trade_readiness or 0.0)))
+
+    if spc_state == "WITHIN_STRUCTURE":
+        return "WAIT"
+    if move_quality == "FAKE":
+        return "DISTRUST"
+
+    if spc_state == "CONFIRMED_EXPANSION":
+        if move_quality == "TRUSTED" and readiness_active and readiness >= 60.0:
+            return "ACT"
+        if move_quality == "SUSPECT" and readiness_active and readiness >= 68.0:
+            return "ACT"
+        return "WAIT"
+
+    if spc_state in {"BREAKOUT_ATTEMPT", "BREAKDOWN_ATTEMPT"}:
+        if move_quality == "TRUSTED" and readiness_active and readiness >= 58.0:
+            return "ACT"
+        if move_quality == "SUSPECT":
+            return "WAIT"
+        return "DISTRUST"
+
+    if spc_state == "SUPPORT_DEFENSE":
+        if move_quality != "FAKE" and readiness_active and readiness >= 55.0:
+            return "ACT"
+        return "WAIT"
+
+    if spc_state == "RESISTANCE_PRESSURE":
+        if move_quality == "TRUSTED" and readiness_active and readiness >= 58.0:
+            return "ACT"
+        return "WAIT"
+
+    return "WAIT"
+
+
+def _map_spc_decision_to_trade_action(
+    *,
+    spc_decision: str,
+    spc_state: str,
+    support_broken: bool,
+    resistance_broken: bool,
+    dps_adjusted: float,
+    fallback_trade_action: str,
+) -> str:
+    if spc_decision != "ACT":
+        return "WAIT"
+
+    if spc_state in {"SUPPORT_DEFENSE", "BREAKOUT_ATTEMPT"}:
+        return "LONG BIAS"
+    if spc_state in {"RESISTANCE_PRESSURE", "BREAKDOWN_ATTEMPT"}:
+        return "SHORT BIAS"
+    if spc_state == "CONFIRMED_EXPANSION":
+        if resistance_broken and not support_broken:
+            return "LONG BIAS"
+        if support_broken and not resistance_broken:
+            return "SHORT BIAS"
+
+    dps_value = float(dps_adjusted or 0.0)
+    if dps_value > 0.35:
+        return "LONG BIAS"
+    if dps_value < -0.35:
+        return "SHORT BIAS"
+    fallback = str(fallback_trade_action or "WAIT").upper()
+    if fallback in {"LONG BIAS", "SHORT BIAS"}:
+        return fallback
+    return "WAIT"
 
 
 def _compute_trade_readiness(
@@ -2975,6 +3188,89 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def detect_data_anomalies(
+    *,
+    spot: float | None,
+    total_ce_oi: float,
+    total_pe_oi: float,
+    atm_ce_oi_change: float,
+    atm_pe_oi_change: float,
+    total_volume: float,
+    previous_total_oi: float | None,
+) -> dict[str, Any]:
+    """
+    Flag data quality issues before feeding into engines.
+    Returns a dict with any detected anomalies and a boolean `has_anomaly`.
+    """
+    flags: list[str] = []
+    total_oi = total_ce_oi + total_pe_oi
+
+    # Zero-spot guard (already handled in SR guard, but flag it here too).
+    if spot is None or (isinstance(spot, (int, float)) and float(spot) < 1000):
+        flags.append("zero_or_invalid_spot")
+
+    # Zero-volume cycle (market halt or data gap).
+    if total_volume < 1.0:
+        flags.append("zero_volume_cycle")
+
+    # Zero total OI — extremely unlikely unless data feed is broken.
+    if total_oi < 1.0:
+        flags.append("zero_total_oi")
+
+    # Single-cycle OI jump > 50% of previous total — likely a data error.
+    if previous_total_oi and previous_total_oi > 1.0:
+        oi_jump_pct = abs(total_oi - previous_total_oi) / previous_total_oi * 100.0
+        if oi_jump_pct > 50.0:
+            flags.append(f"large_oi_jump_{int(oi_jump_pct)}pct")
+
+    # Single-strike ATM OI change that is implausibly large (> 200% of prior ATM total).
+    atm_total = abs(atm_ce_oi_change) + abs(atm_pe_oi_change)
+    if total_oi > 1.0 and atm_total / total_oi > 0.40:
+        flags.append("abnormal_atm_oi_concentration")
+
+    return {
+        "has_anomaly": len(flags) > 0,
+        "anomaly_flags": flags,
+    }
+
+
+def _count_level_touches(
+    *,
+    spot: float | None,
+    level: float | None,
+    strike_gap: float,
+    previous_state: dict[str, Any] | None,
+    touch_key: str,
+) -> int:
+    """
+    Count how many cycles price has been within half a strike-gap of a structural level.
+    Increments a persistent counter in previous_state[touch_key] each cycle a touch occurs,
+    resets when level changes significantly (> 1.5× strike_gap from stored level).
+
+    Returns the current touch count (0 if no touch this cycle).
+    """
+    prev = previous_state or {}
+    stored_level = _safe_float(prev.get(f"{touch_key}_level"))
+    stored_count = int(prev.get(touch_key, 0) or 0)
+
+    if spot is None or level is None:
+        return stored_count
+
+    spot_f = float(spot)
+    level_f = float(level)
+    gap = max(1.0, float(strike_gap))
+    proximity = abs(spot_f - level_f)
+
+    # If the level moved significantly, reset counter.
+    if stored_level is not None and abs(level_f - stored_level) > gap * 1.5:
+        return 0
+
+    # Increment if price is within half a strike-gap of the level.
+    if proximity <= gap * 0.5:
+        return stored_count + 1
+    return stored_count
+
+
 def _previous_trap_probability(previous_state: dict[str, Any] | None) -> float | None:
     state = previous_state or {}
     trap_hist = state.get("trap_probability_history", [])
@@ -3615,6 +3911,17 @@ def _build_v2_intelligence(
     trap["show_affected_level"] = bool(str(trap.get("trap_type") or "").strip() and trap_affected_level is not None)
 
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    oi_buildup_type = str(oi.get("buildup_type") or "")
+    pinning_active = oi_buildup_type.strip().lower() == "two-sided writing"
+    pinning_trap_modifier_points = PINNING_TRAP_MODIFIER_POINTS if pinning_active else 0.0
+    if pinning_trap_modifier_points > 0.0:
+        trap_probability = min(95.0, trap_probability + pinning_trap_modifier_points)
+        trap["trap_probability_pct"] = int(round(trap_probability))
+        trap["trap_probability"] = int(round(trap_probability))
+        trap["trap_risk"] = int(round(trap_probability))
+    trap["pinning_active"] = bool(pinning_active)
+    trap["pinning_trap_modifier_points"] = float(pinning_trap_modifier_points)
+
     breakout_strength = breakout_strength_adjusted
     mss = _compute_market_structure_score(
         alignment_score=alignment_score,
@@ -3632,6 +3939,7 @@ def _build_v2_intelligence(
         volume_expansion_score=volume_expansion_score,
         ce_rvr=float((volume.get("rvr", {}) or {}).get("ce", 0.0) or 0.0),
         pe_rvr=float((volume.get("rvr", {}) or {}).get("pe", 0.0) or 0.0),
+        oi_buildup_type=oi_buildup_type,
         trap_probability=trap_probability,
         previous_alignment_score=previous_alignment,
         previous_directional_dominance=(previous_state or {}).get("directional_force_dominance"),
@@ -3670,6 +3978,8 @@ def _build_v2_intelligence(
     decision["oi_scenario"] = dps.get("oi_scenario")
     decision["oi_scenario_multiplier"] = dps.get("oi_scenario_multiplier")
     decision["dps_scenario_multiplier"] = dps.get("oi_scenario_multiplier")
+    decision["pinning_active"] = bool(dps.get("pinning_active", False))
+    decision["pinning_trap_modifier_points"] = float(pinning_trap_modifier_points)
     decision["pressure_state"] = dps["pressure_state"]
     decision["trade_action"] = dps["trade_action"]
     decision["pressure_explanation"] = dps["pressure_explanation"]
@@ -4505,6 +4815,87 @@ def _build_v2_intelligence(
         "BREAKDOWN WATCH",
     }:
         decision["trade_action"] = "WAIT"
+
+    near_threshold_points = max(30.0, min(75.0, float(features.get("strike_gap", 50.0) or 50.0) * 0.6))
+    spc_state = _resolve_spc_state(
+        spot=spot,
+        support_level=_safe_float(support_level),
+        resistance_level=_safe_float(resistance_level),
+        support_broken=bool(material_breach.get("support_broken")),
+        resistance_broken=bool(material_breach.get("resistance_broken")),
+        material_breach_confirmed=bool(material_breach.get("material_breach_confirmed")),
+        near_threshold_points=near_threshold_points,
+    )
+    move_quality = _resolve_move_quality(
+        spc_state=spc_state,
+        trap_probability=trap_probability,
+        absorption_detected=absorption_detected,
+        material_breach_confirmed=bool(material_breach.get("material_breach_confirmed")),
+        support_transition_active=bool(support_transition_badge),
+        resistance_transition_active=bool(resistance_transition_badge),
+    )
+    spc_decision = _derive_spc_decision(
+        spc_state=spc_state,
+        move_quality=move_quality,
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        readiness_active=bool(decision.get("readiness_active", False)),
+    )
+    decision["spc_state"] = spc_state
+    decision["move_quality"] = move_quality
+    decision["spc_decision"] = spc_decision
+    decision["trade_action"] = _map_spc_decision_to_trade_action(
+        spc_decision=spc_decision,
+        spc_state=spc_state,
+        support_broken=bool(material_breach.get("support_broken")),
+        resistance_broken=bool(material_breach.get("resistance_broken")),
+        dps_adjusted=float(decision.get("dps_adjusted", 0.0) or 0.0),
+        fallback_trade_action=str(decision.get("trade_action", "WAIT")),
+    )
+    if spc_decision == "DISTRUST" and str(decision.get("projection", "")).strip().lower() in {
+        "upside breakout",
+        "downside breakout",
+        "potential breakout watch",
+    }:
+        decision["projection"] = "No Confirmed Breakout"
+
+    # Keep action-reason telemetry consistent with the SPC decision layer.
+    blocking_reason = _determine_blocking_reason(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        readiness_active=bool(decision.get("readiness_active", False)),
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        trap_probability=trap_probability,
+        absorption_detected=absorption_detected,
+        absorption_wins=absorption_wins,
+        material_breach=material_breach,
+        conflict_market_state=str(decision.get("conflict_market_state", "") or ""),
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        dps_adjusted=float(decision.get("dps_adjusted", 0.0) or 0.0),
+    )
+    winning_engine = _determine_winning_engine(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        material_breach=material_breach,
+        absorption_wins=absorption_wins,
+    )
+    decision_confidence = _compute_decision_confidence(
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        trap_probability=trap_probability,
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        support_transition_badge=support_transition_badge,
+        resistance_transition_badge=resistance_transition_badge,
+        material_breach_confirmed=material_breach_confirmed,
+    )
+    resolved_reason = _derive_resolved_reason(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        blocking_reason=blocking_reason,
+        material_breach=material_breach,
+        support_absorption=support_absorption,
+        pressure_state=str(decision.get("pressure_state", "") or ""),
+        summary_line=summary_line,
+    )
+
     signal_history = _update_signal_history(
         previous_state,
         timestamp=str(features.get("meta", {}).get("timestamp") or _utc_iso(event_timestamp) or ""),
@@ -4524,6 +4915,12 @@ def _build_v2_intelligence(
         target2=target.get("target_2"),
         trap_risk=int(expiry_adaptive["trap_risk"] or 0),
         volatility_state=decision.get("volatility_state"),
+        spot=spot,
+        spc_state=str(decision.get("spc_state") or ""),
+        spc_decision=str(decision.get("spc_decision") or ""),
+        trade_action=str(decision.get("trade_action") or "WAIT"),
+        range_locked=bool(range_locked),
+        no_edge=bool(no_edge),
     )
 
     support_zone = sr.get("support_range")
@@ -4695,6 +5092,33 @@ def _build_v2_intelligence(
         volume_expansion_score=volume_expansion_score,
         oi_shift_score=float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
     )
+    # ── Greeks + Strike Guidance ──────────────────────────────────────────
+    atm_iv = float((atm_row or {}).get("CE_IV", 0) or 0) / 100
+    if atm_iv > 0:
+        _iv_history[symbol].append(atm_iv)
+    iv_rank_result = compute_iv_rank(
+        current_iv=atm_iv,
+        iv_history=list(_iv_history[symbol]),
+    )
+    chain_greeks = compute_chain_greeks(
+        rows=rows,
+        spot=spot or 0,
+        expiry_str=expiry or "",
+    )
+    days_exp = chain_greeks[0]["ce"]["days_to_expiry"] if chain_greeks else 0
+    strike_guidance = generate_strike_guidance(
+        trade_action=str(decision.get("trade_action", "WAIT")),
+        readiness_active=bool(readiness_v2.get("readiness_active_v2", False)),
+        trap_probability=float(trap_probability or 0),
+        session_phase=str(session_phase_payload.get("session_phase", "")),
+        days_to_expiry=days_exp,
+        iv_rank=iv_rank_result.get("iv_rank"),
+        chain_greeks=chain_greeks,
+        bias=str(stable_bias or "Neutral"),
+        support=support_level,
+        resistance=resistance_level,
+    )
+
     session_phase_payload = _stabilize_session_phase(
         current_phase=session_phase_payload.get("session_phase"),
         current_confidence=session_phase_payload.get("confidence"),
@@ -4762,6 +5186,17 @@ def _build_v2_intelligence(
         "dps_adjusted": decision.get("dps_adjusted"),
         "oi_scenario": decision.get("oi_scenario"),
         "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
+        "spc_state": decision.get("spc_state"),
+        "move_quality": decision.get("move_quality"),
+        "spc_decision": decision.get("spc_decision"),
+        "execution_mode": trade_plan.get("trade_plan", {}).get("execution_mode"),
+        "delta_band": trade_plan.get("trade_plan", {}).get("delta_band"),
+        "delta_strike_guidance": trade_plan.get("trade_plan", {}).get("delta_strike_guidance"),
+        "entry_zone": trade_plan.get("trade_plan", {}).get("entry_zone"),
+        "stop_zone": trade_plan.get("trade_plan", {}).get("stop_zone"),
+        "target_zone": trade_plan.get("trade_plan", {}).get("target_zone"),
+        "pinning_active": bool(decision.get("pinning_active", False)),
+        "pinning_trap_modifier_points": decision.get("pinning_trap_modifier_points"),
         "reversal_decay_cycles": decision.get("reversal_decay_cycles"),
         "pressure_state": decision.get("pressure_state"),
         "trade_action": decision.get("trade_action"),
@@ -4864,6 +5299,11 @@ def _build_v2_intelligence(
             "dps_adjusted": decision.get("dps_adjusted"),
             "oi_scenario": decision.get("oi_scenario"),
             "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
+            "spc_state": decision.get("spc_state"),
+            "move_quality": decision.get("move_quality"),
+            "spc_decision": decision.get("spc_decision"),
+            "pinning_active": bool(decision.get("pinning_active", False)),
+            "pinning_trap_modifier_points": decision.get("pinning_trap_modifier_points"),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "pressure_explanation": decision.get("pressure_explanation"),
@@ -4907,6 +5347,10 @@ def _build_v2_intelligence(
             "day_trend": day_trend,
             "long_trend": long_trend,
             "session_phase": session_phase_payload.get("session_phase"),
+            "iv_rank": iv_rank_result.get("iv_rank"),
+            "iv_context": iv_rank_result.get("iv_context"),
+            "selling_favoured": iv_rank_result.get("selling_favoured"),
+            "strike_guidance": strike_guidance,
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "momentum_score": momentum_score,
             "momentum_direction": momentum_direction,
@@ -4951,6 +5395,13 @@ def _build_v2_intelligence(
             "resistance_zone_state": resistance_zone_state,
             "target1": target.get("target_1"),
             "target2": target.get("target_2"),
+            "entry_zone": trade_plan.get("trade_plan", {}).get("entry_zone"),
+            "stop_zone": trade_plan.get("trade_plan", {}).get("stop_zone"),
+            "target_zone": trade_plan.get("trade_plan", {}).get("target_zone"),
+            "execution_mode": trade_plan.get("trade_plan", {}).get("execution_mode"),
+            "delta_band": trade_plan.get("trade_plan", {}).get("delta_band"),
+            "delta_strike_guidance": trade_plan.get("trade_plan", {}).get("delta_strike_guidance"),
+            "avoid_buying_premium": bool(trade_plan.get("trade_plan", {}).get("avoid_buying_premium", False)),
             "summary_line": summary_line,
             "decision_explanation": decision_explanation,
             "resolved_reason": resolved_reason,
@@ -4963,6 +5414,11 @@ def _build_v2_intelligence(
             "dps_adjusted": decision.get("dps_adjusted"),
             "oi_scenario": decision.get("oi_scenario"),
             "dps_scenario_multiplier": decision.get("dps_scenario_multiplier"),
+            "spc_state": decision.get("spc_state"),
+            "move_quality": decision.get("move_quality"),
+            "spc_decision": decision.get("spc_decision"),
+            "pinning_active": bool(decision.get("pinning_active", False)),
+            "pinning_trap_modifier_points": decision.get("pinning_trap_modifier_points"),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "trade_readiness": decision.get("trade_readiness"),
@@ -5068,6 +5524,7 @@ def _build_v2_intelligence(
             "auto_exit": auto_exit,
             "prioritized_signals": prioritized.get("prioritized_signals", []),
             "expiry_adaptive": expiry_adaptive,
+            "chain_greeks": chain_greeks[:20],
             "alerts": typed_alerts,
             "alerts_meta": {
                 "strong_directional_bias": strong_bias,
@@ -5459,19 +5916,22 @@ async def run_update_cycle() -> None:
         latency_ms = (time.perf_counter() - started) * 1000
         await cache.mark_fetch_success(latency_ms=latency_ms)
 
-        # Optional offline historical-zone snapshots. This is context-only and
-        # intentionally isolated from live SR/SPC decision flow.
-        for symbol in SYMBOLS:
-            try:
-                zone_job = await asyncio.to_thread(run_historical_zone_daily_if_due, symbol)
-                if isinstance(zone_job, dict) and zone_job.get("status") == "written":
-                    logger.info(
-                        "Historical zone snapshot written [%s]: %s",
-                        symbol,
-                        zone_job.get("path"),
-                    )
-            except Exception as zone_exc:
-                logger.warning("Historical zone scheduler failed for %s: %s", symbol, zone_exc)
+        if ENABLE_HZC:
+            # Optional offline historical-zone snapshots. This is context-only and
+            # intentionally isolated from live SR/SPC decision flow.
+            for symbol in SYMBOLS:
+                try:
+                    from app.services.historical_zone_scheduler import run_historical_zone_daily_if_due
+
+                    zone_job = await asyncio.to_thread(run_historical_zone_daily_if_due, symbol)
+                    if isinstance(zone_job, dict) and zone_job.get("status") == "written":
+                        logger.info(
+                            "Historical zone snapshot written [%s]: %s",
+                            symbol,
+                            zone_job.get("path"),
+                        )
+                except Exception as zone_exc:
+                    logger.warning("Historical zone scheduler failed for %s: %s", symbol, zone_exc)
 
         logger.info("Background refresh success in %.2f ms", latency_ms)
     except Exception as exc:

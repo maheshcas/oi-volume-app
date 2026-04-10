@@ -7,6 +7,22 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+# Phase-based breakout probability adjustment.
+# Breakout attempts in institutional phases (Power Hour) are more reliable;
+# attempts in Compression Phase are structurally less likely to follow through.
+_PHASE_BREAKOUT_FACTOR: dict[str, float] = {
+    "Opening Drive": 1.05,
+    "Structure Formation": 0.95,
+    "Midday Compression": 0.80,
+    "Compression Phase": 0.80,
+    "Position Build Phase": 0.90,
+    "Positioning Phase": 0.90,
+    "Expansion Window": 1.15,
+    "Power Hour": 1.15,
+    "Transition": 0.95,
+}
+
+
 def compute_breakout_probability(
     *,
     spot: float | None,
@@ -22,6 +38,7 @@ def compute_breakout_probability(
     clarity: float,
     directional_force: dict[str, Any] | None,
     day_trend: str | None,
+    session_phase: str | None = None,
 ) -> dict[str, Any]:
     spot_value = float(spot or 0.0)
     support_value = float(support or 0.0)
@@ -70,9 +87,17 @@ def compute_breakout_probability(
     up_prob_raw *= 0.6 + (0.4 * proximity_weight_up)
     down_prob_raw *= 0.6 + (0.4 * proximity_weight_down)
 
-    trap_factor = 1.0 - min(0.5, float(trap_probability or 0.0) / 200.0)
-    up_breakout_probability = round(min(100.0, up_prob_raw * trap_factor * 100.0), 1)
-    down_breakout_probability = round(min(100.0, down_prob_raw * trap_factor * 100.0), 1)
+    # Stronger trap suppression:
+    # - At trap=80, factor ~= 0.467 (vs ~0.60 earlier)
+    # - Caps max suppression at 60% to avoid zeroing probabilities.
+    trap_factor = 1.0 - min(0.6, float(trap_probability or 0.0) / 150.0)
+
+    # Session phase adjustment: scale both directions by the phase factor.
+    phase_key = str(session_phase or "Transition").strip()
+    phase_factor = _PHASE_BREAKOUT_FACTOR.get(phase_key, 0.95)
+
+    up_breakout_probability = round(min(100.0, up_prob_raw * trap_factor * phase_factor * 100.0), 1)
+    down_breakout_probability = round(min(100.0, down_prob_raw * trap_factor * phase_factor * 100.0), 1)
 
     def _classify(probability: float) -> str:
         if probability >= 65.0:
@@ -87,4 +112,6 @@ def compute_breakout_probability(
         "upside_state": _classify(up_breakout_probability),
         "downside_state": _classify(down_breakout_probability),
         "day_trend_context": str(day_trend or "Neutral"),
+        "session_phase_used": phase_key,
+        "phase_factor_applied": round(phase_factor, 3),
     }

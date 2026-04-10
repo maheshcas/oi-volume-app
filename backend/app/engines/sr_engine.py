@@ -227,7 +227,26 @@ def _pick_major(scored: list[_ScoredStrike]) -> _ScoredStrike | None:
     return max(scored, key=lambda x: x.score)
 
 
-def _pick_immediate(scored: list[_ScoredStrike], spot: float | None, side: OptionType) -> _ScoredStrike | None:
+def _immediate_distance_pct_limit(symbol: str | None) -> float:
+    text = str(symbol or "").strip().upper()
+    if "SENSEX" in text:
+        return 0.008  # 0.8%
+    if "BANKNIFTY" in text or text == "BANK NIFTY":
+        return 0.012  # 1.2%
+    if "FINNIFTY" in text or text == "FIN NIFTY":
+        return 0.010  # 1.0%
+    if "NIFTY" in text:
+        return 0.010  # 1.0%
+    return 0.010
+
+
+def _pick_immediate(
+    scored: list[_ScoredStrike],
+    spot: float | None,
+    side: OptionType,
+    *,
+    symbol: str | None = None,
+) -> _ScoredStrike | None:
     if not scored or spot is None or spot <= 0:
         return None
 
@@ -246,9 +265,14 @@ def _pick_immediate(scored: list[_ScoredStrike], spot: float | None, side: Optio
         return None
     _trace_candidates("after_spot_constraint", side, directional, reasons=directional_reasons)
 
-    zone = [s for s in directional if s.distance_pct <= 0.01]
-    zone_reasons: dict[float, str] = {item.strike: "above_max_distance_1pct" for item in directional if item not in zone}
-    stage = "after_zone_filter_le_1pct"
+    max_distance_pct = _immediate_distance_pct_limit(symbol)
+    zone = [s for s in directional if s.distance_pct <= max_distance_pct]
+    zone_reasons: dict[float, str] = {
+        item.strike: f"above_max_distance_{round(max_distance_pct * 100.0, 2)}pct"
+        for item in directional
+        if item not in zone
+    }
+    stage = f"after_zone_filter_le_{round(max_distance_pct * 100.0, 2)}pct"
     if not zone:
         zone = directional
         stage = "after_zone_filter_full_directional_fallback"
@@ -714,6 +738,7 @@ def run_sr_engine(
 ) -> dict[str, Any]:
     previous_state = _hydrate_previous_sr_state(previous_state)
     rows = features.get("rows", []) or []
+    symbol = str(features.get("meta", {}).get("symbol") or "").strip()
     spot = features.get("meta", {}).get("spot")
     spot_num = _to_float(spot, 0.0) if spot is not None else None
     if spot_num is not None and spot_num <= 0:
@@ -734,8 +759,8 @@ def run_sr_engine(
     major_sup = _pick_major(pe_scored)
     logger.debug("SRTrace[PE][major_support] chosen=%s score=%.6f", major_sup.strike if major_sup else None, major_sup.score if major_sup else 0.0)
     logger.debug("SRTrace[CE][major_resistance] chosen=%s score=%.6f", major_res.strike if major_res else None, major_res.score if major_res else 0.0)
-    immediate_res = _pick_immediate(ce_scored, spot_num, "CE")
-    immediate_sup = _pick_immediate(pe_scored, spot_num, "PE")
+    immediate_res = _pick_immediate(ce_scored, spot_num, "CE", symbol=symbol)
+    immediate_sup = _pick_immediate(pe_scored, spot_num, "PE", symbol=symbol)
     support_hysteresis_debug: dict[str, Any] = {}
     resistance_hysteresis_debug: dict[str, Any] = {}
     immediate_res = _apply_level_hysteresis(

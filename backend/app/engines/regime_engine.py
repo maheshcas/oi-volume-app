@@ -1,9 +1,40 @@
 from typing import Any
 
+# Default thresholds used when no symbol-specific override is configured.
+TREND_ATR_THRESHOLD = 1.10
+TREND_SCORE_THRESHOLD = 0.30
+RANGE_ATR_THRESHOLD = 0.95
+RANGE_SCORE_THRESHOLD = 0.30
+
+# Per-symbol ATR-based regime classification thresholds.
+# BANKNIFTY has ~2-3x the intraday range of NIFTY, so "trending" BANKNIFTY conditions
+# need a relatively higher ATR multiplier to avoid false trend classification.
+# FINNIFTY is tighter than NIFTY, so a lower threshold is appropriate.
+SYMBOL_REGIME_THRESHOLDS: dict[str, dict[str, float]] = {
+    "NIFTY": {
+        "trend_atr": 1.10,
+        "trend_score": 0.30,
+        "range_atr": 0.95,
+        "range_score": 0.30,
+    },
+    "BANKNIFTY": {
+        "trend_atr": 1.20,   # needs higher sustained ATR to confirm trend
+        "trend_score": 0.35,
+        "range_atr": 0.90,   # more compressed range threshold
+        "range_score": 0.25,
+    },
+    "FINNIFTY": {
+        "trend_atr": 1.05,   # lower bar — thinner float, faster regime shifts
+        "trend_score": 0.25,
+        "range_atr": 0.98,
+        "range_score": 0.35,
+    },
+}
+
 
 def classify_session_regime(oi: dict[str, Any], volume: dict[str, Any], breakout: dict[str, Any], trap: dict[str, Any]) -> str:
-    if trap.get("is_trap"):
-        return "Trap Risk"
+    # Classify directional/range regime first; treat trap as a risk modifier
+    # unless no stronger directional/range evidence is present.
     if breakout.get("breakout_up"):
         return "Trend Day"
     if breakout.get("breakout_down"):
@@ -13,6 +44,8 @@ def classify_session_regime(oi: dict[str, Any], volume: dict[str, Any], breakout
         return "Short Covering"
     if volume.get("volume_expansion") and oi.get("alignment") in ("bullish", "bearish"):
         return "Trend Day"
+    if trap.get("is_trap"):
+        return "Trap Risk"
     return "Range Day"
 
 
@@ -68,11 +101,18 @@ def _refined_regime_type(
     score: float,
     last_10_scores: list[float],
     breakout_confirmed: bool,
+    symbol: str | None = None,
 ) -> str:
+    thresholds = SYMBOL_REGIME_THRESHOLDS.get(str(symbol or "").upper(), SYMBOL_REGIME_THRESHOLDS["NIFTY"])
+    trend_atr = thresholds["trend_atr"]
+    trend_score = thresholds["trend_score"]
+    range_atr = thresholds["range_atr"]
+    range_score = thresholds["range_score"]
+
     mean_score = (sum(last_10_scores) / len(last_10_scores)) if last_10_scores else 0.0
-    if atr_ratio > 1.15 and abs(mean_score) > 0.35 and breakout_confirmed:
+    if atr_ratio > trend_atr and abs(mean_score) > trend_score and breakout_confirmed:
         return "trend"
-    if atr_ratio < 0.9 and abs(score) < 0.25:
+    if atr_ratio < range_atr and abs(score) < range_score:
         return "range"
     return "transition"
 
@@ -116,6 +156,7 @@ def run_regime_engine(
     breakout: dict[str, Any],
     trap: dict[str, Any],
     context: dict[str, Any] | None = None,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     base_regime = classify_session_regime(oi, volume, breakout, trap)
     regime = base_regime
@@ -125,6 +166,7 @@ def run_regime_engine(
             score=float(context.get("score", 0.0) or 0.0),
             last_10_scores=[float(v) for v in (context.get("last_10_scores") or [])],
             breakout_confirmed=bool(context.get("breakout_confirmed", False)),
+            symbol=symbol or context.get("symbol"),
         )
         # Only override the base classification when the refined pass has a strong
         # trend/range read. Otherwise keep the base regime so hysteresis can
@@ -145,6 +187,7 @@ def run_regime_engine(
     )
     committed_regime_type = _normalize_regime_type(committed_regime)
     adjusted_weights, adjusted_thresholds = _regime_adjustments(committed_regime_type)
+    symbol_key = str(symbol or "").upper() or "NIFTY"
     return {
         "regime": committed_regime,
         "regime_type": committed_regime_type,
@@ -153,4 +196,5 @@ def run_regime_engine(
         "candidate_regime_count": next_candidate_regime_count,
         "adjusted_weights": adjusted_weights,
         "adjusted_thresholds": adjusted_thresholds,
+        "symbol": symbol_key,
     }

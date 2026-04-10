@@ -48,11 +48,18 @@ def load_jsonl(path: Path) -> pd.DataFrame:
                 "execution_risk": rec.get("execution_risk", rec.get("risk")),
                 "trap_probability": rec.get("trap_probability"),
                 "trap_type": rec.get("trap_type"),
+                "trade_action": rec.get("trade_action"),
                 "breakout_strength": rec.get("breakout_strength"),
                 "rejection_wick_score": rec.get("rejection_wick_score"),
                 "time_above_level_ratio": rec.get("time_above_level_ratio"),
                 "oi_shift_score": rec.get("oi_shift_score"),
+                "oi_velocity_score": rec.get("oi_velocity_score"),
                 "volume_expansion_score": rec.get("volume_expansion_score"),
+                "directional_pressure_score": rec.get("directional_pressure_score"),
+                "dps_adjusted": rec.get("dps_adjusted"),
+                "oi_scenario": rec.get("oi_scenario"),
+                "dps_scenario_multiplier": rec.get("dps_scenario_multiplier"),
+                "reversal_decay_cycles": rec.get("reversal_decay_cycles"),
             }
         )
 
@@ -72,7 +79,12 @@ def load_jsonl(path: Path) -> pd.DataFrame:
         "rejection_wick_score",
         "time_above_level_ratio",
         "oi_shift_score",
+        "oi_velocity_score",
         "volume_expansion_score",
+        "directional_pressure_score",
+        "dps_adjusted",
+        "dps_scenario_multiplier",
+        "reversal_decay_cycles",
     ]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -151,12 +163,14 @@ def main() -> None:
     trap_max = float(df["trap_probability"].max(skipna=True))
     clarity_mean = float(df["clarity"].mean(skipna=True))
     bias_flip_count = _bias_flip_count(df["primary_bias"])
+    dps_mean = float(df["dps_adjusted"].mean(skipna=True))
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Trap Mean", f"{trap_mean:.2f}")
     c2.metric("Trap Max", f"{trap_max:.2f}")
     c3.metric("Clarity Mean", f"{clarity_mean:.2f}")
     c4.metric("Bias Flip Count", f"{bias_flip_count}")
+    c5.metric("DPS Adj Mean", f"{dps_mean:.3f}")
 
     trap_fig = go.Figure()
     trap_fig.add_trace(
@@ -179,6 +193,27 @@ def main() -> None:
     force_fig.add_trace(go.Scatter(x=df["timestamp"], y=df["bear_force"], mode="lines", name="Bear Force", line={"color": "#ef4444"}))
     force_fig.update_layout(title="Bull vs Bear Force", template="plotly_dark", height=320)
 
+    dps_fig = go.Figure()
+    dps_fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"],
+            y=df["directional_pressure_score"],
+            mode="lines",
+            name="DPS Raw",
+            line={"color": "#38bdf8"},
+        )
+    )
+    dps_fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"],
+            y=df["dps_adjusted"],
+            mode="lines",
+            name="DPS Adjusted",
+            line={"color": "#f59e0b"},
+        )
+    )
+    dps_fig.update_layout(title="Directional Pressure Score (Raw vs Adjusted)", template="plotly_dark", height=320)
+
     clarity_fig = go.Figure()
     clarity_fig.add_trace(go.Scatter(x=df["timestamp"], y=df["clarity"], mode="lines", name="Clarity", line={"color": "#38bdf8"}))
     clarity_fig.update_layout(title="Structural Clarity Over Time", template="plotly_dark", height=320)
@@ -194,8 +229,10 @@ def main() -> None:
     row1_col2.plotly_chart(force_fig, use_container_width=True)
 
     row2_col1, row2_col2 = st.columns(2)
-    row2_col1.plotly_chart(clarity_fig, use_container_width=True)
+    row2_col1.plotly_chart(dps_fig, use_container_width=True)
     row2_col2.plotly_chart(risk_fig, use_container_width=True)
+
+    st.plotly_chart(clarity_fig, use_container_width=True)
 
     bias_fig = _plot_bias_segments(df)
     st.plotly_chart(bias_fig, use_container_width=True)
@@ -219,6 +256,12 @@ def main() -> None:
         ),
         use_container_width=True,
     )
+
+    st.subheader("OI Scenario Distribution")
+    scenario_counts = (
+        df["oi_scenario"].fillna("UNKNOWN").value_counts(dropna=False).rename_axis("oi_scenario").reset_index(name="count")
+    )
+    st.dataframe(scenario_counts, use_container_width=True, height=220)
 
     st.subheader("Raw Cycle Records")
     st.dataframe(df, use_container_width=True, height=320)

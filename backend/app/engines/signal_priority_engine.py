@@ -4,6 +4,9 @@ from copy import deepcopy
 from typing import Any
 
 
+MIN_SIGNAL_QUALITY = 15  # signals at or below this adjusted_priority are suppressed even in top-3
+
+
 def prioritize_signals(
     *,
     signals: list[dict[str, Any]],
@@ -13,6 +16,7 @@ def prioritize_signals(
     expiry_mode: bool,
     session_phase: str,
     reversal_probability: float | int,
+    min_quality: int = MIN_SIGNAL_QUALITY,
 ) -> dict[str, Any]:
     prioritized: list[dict[str, Any]] = []
     suppression_reason_map: dict[str, str] = {}
@@ -56,17 +60,22 @@ def prioritize_signals(
         prioritized.append(signal)
 
     prioritized.sort(key=lambda x: x.get("adjusted_priority", 0), reverse=True)
-    top3 = prioritized[:3]
+    # Apply minimum quality threshold: exclude signals that don't meet it even if in top 3.
+    quality_floor = int(min_quality)
+    top3 = [s for s in prioritized[:3] if int(s.get("adjusted_priority", 0) or 0) > quality_floor]
     selected_keys = {str(s.get("_signal_key", "")) for s in top3}
     for s in prioritized:
         key = str(s.get("_signal_key", ""))
         if not key:
             continue
-        if key in selected_keys and int(s.get("adjusted_priority", 0) or 0) > 0:
+        adj = int(s.get("adjusted_priority", 0) or 0)
+        if key in selected_keys and adj > quality_floor:
             continue
         reasons = list(s.get("_reasons", []))
-        if int(s.get("adjusted_priority", 0) or 0) <= 0:
+        if adj <= 0:
             reasons.append("priority_zero")
+        elif adj <= quality_floor:
+            reasons.append("below_min_quality")
         if key not in selected_keys:
             reasons.append("top3_cutoff")
         suppression_reason_map[key] = "|".join(dict.fromkeys(reasons)) if reasons else "lower_priority"

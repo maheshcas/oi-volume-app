@@ -30,7 +30,7 @@ type DecisionBannerProps = {
 function formatActionBadge(action: string, sessionPhase?: string | null) {
   const phase = String(sessionPhase || "").trim();
   if (action === "WAIT" && phase) {
-    return `${action} — ${phase}`;
+    return `${action} - ${phase}`;
   }
   return action;
 }
@@ -132,8 +132,11 @@ export default function DecisionBanner({
     : resistanceTransitionBadge
       ? "Resistance Transition Active"
       : null;
-  const showBlocker = blockingReason && blockingReason !== "NONE";
-
+  const hasBlocker = blockingReason && blockingReason !== "NONE";
+  const showBlocker = false;
+  const dominantMessage = hasBlocker
+    ? `${friendlyBlockingReason(blockingReason)} - ${action}`
+    : displayExplanation;
   return (
     <div className={`ia-card ia-decision-banner ia-decision-banner-v2 ${toneClass}`}>
       <div className="ia-decision-banner-v2-head">
@@ -150,7 +153,7 @@ export default function DecisionBanner({
           </div>
         ) : null}
 
-        <div className="ia-decision-banner-explanation">{displayExplanation}</div>
+        <div className="ia-decision-banner-explanation">{dominantMessage}</div>
 
         <div className="ia-decision-meta-row">
           <span className="ia-decision-meta-chip">{friendlyWinningEngine(winningEngine)}</span>
@@ -240,3 +243,6 @@ export default function DecisionBanner({
     </div>
   );
 }
+
+
+

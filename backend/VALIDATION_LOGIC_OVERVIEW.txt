@@ -55,6 +55,11 @@ backend/app/engines/trap_engine.py
   - continuation failure
   - volatility
   - absorption
+- Additional trap validation fixes:
+  - no-breakout validity floor prevents artificial baseline inflation in quiet sessions
+  - rejection wick score is direction-aware (upside uses upper wick, downside uses lower wick)
+  - `trap_direction` assignment is resolved before fallback type labeling
+  - smoothing now uses previous smoothed value (`trap_smoothed_prev`) instead of raw previous
 - Trap stabilizer is active in `background_updater.py`:
   - smoothing
   - hysteresis deadband
@@ -62,6 +67,8 @@ backend/app/engines/trap_engine.py
 - Validation/debug fields when logging is enabled:
   - `trap_state`
   - `trap_hysteresis_applied`
+  - `trap_smoothed_prev`
+  - `trap_trend_adjustment_applied`
 
 Range lock / no-edge stabilizer
 backend/app/services/background_updater.py
@@ -115,6 +122,25 @@ backend/app/services/background_updater.py
   - per-pillar smoothing
   - final readiness smoothing
   - transition flap guard in range-like sessions
+
+Market pressure (DPS) validation
+backend/app/services/background_updater.py
+- DPS now includes directional volume confirmation:
+  - bullish side uses PE RVR
+  - bearish side uses CE RVR
+- OI scenario multiplier is applied before trap penalty:
+  - `LONG_BUILDUP` and `SHORT_BUILDUP` use multiplier `1.0`
+  - `SHORT_COVERING` and `LONG_UNWINDING` use multiplier `0.65`
+  - `NEUTRAL` uses multiplier `1.0`
+- Reversal attenuation is softened and persisted:
+  - base reversal decay uses `0.65` (was harder halving)
+  - reversal decay carry persists for 2 cycles via `reversal_decay_cycles`
+- Validation/debug fields:
+  - `directional_pressure_score`
+  - `dps_adjusted`
+  - `oi_scenario`
+  - `dps_scenario_multiplier`
+  - `reversal_decay_cycles`
 
 SR Engine / Cold-Start Protection
 
@@ -188,6 +214,11 @@ backend/app/services/stability_logger.py
   - `detected_regime`
   - `candidate_regime`
   - `candidate_regime_count`
+  - `directional_pressure_score`
+  - `dps_adjusted`
+  - `oi_scenario`
+  - `dps_scenario_multiplier`
+  - `reversal_decay_cycles`
   - `support_transition_active`
   - `support_shift_cycle`
   - `confirmation_type`
@@ -307,6 +338,11 @@ Current Deployment Status
   - updater-level SR cold-start buffer guard
   - previous_resistance persistence in state
   - previous_resistance added to stability logger snapshots
+  - trap no-breakout validity floor and direction-aware wick scoring
+  - trap smoothing now persists via `trap_smoothed_prev`
+  - DPS directional volume (PE/CE RVR) and OI scenario multiplier
+  - DPS reversal decay softened to `0.65` with 2-cycle carry (`reversal_decay_cycles`)
+  - `oi_scenario` and `dps_scenario_multiplier` exposed in cycle logs and market_state
   - SENSEX backend integration through existing v2 summary endpoint
   - CORS origin allowlist via ALLOWED_ORIGINS env var (wildcard removed)
   - async JWKS fetch via httpx (event loop no longer blocked on auth)
