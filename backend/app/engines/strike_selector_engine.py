@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Any
 
 
@@ -13,15 +14,19 @@ def _find_strikes_by_delta(
         g = row.get("ce" if option_type == "CE" else "pe", {})
         delta = abs(float(g.get("delta", 0) or 0))
         if target_delta_min <= delta <= target_delta_max:
-            matches.append({
-                "strike": row["strike"],
-                "delta": round(delta, 3),
-                "theta": g.get("theta", 0),
-                "iv": g.get("iv", 0),
-                "ltp": row.get(f"ltp_{option_type.lower()}", 0),
-                "moneyness": g.get("moneyness", ""),
-            })
-    return sorted(matches, key=lambda x: abs(x["delta"] - 0.50))[:3]
+            matches.append(
+                {
+                    "strike": row["strike"],
+                    "delta": round(delta, 3),
+                    "gamma": g.get("gamma", 0),
+                    "theta": g.get("theta", 0),
+                    "iv": g.get("iv", 0),
+                    "ltp": row.get(f"ltp_{option_type.lower()}", 0),
+                    "moneyness": g.get("moneyness", ""),
+                    "distance_from_spot": row.get("distance_from_spot", 0),
+                }
+            )
+    return sorted(matches, key=lambda item: abs(item["delta"] - 0.35))[:3]
 
 
 def generate_strike_guidance(
@@ -44,79 +49,80 @@ def generate_strike_guidance(
     delta_range = [0.0, 0.0]
     option_type = "CE"
 
-    # Theta warning
     if days_to_expiry <= 1:
-        warnings.append("Expiry today — theta decay severe for buyers")
+        warnings.append("Expiry today - theta decay severe for buyers")
         theta_warning = True
     elif days_to_expiry <= 3:
-        warnings.append(f"Expiry in {days_to_expiry} days — theta working against buyers")
+        warnings.append(f"Expiry in {days_to_expiry} days - theta working against buyers")
         theta_warning = True
 
-    # IV context
     if iv_rank is not None:
         if iv_rank >= 70:
-            warnings.append("IV elevated — consider selling OTM instead of buying")
+            warnings.append("IV elevated - consider selling OTM instead of buying")
         elif iv_rank <= 30:
-            warnings.append("IV depressed — option buying relatively cheap")
+            if trap_probability >= 60:
+                warnings.append("IV low but trap risk overrides - selling still preferred")
+            else:
+                warnings.append("IV depressed - option buying relatively cheap")
 
-    # Trap warning
     if trap_probability >= 60:
-        warnings.append(f"Trap risk {int(trap_probability)}% — avoid chasing breakouts")
+        warnings.append(f"Trap risk {int(trap_probability)}% - avoid chasing breakouts")
 
-    # Phase warning
     if session_phase in ("Compression Phase", "Structure Formation Phase"):
-        warnings.append(f"{session_phase} — range-bound, premium selling favoured")
+        warnings.append(f"{session_phase} - range-bound, premium selling favoured")
 
-    # Strike guidance logic
     action_upper = str(trade_action or "").upper().strip()
 
     if action_upper == "LONG BIAS" and readiness_active:
         option_type = "CE"
         if trap_probability < 45 and not theta_warning:
-            recommended_action = "Buy CE — confirmed setup"
+            recommended_action = "Buy CE - confirmed setup"
             delta_range = [0.45, 0.65]
         else:
-            recommended_action = "Buy CE — wait for cleaner entry"
+            recommended_action = "Buy CE - wait for cleaner entry"
             delta_range = [0.35, 0.50]
 
     elif action_upper == "SHORT BIAS" and readiness_active:
         option_type = "PE"
         if trap_probability < 45 and not theta_warning:
-            recommended_action = "Buy PE — confirmed setup"
+            recommended_action = "Buy PE - confirmed setup"
             delta_range = [0.45, 0.65]
         else:
-            recommended_action = "Buy PE — wait for cleaner entry"
+            recommended_action = "Buy PE - wait for cleaner entry"
             delta_range = [0.35, 0.50]
 
     elif trap_probability >= 60 or (iv_rank is not None and iv_rank >= 70):
-        # Selling conditions
         if bias == "Bullish":
             option_type = "PE"
-            recommended_action = "Sell OTM PE — sell support put"
-            delta_range = [0.20, 0.30]
+            recommended_action = "Sell OTM PE (support)"
+            delta_range = [0.15, 0.35]
         else:
             option_type = "CE"
-            recommended_action = "Sell OTM CE — sell resistance call"
-            delta_range = [0.20, 0.30]
+            recommended_action = "Sell OTM CE (resistance)"
+            delta_range = [0.15, 0.35]
 
     else:
-        recommended_action = "Wait — no clean setup"
+        recommended_action = "Wait - no clean setup"
         delta_range = [0.0, 0.0]
 
-    # Find matching strikes
     suggested_strikes = []
     if delta_range[1] > 0 and chain_greeks:
         suggested_strikes = _find_strikes_by_delta(
             chain_greeks, delta_range[0], delta_range[1], option_type
         )
 
-    # Risk/reward context
     rr_note = None
     if suggested_strikes and support and resistance:
         band_width = abs(resistance - support)
-        if band_width > 0 and suggested_strikes[0].get("ltp", 0) > 0:
-            rr = band_width / suggested_strikes[0]["ltp"]
-            rr_note = f"Band width {int(band_width)}pts vs premium ₹{suggested_strikes[0]['ltp']:.1f} = {rr:.1f}x RR"
+        mid_idx = len(suggested_strikes) // 2
+        ref_strike = suggested_strikes[mid_idx]
+        if band_width > 0 and ref_strike.get("ltp", 0) > 0:
+            rr = band_width / ref_strike["ltp"]
+            rr_note = (
+                f"Band width {int(band_width)}pts vs "
+                f"{int(ref_strike['strike'])} {option_type} \u20b9{ref_strike['ltp']:.1f} "
+                f"= {rr:.1f}x RR"
+            )
 
     return {
         "recommended_action": recommended_action,

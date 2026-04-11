@@ -34,7 +34,7 @@ def _moneyness(spot: float, strike: float, option_type: str) -> str:
             return "ATM"
         if ratio > -3:
             return "OTM"
-        return "Deep OTM"
+        return "Far OTM"
     else:
         if ratio < -3:
             return "Deep ITM"
@@ -44,7 +44,7 @@ def _moneyness(spot: float, strike: float, option_type: str) -> str:
             return "ATM"
         if ratio < 3:
             return "OTM"
-        return "Deep OTM"
+        return "Far OTM"
 
 
 def compute_greeks(
@@ -109,18 +109,40 @@ def compute_chain_greeks(
     rows: list[dict[str, Any]],
     spot: float,
     expiry_str: str,
+    fallback_iv: float | None = None,
 ) -> list[dict[str, Any]]:
     result = []
+    normalized_fallback_iv = None
+    if fallback_iv is not None:
+        raw_fallback_iv = float(fallback_iv or 0)
+        normalized_fallback_iv = raw_fallback_iv / 100 if raw_fallback_iv > 1.0 else raw_fallback_iv
+
     for row in rows:
         strike = float(row.get("strike", 0) or 0)
         if strike <= 0:
             continue
-        ce_iv = float(row.get("CE_IV", row.get("ce_iv", 0)) or 0) / 100
-        pe_iv = float(row.get("PE_IV", row.get("pe_iv", 0)) or 0) / 100
+        # Try all known field name variants from NSE/BSE adapters and parser paths.
+        ce_iv_raw = float(
+            row.get("CE_IV")
+            or row.get("ce_iv")
+            or row.get("CE_ImpliedVolatility")
+            or row.get("impliedVolatility_CE")
+            or 0
+        )
+        pe_iv_raw = float(
+            row.get("PE_IV")
+            or row.get("pe_iv")
+            or row.get("PE_ImpliedVolatility")
+            or row.get("impliedVolatility_PE")
+            or 0
+        )
+        # Normalize: values > 1.0 are percentage form (e.g. 14.5 means 14.5%).
+        ce_iv = (ce_iv_raw / 100.0 if ce_iv_raw > 1.0 else ce_iv_raw) if ce_iv_raw > 0 else 0.0
+        pe_iv = (pe_iv_raw / 100.0 if pe_iv_raw > 1.0 else pe_iv_raw) if pe_iv_raw > 0 else 0.0
         if ce_iv <= 0:
-            ce_iv = 0.15
+            ce_iv = normalized_fallback_iv if (normalized_fallback_iv is not None and normalized_fallback_iv > 0) else 0.13
         if pe_iv <= 0:
-            pe_iv = 0.15
+            pe_iv = normalized_fallback_iv if (normalized_fallback_iv is not None and normalized_fallback_iv > 0) else 0.13
         ce_greeks = compute_greeks(
             spot=spot, strike=strike, iv=ce_iv,
             expiry_str=expiry_str, option_type="CE",
@@ -135,5 +157,6 @@ def compute_chain_greeks(
             "pe": pe_greeks,
             "ltp_ce": float(row.get("CE_LastPrice", row.get("ce_ltp", 0)) or 0),
             "ltp_pe": float(row.get("PE_LastPrice", row.get("pe_ltp", 0)) or 0),
+            "distance_from_spot": round(abs(strike - spot), 1),
         })
     return result

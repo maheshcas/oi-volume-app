@@ -226,14 +226,16 @@ type IntelligenceResponse = {
       recommended_action: string;
       option_type: string;
       delta_range: [number, number];
-      suggested_strikes: Array<{
-        strike: number;
-        delta: number;
-        theta: number;
-        iv: number;
-        ltp: number;
-        moneyness: string;
-      }>;
+        suggested_strikes: Array<{
+          strike: number;
+          delta: number;
+          gamma: number;
+          theta: number;
+          iv: number;
+          ltp: number;
+          moneyness: string;
+          distance_from_spot: number;
+        }>;
       warnings: string[];
       theta_warning: boolean;
       days_to_expiry: number;

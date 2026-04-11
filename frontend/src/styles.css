@@ -6420,7 +6420,27 @@ input[type="number"] {
 }
 .sgc-strike-val { display: flex; flex-direction: column; gap: 2px; }
 .sgc-moneyness { font-size: 10px; color: var(--color-text-tertiary); }
+.sgc-delta-pnl {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  margin-top: 1px;
+  letter-spacing: 0.01em;
+}
+.sgc-delta-pnl-up { color: #16a34a; }
+.sgc-delta-pnl-dn { color: #dc2626; }
 .sgc-theta { color: #dc2626; }
+.sgc-strike-best {
+  background: rgba(59, 130, 246, 0.06);
+  border-left: 2px solid rgba(59, 130, 246, 0.5);
+}
+.sgc-strike-best .sgc-strike-val::after {
+  content: "optimal";
+  font-size: 9px;
+  color: #3b82f6;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 
 .sgc-rr-note {
   font-size: 12px; color: var(--color-text-secondary);

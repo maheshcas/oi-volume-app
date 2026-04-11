@@ -129,6 +129,18 @@ async def _require_cache_ready() -> dict[str, Any]:
     return data
 
 
+@router.post("/debug/flush-cache")
+async def debug_flush_cache():
+    """
+    Dev-only endpoint to clear in-memory summary cache.
+    Forces next poll cycle to rebuild from scratch.
+    """
+    async with cache._lock:  # noqa: SLF001 - intentional internal maintenance path
+        cache.summary_data = {}
+        cache.stale_data = True
+    return {"status": "flushed", "message": "Cache cleared. Fresh state on next cycle."}
+
+
 @router.get("/option-chain/expiries")
 async def option_chain_expiries(
     symbol: str = "NIFTY",

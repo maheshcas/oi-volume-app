@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Any
 
 
@@ -22,17 +23,19 @@ def compute_iv_rank(
         rank = 50.0
     else:
         rank = ((current_iv - low) / iv_range) * 100
+    rank = max(0.0, min(100.0, rank))
 
-    percentile = sum(1 for v in iv_history if v <= current_iv) / len(iv_history) * 100
+    percentile = sum(1 for value in iv_history if value <= current_iv) / len(iv_history) * 100
+    percentile = max(0.0, min(100.0, percentile))
 
     if rank >= 70:
-        context = "IV elevated — selling favoured"
+        context = "IV elevated - selling favoured"
         selling_favoured = True
     elif rank <= 30:
-        context = "IV depressed — buying favoured"
+        context = "IV depressed - buying favoured"
         selling_favoured = False
     else:
-        context = "IV neutral — direction-based decision"
+        context = "IV neutral - direction-based decision"
         selling_favoured = False
 
     return {

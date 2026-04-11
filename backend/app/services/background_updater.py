@@ -150,7 +150,16 @@ REGIME_FAMILY_MAP: dict[str, str] = {
 
 # Rolling ATR history per symbol+expiry to stabilize confidence.
 _atr_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=ATR_ROLLING_WINDOW))
-_iv_history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=90))
+_IV_BASELINES: dict[str, list[float]] = {
+    "NIFTY":     [0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.18],
+    "BANKNIFTY": [0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.20],
+    "FINNIFTY":  [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.19],
+    "SENSEX":    [0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18],
+}
+_iv_history: dict[str, deque[float]] = defaultdict(
+    lambda: deque(maxlen=90),
+    {k: deque(v, maxlen=90) for k, v in _IV_BASELINES.items()}
+)
 _calibrated_weights: dict[str, float] = load_adaptive_weights()
 _last_calibrated_session: set[str] = set()
 _last_cycle_log_minute: dict[str, str] = {}
@@ -5093,7 +5102,10 @@ def _build_v2_intelligence(
         oi_shift_score=float(oi.get("oi_shift_score", oi.get("oi_strength", 0.0)) or 0.0),
     )
     # ── Greeks + Strike Guidance ──────────────────────────────────────────
-    atm_iv = float((atm_row or {}).get("CE_IV", 0) or 0) / 100
+    _raw_atm_iv = float((atm_row or {}).get("CE_IV", 0) or 0)
+    atm_iv = _raw_atm_iv / 100.0 if _raw_atm_iv > 1.0 else _raw_atm_iv
+    if atm_iv <= 0.001:
+        atm_iv = 0.0
     if atm_iv > 0:
         _iv_history[symbol].append(atm_iv)
     iv_rank_result = compute_iv_rank(
@@ -5104,6 +5116,7 @@ def _build_v2_intelligence(
         rows=rows,
         spot=spot or 0,
         expiry_str=expiry or "",
+        fallback_iv=atm_iv if atm_iv > 0 else None,
     )
     days_exp = chain_greeks[0]["ce"]["days_to_expiry"] if chain_greeks else 0
     strike_guidance = generate_strike_guidance(
@@ -5276,6 +5289,13 @@ def _build_v2_intelligence(
     log_key = _cache_key(symbol=symbol, instrument_type=INSTRUMENT_TYPE, expiry=expiry)
     if _should_log_cycle(log_key):
         _append_cycle_log(cycle_log_entry)
+
+    _spot_val = float(spot or 0)
+    if _spot_val > 0 and chain_greeks:
+        _sorted = sorted(chain_greeks, key=lambda row: abs(float(row.get("strike", 0) or 0) - _spot_val))
+        _atm_centered = sorted(_sorted[:20], key=lambda row: float(row.get("strike", 0) or 0))
+    else:
+        _atm_centered = chain_greeks[:20]
 
     return {
         "is_complete": True,
@@ -5524,7 +5544,7 @@ def _build_v2_intelligence(
             "auto_exit": auto_exit,
             "prioritized_signals": prioritized.get("prioritized_signals", []),
             "expiry_adaptive": expiry_adaptive,
-            "chain_greeks": chain_greeks[:20],
+            "chain_greeks": _atm_centered,
             "alerts": typed_alerts,
             "alerts_meta": {
                 "strong_directional_bias": strong_bias,
