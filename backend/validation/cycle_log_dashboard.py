@@ -49,6 +49,7 @@ def load_jsonl(path: Path) -> pd.DataFrame:
                 "trap_probability": rec.get("trap_probability"),
                 "trap_type": rec.get("trap_type"),
                 "trade_action": rec.get("trade_action"),
+                "trade_readiness_v2": rec.get("trade_readiness_v2"),
                 "breakout_strength": rec.get("breakout_strength"),
                 "rejection_wick_score": rec.get("rejection_wick_score"),
                 "time_above_level_ratio": rec.get("time_above_level_ratio"),
@@ -74,6 +75,7 @@ def load_jsonl(path: Path) -> pd.DataFrame:
         "bear_force",
         "clarity",
         "execution_risk",
+        "trade_readiness_v2",
         "trap_probability",
         "breakout_strength",
         "rejection_wick_score",
@@ -164,13 +166,18 @@ def main() -> None:
     clarity_mean = float(df["clarity"].mean(skipna=True))
     bias_flip_count = _bias_flip_count(df["primary_bias"])
     dps_mean = float(df["dps_adjusted"].mean(skipna=True))
+    readiness_changes = df["trade_readiness_v2"].diff().abs()
+    readiness_avg_change_per_cycle = float(readiness_changes.fillna(0.0).mean())
+    readiness_max_change_per_cycle = float(readiness_changes.max(skipna=True) or 0.0)
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Trap Mean", f"{trap_mean:.2f}")
     c2.metric("Trap Max", f"{trap_max:.2f}")
     c3.metric("Clarity Mean", f"{clarity_mean:.2f}")
     c4.metric("Bias Flip Count", f"{bias_flip_count}")
     c5.metric("DPS Adj Mean", f"{dps_mean:.3f}")
+    c6.metric("Readiness Avg Δ/Cycle", f"{readiness_avg_change_per_cycle:.3f}")
+    c7.metric("Readiness Max Δ/Cycle", f"{readiness_max_change_per_cycle:.3f}")
 
     trap_fig = go.Figure()
     trap_fig.add_trace(

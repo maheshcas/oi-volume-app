@@ -232,10 +232,13 @@ class StabilityLoggerService:
             "dps_adjusted": market_state.get("dps_adjusted"),
             "oi_scenario": market_state.get("oi_scenario"),
             "dps_scenario_multiplier": market_state.get("dps_scenario_multiplier"),
-            "reversal_decay_cycles": (
-                market_state.get("reversal_decay_cycles")
-                if market_state.get("reversal_decay_cycles") is not None
-                else internal_state.get("reversal_decay_cycles")
+            "reversal_decay_cycles": int(
+                (
+                    market_state.get("reversal_decay_cycles")
+                    if market_state.get("reversal_decay_cycles") is not None
+                    else internal_state.get("reversal_decay_cycles", 0)
+                )
+                or 0
             ),
             "committed_regime": internal_state.get("committed_regime"),
             "detected_regime": internal_state.get("detected_regime"),

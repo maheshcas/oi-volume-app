@@ -7,14 +7,26 @@ type MarketBannerProps = {
   volatilityState: "Expanding" | "Contracting" | "Stable";
   regime?: string;
   regimeExplanation?: string;
+  supportLevel?: number | null;
+  resistanceLevel?: number | null;
   updatedAt: string;
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
   expiryMode?: boolean;
   phase?: string;
   projection?: string;
   showProjection?: boolean;
-  dayTrend?: string;
-  longTrend?: string;
+  alerts?: Array<{
+    message: string;
+    type: "primary" | "counter" | "warning" | string;
+    source?: string;
+    tier?: string;
+  }>;
+};
+
+const alertColors: Record<string, string> = {
+  primary: "ia-alert-bull",
+  counter: "ia-alert-bear",
+  warning: "ia-alert-warn",
 };
 
 function splitSpotParts(value: string) {
@@ -22,15 +34,12 @@ function splitSpotParts(value: string) {
   if (!text || text === "-") {
     return { whole: "-", decimal: "" };
   }
-  const [whole, decimal] = text.split(".");
-  return { whole, decimal: decimal ? `.${decimal}` : "" };
-}
-
-function toneForTrend(label?: string) {
-  const text = String(label ?? "").toLowerCase();
-  if (text.includes("bull") || text.includes("up")) return "ia-pill-trend-bull";
-  if (text.includes("bear") || text.includes("down")) return "ia-pill-trend-bear";
-  return "ia-pill-trend-neutral";
+  const numeric = Number(text.replace(/,/g, ""));
+  if (Number.isFinite(numeric)) {
+    return { whole: Math.round(numeric).toLocaleString("en-IN"), decimal: "" };
+  }
+  const [whole] = text.split(".");
+  return { whole, decimal: "" };
 }
 
 function isNegativeDelta(value?: string) {
@@ -48,6 +57,7 @@ function isNegativeDelta(value?: string) {
 
 export default function MarketBanner(props: MarketBannerProps) {
   const spotParts = splitSpotParts(props.spot);
+  const spotNum = Number(String(props.spot || "").replace(/,/g, ""));
   const liveTone =
     props.liveStatus === "live"
       ? "ia-live-ok"
@@ -86,29 +96,34 @@ export default function MarketBanner(props: MarketBannerProps) {
     : props.projection?.toLowerCase().includes("up")
       ? "ia-text-bull"
       : "";
-  const phaseText = (props.phase || "").toLowerCase();
-  const phaseLabel = phaseText.includes("opening")
-    ? "Opening Drive"
-    : phaseText.includes("structure")
-      ? "Structure Formation"
-      : phaseText.includes("compression")
-        ? "Compression Phase"
-        : phaseText.includes("position")
-          ? "Position Build Phase"
-          : phaseText.includes("expansion") || phaseText.includes("power") || phaseText.includes("closing")
-            ? "Expansion Window"
-            : "Transition";
-  const phaseTone = phaseText.includes("opening")
-    ? "ia-phase-opening"
-    : phaseText.includes("structure")
-      ? "ia-phase-transition"
-      : phaseText.includes("compression")
-        ? "ia-phase-midday"
-        : phaseText.includes("position")
-          ? "ia-phase-transition"
-          : phaseText.includes("expansion") || phaseText.includes("power") || phaseText.includes("closing")
-            ? "ia-phase-power"
-            : "ia-phase-transition";
+  const regimeLabel = props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day");
+  const projectionLabel = props.projection ?? "No breakout signal";
+  const bandLabel =
+    typeof props.supportLevel === "number" && Number.isFinite(props.supportLevel) &&
+    typeof props.resistanceLevel === "number" && Number.isFinite(props.resistanceLevel)
+      ? `${props.supportLevel.toLocaleString("en-IN")} – ${props.resistanceLevel.toLocaleString("en-IN")}`
+      : "levels unavailable";
+  const stanceLabel = regimeLabel.toLowerCase().includes("range") ? "Range bound" : regimeLabel;
+  const breakoutLabel = /breakout/i.test(projectionLabel) ? projectionLabel : "No breakout signal";
+  const distToS =
+    Number.isFinite(spotNum) && typeof props.supportLevel === "number"
+      ? Math.abs(spotNum - props.supportLevel)
+      : null;
+  const distToR =
+    Number.isFinite(spotNum) && typeof props.resistanceLevel === "number"
+      ? Math.abs(props.resistanceLevel - spotNum)
+      : null;
+  const nearestLevel =
+    distToS !== null && distToR !== null && typeof props.supportLevel === "number" && typeof props.resistanceLevel === "number"
+      ? distToS < distToR
+        ? `support ${props.supportLevel.toLocaleString("en-IN")}`
+        : `resistance ${props.resistanceLevel.toLocaleString("en-IN")}`
+      : "key levels";
+  const summaryFromLegacy = String(props.regimeExplanation || "").replace(
+    "Needs 3x Balanced Structure to advance",
+    `Range bound · no breakout signal · watch ${nearestLevel}`,
+  );
+  const summaryLine = summaryFromLegacy || `${stanceLabel} · ${bandLabel} · ${breakoutLabel}`;
 
   return (
     <div className="ia-status-bar">
@@ -147,30 +162,33 @@ export default function MarketBanner(props: MarketBannerProps) {
         </span>
       </div>
 
+      {props.alerts && props.alerts.length > 0 ? (
+        <div className="ia-alert-ticker">
+          <span className="ia-alert-ticker-label">LIVE</span>
+          <div className="ia-alert-ticker-track">
+            {props.alerts.map((a, i) => (
+              <span
+                key={`${a.message}-${i}`}
+                className={`ia-alert-chip ${alertColors[a.type] ?? "ia-alert-warn"}`}
+              >
+                {a.message}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="ia-banner-row ia-banner-row-secondary">
         <span className="ia-pill ia-pill-status">
-          Regime: {props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day")}
+          {regimeLabel}
         </span>
-        {props.expiryMode ? <span className="ia-pill ia-pill-active">Expiry Mode</span> : null}
-        <span className={`ia-pill ia-pill-active ${phaseTone}`}>Phase: {phaseLabel}</span>
-      </div>
-
-      <div className="ia-banner-row ia-banner-row-secondary ia-banner-row-sub">
         {props.showProjection === false ? null : (
           <span className={`ia-pill ia-pill-status ${projectionTone ? "ia-pill-status-emphasis" : ""}`}>
-            Projection: {props.projection ?? "Range"}
+            {projectionLabel}
           </span>
         )}
-        <span className={`ia-pill ia-pill-trend ${toneForTrend(props.dayTrend)}`}>
-          Day: {props.dayTrend ?? "-"}
-        </span>
-        <span className={`ia-pill ia-pill-trend ${toneForTrend(props.longTrend)}`}>
-          Long: {props.longTrend ?? "-"}
-        </span>
       </div>
-      {props.regimeExplanation ? (
-        <div className="ia-banner-regime-note">{props.regimeExplanation}</div>
-      ) : null}
+      <div className="ia-banner-regime-note">{summaryLine}</div>
     </div>
   );
 }

@@ -214,6 +214,9 @@ frontend/src/components/mobile/PrimarySignalCard.tsx
 - Explainability uses backend-provided:
   - `readiness_cap_reason`
   - `readiness_floor_reason`
+- Range-lock validation note:
+  - Spec threshold is `readiness <= 45`
+  - Current backend range-lock evaluation is done on pre-V2 `trade_readiness` before final V2 assignment; verify this behavior in cycle-log checks.
 
 Validation Checklist
 - Selecting `SENSEX` persists across refresh.

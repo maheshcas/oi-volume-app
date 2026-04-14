@@ -458,12 +458,127 @@ def _pullback_depth_ratio(
     return 0.0
 
 
+def _compute_oi_matrix_trap(
+    price_direction: str,
+    oi_direction: str,
+    volume_category: str,
+    spot: float,
+    support: float,
+    resistance: float,
+    strike_gap: int,
+    liquidity_map: list[dict[str, Any]],
+    prev_spot: float | None,
+    prev_oi_total: float | None,
+    oi_velocity_score: float = 0.0,
+) -> dict[str, Any]:
+    """
+    OI-price matrix classification layer.
+    Returns:
+      oi_trap_signal, oi_trap_confidence, oi_trap_reason, breach_level,
+      breach_oi_confirming, oi_price_divergence
+    """
+    _ = prev_spot
+    _ = prev_oi_total
+    level_proximity = max(1, int(strike_gap)) * 2
+
+    near_resistance = (resistance > 0) and (abs(float(spot) - float(resistance)) < level_proximity)
+    near_support = (support > 0) and (abs(float(spot) - float(support)) < level_proximity)
+    above_resistance = (resistance > 0) and (float(spot) > float(resistance))
+    below_support = (support > 0) and (float(spot) < float(support))
+
+    breach_level: float | None = None
+    breach_side: str | None = None
+    if above_resistance or near_resistance:
+        breach_level = float(resistance)
+        breach_side = "resistance"
+    elif below_support or near_support:
+        breach_level = float(support)
+        breach_side = "support"
+
+    level_oi_confirming: bool | None = None
+    if breach_level is not None and isinstance(liquidity_map, list) and liquidity_map:
+        level_row = min(
+            liquidity_map,
+            key=lambda r: abs(float((r or {}).get("strike", 0) or 0) - float(breach_level)),
+        )
+        ce_chg = float((level_row or {}).get("oi_ce_change", 0) or 0)
+        pe_chg = float((level_row or {}).get("oi_pe_change", 0) or 0)
+
+        if breach_side == "resistance":
+            if price_direction == "up":
+                level_oi_confirming = ce_chg < -0.05
+            else:
+                level_oi_confirming = ce_chg > 0.03
+        elif breach_side == "support":
+            if price_direction == "down":
+                level_oi_confirming = pe_chg < -0.05
+            else:
+                level_oi_confirming = pe_chg > 0.03
+
+    matrix_signal = "NEUTRAL"
+    matrix_confidence = "Low"
+
+    if price_direction == "up" and oi_direction == "falling":
+        matrix_signal = "BULL_TRAP"
+        if volume_category == "low" and (near_resistance or above_resistance):
+            matrix_confidence = "High"
+        elif volume_category == "low":
+            matrix_confidence = "Moderate"
+        elif volume_category == "high":
+            # OI flush with high volume can be short-covering exhaustion:
+            # still suspicious, but less clean than low-volume divergence.
+            matrix_confidence = "Moderate"
+        else:
+            matrix_confidence = "Low"
+    elif price_direction == "up" and oi_direction == "rising" and volume_category == "high":
+        matrix_signal = "BULL_CONFIRM"
+        matrix_confidence = "High" if oi_velocity_score >= 0.6 else "Moderate"
+    elif price_direction == "down" and oi_direction == "falling":
+        matrix_signal = "BEAR_TRAP"
+        if volume_category == "low" and (near_support or below_support):
+            matrix_confidence = "High"
+        elif volume_category == "low":
+            matrix_confidence = "Moderate"
+        else:
+            matrix_confidence = "Low"
+    elif price_direction == "down" and oi_direction == "rising" and volume_category == "high":
+        matrix_signal = "BEAR_CONFIRM"
+        matrix_confidence = "High" if oi_velocity_score >= 0.6 else "Moderate"
+
+    if level_oi_confirming is False and matrix_signal in ("BULL_TRAP", "BEAR_TRAP"):
+        matrix_confidence = "High"
+    elif level_oi_confirming is True and matrix_signal in ("BULL_TRAP", "BEAR_TRAP"):
+        matrix_confidence = "Low"
+
+    reason_map = {
+        "BULL_TRAP": f"Price rising but OI falling; short covering likely near {int(resistance) if resistance else 'resistance'}.",
+        "BEAR_TRAP": f"Price falling but OI falling; long unwinding likely near {int(support) if support else 'support'}.",
+        "BULL_CONFIRM": "Rising price + rising OI + high volume; genuine long buildup.",
+        "BEAR_CONFIRM": "Falling price + rising OI + high volume; genuine short buildup.",
+        "NEUTRAL": "OI and price are not in a clear trap/confirm pattern.",
+    }
+    oi_price_divergence = matrix_signal in ("BULL_TRAP", "BEAR_TRAP")
+    breach_oi_confirming = bool(level_oi_confirming) if level_oi_confirming is not None else True
+    return {
+        "oi_trap_signal": matrix_signal,
+        "oi_trap_confidence": matrix_confidence,
+        "oi_trap_reason": reason_map.get(matrix_signal, "OI matrix neutral"),
+        "breach_level": breach_level,
+        "breach_oi_confirming": breach_oi_confirming,
+        "oi_price_divergence": oi_price_divergence,
+    }
+
+
 def run_trap_engine(
     features: dict[str, Any],
     breakout: dict[str, Any],
     oi: dict[str, Any],
     volume: dict[str, Any],
     previous_state: dict[str, Any] | None = None,
+    liquidity_map: list[dict[str, Any]] | None = None,
+    prev_spot: float | None = None,
+    prev_oi_total: float | None = None,
+    strike_gap: int | None = None,
 ) -> dict[str, Any]:
     # Retail simplified trap logic:
     # trigger only when breakout + weak ATM OI + weak volume + not first 5 minutes.
@@ -522,6 +637,11 @@ def run_trap_engine(
         / max(1, len(rows))
     )
     volume_ratio = atm_volume / max(1.0, avg_volume)
+    current_total_chain_oi = sum(
+        max(0.0, float(r.get("CE_OI", r.get("oi_ce", 0.0)) or 0.0))
+        + max(0.0, float(r.get("PE_OI", r.get("oi_pe", 0.0)) or 0.0))
+        for r in rows
+    )
     volume_score_fallback = min(1.0, volume_ratio / 2.0)
     volume_score_candidate = volume.get("volume_expansion_score")
     volume_expansion_score = _clamp01(
@@ -640,6 +760,73 @@ def run_trap_engine(
     trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
     trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
 
+    # OI-price matrix additive layer (does not replace existing path).
+    resolved_prev_spot = prev_spot
+    if resolved_prev_spot is None and isinstance(previous_state, dict):
+        resolved_prev_spot = float(previous_state.get("spot", 0.0) or 0.0) if previous_state.get("spot") is not None else None
+    resolved_prev_oi_total = prev_oi_total
+    if resolved_prev_oi_total is None and isinstance(previous_state, dict):
+        prior_oi = previous_state.get("total_chain_oi")
+        resolved_prev_oi_total = float(prior_oi) if isinstance(prior_oi, (int, float)) else None
+
+    if resolved_prev_spot is None or resolved_prev_oi_total is None:
+        oi_matrix_result = {
+            "oi_trap_signal": "NEUTRAL",
+            "oi_trap_confidence": "Low",
+            "oi_trap_reason": "Insufficient prior cycle context for OI matrix.",
+            "breach_level": None,
+            "breach_oi_confirming": True,
+            "oi_price_divergence": False,
+        }
+        trap_boost = 0
+    else:
+        if isinstance(spot, (int, float)) and float(spot) > float(resolved_prev_spot) + 10.0:
+            price_direction = "up"
+        elif isinstance(spot, (int, float)) and float(spot) < float(resolved_prev_spot) - 10.0:
+            price_direction = "down"
+        else:
+            price_direction = "flat"
+
+        if current_total_chain_oi > float(resolved_prev_oi_total) * 1.005:
+            oi_direction = "rising"
+        elif current_total_chain_oi < float(resolved_prev_oi_total) * 0.995:
+            oi_direction = "falling"
+        else:
+            oi_direction = "flat"
+
+        if volume_ratio > 1.3:
+            volume_category = "high"
+        elif volume_ratio < 0.7:
+            volume_category = "low"
+        else:
+            volume_category = "normal"
+
+        resolved_strike_gap = int(strike_gap or features.get("strike_gap") or 50)
+        oi_matrix_result = _compute_oi_matrix_trap(
+            price_direction=price_direction,
+            oi_direction=oi_direction,
+            volume_category=volume_category,
+            spot=float(spot) if isinstance(spot, (int, float)) else 0.0,
+            support=float(support) if isinstance(support, (int, float)) else 0.0,
+            resistance=float(resistance) if isinstance(resistance, (int, float)) else 0.0,
+            strike_gap=max(1, resolved_strike_gap),
+            liquidity_map=liquidity_map if isinstance(liquidity_map, list) else [],
+            prev_spot=resolved_prev_spot,
+            prev_oi_total=resolved_prev_oi_total,
+            oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
+        )
+
+        sig = str(oi_matrix_result.get("oi_trap_signal", "NEUTRAL"))
+        conf = str(oi_matrix_result.get("oi_trap_confidence", "Low"))
+        if sig in ("BULL_TRAP", "BEAR_TRAP"):
+            trap_boost = 15 if conf == "High" else 8 if conf == "Moderate" else 3
+        elif sig in ("BULL_CONFIRM", "BEAR_CONFIRM"):
+            trap_boost = -15 if conf == "High" else -8 if conf == "Moderate" else -3
+        else:
+            trap_boost = 0
+
+    trap_risk = int(min(95, max(0, trap_risk + trap_boost)))
+
     atm_row_data = features.get("atm_row") or {}
     atm_ce_ltp = float(atm_row_data.get("CE_LastPrice") or 0.0)
     atm_pe_ltp = float(atm_row_data.get("PE_LastPrice") or 0.0)
@@ -707,4 +894,11 @@ def run_trap_engine(
         "iv_realized_ratio": iv_rv.get("iv_realized_ratio"),
         "iv_state": iv_rv.get("iv_state"),
         "straddle_price": iv_rv.get("straddle_price"),
+        "oi_trap_signal": oi_matrix_result.get("oi_trap_signal"),
+        "oi_trap_confidence": oi_matrix_result.get("oi_trap_confidence"),
+        "oi_trap_reason": oi_matrix_result.get("oi_trap_reason"),
+        "breach_level": oi_matrix_result.get("breach_level"),
+        "breach_oi_confirming": oi_matrix_result.get("breach_oi_confirming"),
+        "oi_price_divergence": oi_matrix_result.get("oi_price_divergence"),
+        "total_chain_oi": round(float(current_total_chain_oi), 2),
     }

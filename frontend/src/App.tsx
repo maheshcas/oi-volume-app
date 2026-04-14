@@ -185,6 +185,7 @@ type IntelligenceResponse = {
     delta_seconds?: number | null;
     market_structure_score?: number;
     structure_state?: string;
+    oi_scenario?: string;
     drift?: string;
     projection?: string;
     conflict_market_state?: string;
@@ -241,6 +242,57 @@ type IntelligenceResponse = {
       days_to_expiry: number;
       iv_rank: number | null;
       risk_reward_note: string | null;
+      position_size_fraction?: number | null;
+      position_size_label?: string | null;
+      execution_layer?: string | null;
+      delta_guidance?: string | null;
+      avoid_buying_premium?: boolean;
+      entry_zone?: string | null;
+      stop_zone?: string | null;
+      target_zone?: string | null;
+    };
+    strike_intelligence?: {
+      entry_signal?: string;
+      entry_signal_reason?: string;
+      entry_signal_strength?: string;
+      recommended_action?: string;
+      recommended_option?: string;
+      recommended_strike?: number | null;
+      trade_side?: string;
+      position_size_fraction?: number;
+      stop_description?: string;
+      target_description?: string;
+      delta_target_min?: number | null;
+      delta_target_max?: number | null;
+      max_pain_strike?: number | null;
+      max_pain_pull?: string;
+      iv_skew?: string;
+      straddle_trend?: string;
+      atm_straddle_premium?: number | null;
+      ce_wall_holding?: boolean;
+      pe_wall_holding?: boolean;
+    };
+    entry_target?: {
+      trade_type?: string;
+      entry_underlying?: number | null;
+      entry_option_strike?: number | null;
+      entry_option_type?: string | null;
+      entry_option_action?: string | null;
+      entry_premium?: number | null;
+      entry_brief?: string;
+      stop_underlying?: number | null;
+      stop_premium_value?: number | null;
+      stop_brief?: string;
+      target_1?: number | null;
+      target_2?: number | null;
+      target_brief?: string;
+      rr_t1?: number | null;
+      rr_t2?: number | null;
+      rr_brief?: string;
+      call_wall_used?: number | null;
+      put_wall_used?: number | null;
+      straddle_entry_premium?: number | null;
+      straddle_target_premium?: number | null;
     };
     session_phase_confidence?: number;
     breakout_probability?: {
@@ -332,6 +384,12 @@ type IntelligenceResponse = {
       trap_raw?: number;
       trap_reason?: string | null;
       support_reason?: string | null;
+      oi_trap_signal?: string | null;
+      oi_trap_confidence?: string | null;
+      oi_trap_reason?: string | null;
+      breach_level?: number | null;
+      breach_oi_confirming?: boolean;
+      oi_price_divergence?: boolean;
     };
     material_breach?: {
       material_breach_confirmed?: boolean;
@@ -492,6 +550,34 @@ function normalizeReadinessScore(value: number | null | undefined) {
   return Math.max(0, Math.min(100, value));
 }
 
+function pressureStateToScore(state?: string | null) {
+  const text = String(state || "").trim().toLowerCase();
+  if (!text) return 50;
+  if (text.includes("strong bull")) return 85;
+  if (text.includes("mild bull")) return 65;
+  if (text.includes("strong bear")) return 15;
+  if (text.includes("mild bear")) return 35;
+  if (text.includes("strong buy")) return 85;
+  if (text.includes("buy pressure")) return 65;
+  if (text.includes("sell pressure")) return 35;
+  if (text.includes("balanced")) return 50;
+  return 50;
+}
+
+function canonicalReadinessState(rawState?: string | null, score?: number | null) {
+  const value = normalizeReadinessScore(score);
+  if (typeof value === "number") {
+    if (value >= 60) return "Ready";
+    if (value >= 42) return "Building";
+    return "Not ready";
+  }
+  const normalized = String(rawState || "").trim().toLowerCase();
+  if (normalized.includes("high") || normalized.includes("active") || normalized === "ready") return "Ready";
+  if (normalized.includes("moderate") || normalized.includes("build")) return "Building";
+  if (normalized.includes("low") || normalized.includes("not")) return "Not ready";
+  return "Building";
+}
+
 function selectReadinessDisplay({
   score,
   state,
@@ -513,7 +599,7 @@ function selectReadinessDisplay({
   const fallbackScoreValue = normalizeReadinessScore(fallbackScore);
   const fallbackStateValue = String(fallbackState || "Unknown").trim() || "Unknown";
   const selectedScore = primaryScoreValue ?? fallbackScoreValue;
-  const selectedState = String(state || "").trim() || fallbackStateValue;
+  const selectedState = canonicalReadinessState(state, selectedScore ?? null) || fallbackStateValue;
   const selectedActive = typeof active === "boolean" ? active : null;
 
   return {
@@ -917,6 +1003,63 @@ export default function App() {
     trap: { value: "Low", count: 0 },
   });
 
+  const parseExpiryDate = (label: string): Date | null => {
+    const text = String(label || "").trim();
+    const m = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+    if (!m) return null;
+    const day = Number(m[1]);
+    const mon = m[2].toLowerCase();
+    const year = Number(m[3]);
+    const monthMap: Record<string, number> = {
+      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+    };
+    const month = monthMap[mon];
+    if (month === undefined || Number.isNaN(day) || Number.isNaN(year)) return null;
+    return new Date(year, month, day);
+  };
+
+  const getIstNow = (): Date => {
+    const ist = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    return ist;
+  };
+
+  const getActiveExpiry = (expiryList: string[], today: Date): string => {
+    if (!expiryList.length) return "";
+    const parsed = expiryList
+      .map((label) => ({ label, date: parseExpiryDate(label) }))
+      .filter((item): item is { label: string; date: Date } => item.date instanceof Date)
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    if (!parsed.length) return expiryList[0] ?? "";
+
+    const now = today;
+    const nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const active = parsed.find((item) => item.date.getTime() >= nowMidnight.getTime());
+
+    const todayExpiry = parsed.find(
+      (item) =>
+        item.date.getFullYear() === now.getFullYear() &&
+        item.date.getMonth() === now.getMonth() &&
+        item.date.getDate() === now.getDate(),
+    );
+
+    const istHour = Number(
+      now.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        hour12: false,
+      }),
+    );
+    const istMinute = now.getMinutes();
+    const marketClosed = istHour > 15 || (istHour === 15 && istMinute >= 30);
+
+    if (todayExpiry && marketClosed) {
+      const nextExpiry = parsed.find((item) => item.date.getTime() > todayExpiry.date.getTime());
+      return nextExpiry?.label ?? active?.label ?? expiryList[0];
+    }
+    return active?.label ?? expiryList[0];
+  };
+
   const handleSymbolChange = (nextSymbol: string) => {
     if (!isSymbolKey(nextSymbol)) return;
     persistSymbol(nextSymbol);
@@ -936,7 +1079,25 @@ export default function App() {
       const data = await res.json();
       const list = Array.isArray(data.expiries) ? data.expiries : [];
       setExpiries(list);
-      setExpiry((current) => (current && list.includes(current) ? current : list[0] ?? ""));
+      const activeExpiry = getActiveExpiry(list, getIstNow());
+      setExpiry((current) => {
+        if (current && list.includes(current)) {
+          const currentDate = parseExpiryDate(current);
+          const now = getIstNow();
+          if (currentDate) {
+            const currentIsToday =
+              currentDate.getFullYear() === now.getFullYear() &&
+              currentDate.getMonth() === now.getMonth() &&
+              currentDate.getDate() === now.getDate();
+            const afterClose = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 30);
+            if (currentIsToday && afterClose && activeExpiry && activeExpiry !== current) {
+              return activeExpiry;
+            }
+          }
+          return current;
+        }
+        return activeExpiry || list[0] || "";
+      });
       setStatus(list.length ? `Loaded ${list.length} expiries.` : "No expiries returned.");
     } catch {
       setStatus(LIVE_DATA_UNAVAILABLE_MSG);
@@ -981,7 +1142,7 @@ export default function App() {
         // avoid rendering oversized heatmap payload in long-running sessions
         return next.slice(-480);
       });
-      setStatus(`Loaded ${data.rows?.length ?? 0} strikes.`);
+      setStatus("");
 
       // v2 intelligence (single source of truth for bias/regime/probabilities)
       try {
@@ -1058,6 +1219,18 @@ export default function App() {
     setExpiry("");
     loadExpiries();
   }, [symbol, instrumentType, useSample]);
+
+  useEffect(() => {
+    if (!expiries.length) return;
+    const syncActiveExpiry = () => {
+      const active = getActiveExpiry(expiries, getIstNow());
+      if (!active) return;
+      setExpiry((current) => (current && current === active ? current : active));
+    };
+    syncActiveExpiry();
+    const timer = setInterval(syncActiveExpiry, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [expiries]);
 
   useEffect(() => {
     if (!expiry) return;
@@ -2142,18 +2315,21 @@ export default function App() {
   const breakoutStrength = breakoutStrengthRaw > 1 ? breakoutStrengthRaw / 100 : breakoutStrengthRaw;
   const trapProbabilityRaw = Number(displayTrapRiskPct ?? 0);
   const trapProbability = trapProbabilityRaw > 1 ? trapProbabilityRaw / 100 : trapProbabilityRaw;
-  const pressureRawScore = Math.max(
-    0,
-    Math.min(
-      100,
-      ((0.35 * directionalForceBull +
-        0.25 * alignmentScore +
-        0.2 * oiVelocityScore +
-        0.1 * breakoutStrength -
-        0.2 * trapProbability) *
-        100)
-    )
-  );
+  const backendPressureState =
+    intelligence?.decision_engine?.pressure_state ??
+    intelligence?.market_state?.pressure_state ??
+    "";
+  const hasBackendPressureState = String(backendPressureState).trim().length > 0;
+  const rawDirectional =
+    (0.35 * ((directionalForceBull - 0.5) * 2)) +
+    (0.25 * alignmentScore) +
+    (0.2 * oiVelocityScore) +
+    (0.1 * breakoutStrength);
+  const trapSymmetricSuppression =
+    0.2 * trapProbability * Math.sign(rawDirectional === 0 ? 0 : rawDirectional);
+  const pressureRawScore = hasBackendPressureState
+    ? pressureStateToScore(backendPressureState)
+    : Math.max(0, Math.min(100, (50 + ((rawDirectional - trapSymmetricSuppression) * 50))));
   const pressureStateLabel =
     pressureSmoothed < 35
       ? "Sell Pressure"
@@ -2180,10 +2356,9 @@ export default function App() {
   const displayReadinessScore = Number(selectedReadiness.score ?? 0);
   const displayReadinessState = selectedReadiness.state;
   const displayReadinessExplainability = selectedReadiness.explainabilityText;
-  const directionalPressureLabel =
-    intelligence?.decision_engine?.pressure_state ??
-    intelligence?.market_state?.pressure_state ??
-    pressureStateLabel;
+  const directionalPressureLabel = hasBackendPressureState
+    ? String(backendPressureState)
+    : pressureStateLabel;
   const clarityRaw = Number(intelligence?.market_state?.clarity ?? displayConfidence ?? 0);
   const clarityNorm = clarityRaw > 1 ? clarityRaw / 100 : clarityRaw;
   const readinessRaw = Math.max(
@@ -2270,6 +2445,7 @@ export default function App() {
   const dailyPerformancePreview = dailyPerformance
     ? `${Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/${dailyPerformance.total_signals_logged} setups valid today, trap risk ${String(displayTrapLevel).toLowerCase()}.`
     : "";
+  const advancedAnalysisPreview = `Engine view: MSS ${Math.round(structureScore)} · Pressure ${pressureStateLabel} · Conflict ${conflictState}`;
   const institutionalStructure = intelligence?.institutional_structure as
     | { put_wall?: number | null; call_wall?: number | null }
     | undefined;
@@ -2473,8 +2649,10 @@ export default function App() {
   }, [structureState, driftState, displayTrapLevel]);
 
   useEffect(() => {
-    setPressureSmoothed((prev) => (0.7 * prev) + (0.3 * pressureRawScore));
-  }, [pressureRawScore]);
+    setPressureSmoothed((prev) =>
+      hasBackendPressureState ? pressureRawScore : (0.7 * prev) + (0.3 * pressureRawScore)
+    );
+  }, [hasBackendPressureState, pressureRawScore]);
 
   useEffect(() => {
     const pending = readinessPendingRef.current;
@@ -3145,7 +3323,6 @@ export default function App() {
       <div className="page hidden md:block">
       <header className="hero">
         <div>
-          <p className="eyebrow">Intraday Dashboard</p>
           <div className="brand-logo" aria-label="OptionLens">
             <span className="brand-logo-option">Option</span>
             <span className="brand-logo-lens">Lens</span>
@@ -3174,8 +3351,15 @@ export default function App() {
 
       <section className="panel">
         <div className="controls">
-          <label className="field symbol-toggle-field">
+          <label className="field symbol-toggle-field control-symbol">
             <span>Symbol</span>
+            <select value={symbol} onChange={(event) => handleSymbolChange(event.target.value as SymbolKey)}>
+              {SYMBOLS.map((item) => (
+                <option value={item} key={`symbol-select-${item}`}>
+                  {item === "SENSEX" ? `${SYMBOL_DISPLAY[item]} (beta)` : SYMBOL_DISPLAY[item]}
+                </option>
+              ))}
+            </select>
             <div className="symbol-pill-group" role="tablist" aria-label="Select symbol">
               {SYMBOLS.map((item) => {
                 const active = item === symbol;
@@ -3183,23 +3367,18 @@ export default function App() {
                   <button
                     type="button"
                     key={item}
-                    className={`symbol-pill${active ? " symbol-pill-active" : ""}`}
+                    className={`symbol-pill${active ? " symbol-pill-active" : ""}${item === "SENSEX" ? " symbol-pill-beta" : ""}`}
                     onClick={() => handleSymbolChange(item)}
                     aria-pressed={active}
                   >
                     {SYMBOL_DISPLAY[item]}
+                    {item === "SENSEX" ? " β" : ""}
                   </button>
                 );
               })}
             </div>
           </label>
-          <label className="field">
-            <span>Instrument</span>
-            <select value={instrumentType} onChange={(event) => setInstrumentType(event.target.value)}>
-              <option value="Indices">Indices</option>
-            </select>
-          </label>
-          <label className="field">
+          <label className="field control-expiry">
             <span>Expiry</span>
             <select value={expiry} onChange={(event) => setExpiry(event.target.value)}>
               {expiries.map((item) => (
@@ -3209,48 +3388,53 @@ export default function App() {
               ))}
             </select>
           </label>
-          <label className="field">
-            <span>Range Around Spot</span>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={rangeCount}
-              onChange={(event) => setRangeCount(Number(event.target.value))}
-              disabled={!rangeEnabled}
-            />
-          </label>
-          <label className="field inline">
-            <input
-              type="checkbox"
-              checked={rangeEnabled}
-              onChange={(event) => setRangeEnabled(event.target.checked)}
-            />
-            <span>Use range filter</span>
-          </label>
-          <label className="field inline">
-            <input
-              type="checkbox"
-              checked={useSample}
-              onChange={(event) => setUseSample(event.target.checked)}
-            />
-            <span>Use sample data</span>
-          </label>
-          <label className="field inline">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.target.checked)}
-            />
-            <span>Auto refresh</span>
-          </label>
-          <button type="button" className="refresh-pill-button" onClick={handleManualRefresh}>
+          <details className="advanced-controls control-advanced">
+            <summary>Advanced</summary>
+            <div className="advanced-controls-grid">
+              <label className="field">
+                <span>Instrument</span>
+                <select value={instrumentType} onChange={(event) => setInstrumentType(event.target.value)}>
+                  <option value="Indices">Indices</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Range Around Spot</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={rangeCount}
+                  onChange={(event) => setRangeCount(Number(event.target.value))}
+                  disabled={!rangeEnabled}
+                />
+              </label>
+              <label className="field inline">
+                <input
+                  type="checkbox"
+                  checked={rangeEnabled}
+                  onChange={(event) => setRangeEnabled(event.target.checked)}
+                />
+                <span>Use range filter</span>
+              </label>
+              <label className="field inline">
+                <input
+                  type="checkbox"
+                  checked={useSample}
+                  onChange={(event) => setUseSample(event.target.checked)}
+                />
+                <span>Use sample data</span>
+              </label>
+            </div>
+          </details>
+          <button type="button" className="refresh-pill-button control-refresh" onClick={handleManualRefresh}>
             Refresh now
           </button>
-          <div className="status status-inline">
-            {status}
-            {nseStatus === "blocked" && nseMessage ? ` | NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
-          </div>
+          {(status || (nseStatus === "blocked" && nseMessage)) ? (
+            <div className="status status-inline">
+              {status}
+              {nseStatus === "blocked" && nseMessage ? `${status ? " | " : ""}NSE: ${LIVE_DATA_UNAVAILABLE_MSG}` : ""}
+            </div>
+          ) : null}
         </div>
         <MarketBanner
           indexName={indexNameMap[symbol] ?? symbol}
@@ -3269,15 +3453,17 @@ export default function App() {
           volatilityState={displayVolatilityState}
           regime={displayRegime}
           regimeExplanation={regimeExplanation}
+          supportLevel={typeof displaySupport === "number" ? displaySupport : null}
+          resistanceLevel={typeof displayResistance === "number" ? displayResistance : null}
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
           expiryMode={isExpiryMode}
           phase={displaySessionPhase}
           projection={projectionState}
           showProjection={!MARKETING_MODE}
-          dayTrend={dayTrendDisplay}
-          longTrend={longTrendDisplay}
+          alerts={intelligence?.signals?.alerts || []}
         />
+        {/* Entry target card now rendered next to Trade Signal inside DashboardLayout */}
 
         <DashboardLayout
           decision={{
@@ -3297,6 +3483,7 @@ export default function App() {
             support: formatNumber(displaySupport),
             resistance: formatNumber(displayResistance),
             blockingReason: decisionBlockingReason,
+            trapPct: typeof displayTrapRiskPct === "number" ? displayTrapRiskPct : null,
             winningEngine: decisionWinningEngine,
             decisionConfidence,
             supportTransitionBadge: decisionSupportTransitionBadge,
@@ -3374,6 +3561,15 @@ export default function App() {
             targetZone: intelligence?.market_state?.target_zone ?? displayTradePlan.target_zone,
             executionMode: intelligence?.market_state?.execution_mode ?? displayTradePlan.execution_mode,
             deltaGuidance: intelligence?.market_state?.delta_strike_guidance ?? displayTradePlan.delta_strike_guidance,
+            bullishTrigger:
+              typeof displayResistance === "number"
+                ? `Acceptance above active resistance ${formatNumber(displayResistance)}.`
+                : null,
+            bearishTrigger:
+              typeof displaySupport === "number"
+                ? `Break below active support ${formatNumber(displaySupport)}.`
+                : null,
+            invalidation: "Range compression breaks.",
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel,
           }}
@@ -3404,27 +3600,86 @@ export default function App() {
             suggested_action: trapSuggestedAction,
             trap_reason: intelligence?.signals?.trap?.trap_reason ?? null,
             support_reason: intelligence?.signals?.trap?.support_reason ?? null,
+            oi_trap_signal: intelligence?.signals?.trap?.oi_trap_signal ?? null,
+            oi_trap_confidence: intelligence?.signals?.trap?.oi_trap_confidence ?? null,
+            oi_trap_reason: intelligence?.signals?.trap?.oi_trap_reason ?? null,
+            breach_level: intelligence?.signals?.trap?.breach_level ?? null,
+            breach_oi_confirming: intelligence?.signals?.trap?.breach_oi_confirming ?? undefined,
+            oi_price_divergence: intelligence?.signals?.trap?.oi_price_divergence ?? undefined,
             absorption_detected: Boolean(intelligence?.market_state?.absorption_detected),
             absorption_message: intelligence?.market_state?.absorption_message ?? null,
             show_affected_level: showTrapAffectedLevel,
+            key_range: displayDecisionText,
+            institutional_levels: decisionLayerWalls || null,
+            market_insight: decisionLayerInsight,
+            putWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : undefined,
+            callWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : undefined,
+            oi_scenario: intelligence?.market_state?.oi_scenario ?? undefined,
           }}
           alerts={displayAlerts}
           strikeGuidance={
             intelligence?.market_state?.strike_guidance
               ? {
                   ...intelligence.market_state.strike_guidance,
+                  strikeIntelligence: intelligence?.market_state?.strike_intelligence ?? null,
                   iv_context: intelligence.market_state.iv_context ?? null,
                   selling_favoured: intelligence.market_state.selling_favoured ?? false,
                 }
               : null
           }
+          entryTarget={(() => {
+            const et = intelligence?.market_state?.entry_target ?? null;
+            const si = intelligence?.market_state?.strike_intelligence ?? null;
+            const fallback =
+              !et && si
+                ? {
+                    trade_type:
+                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                        ? "NONE"
+                        : String(si.entry_signal || "NONE"),
+                    entry_underlying: typeof spotValue === "number" ? spotValue : null,
+                    entry_option_strike: si.recommended_strike ?? null,
+                    entry_option_type: si.recommended_option ?? null,
+                    entry_option_action: si.recommended_action ?? null,
+                    entry_premium: null,
+                    entry_brief:
+                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                        ? "No clean setup currently. Wait for edge test or trap easing."
+                        : si.entry_signal_reason || "Signal-derived setup.",
+                    stop_underlying: null,
+                    stop_premium_value: null,
+                    stop_brief:
+                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                        ? "Unlock: wait for spot to approach support/resistance with confirmation."
+                        : si.stop_description || "Use signal invalidation.",
+                    target_1: null,
+                    target_2: null,
+                    target_brief:
+                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                        ? "No targets while waiting."
+                        : si.target_description || "Use signal target guidance.",
+                    rr_t1: null,
+                    rr_t2: null,
+                    rr_brief: "RR pending entry-target engine payload.",
+                    call_wall_used:
+                      typeof institutionalStructure?.call_wall === "number"
+                        ? institutionalStructure.call_wall
+                        : null,
+                    put_wall_used:
+                      typeof institutionalStructure?.put_wall === "number"
+                        ? institutionalStructure.put_wall
+                        : null,
+                  }
+                : null;
+            return et ?? fallback;
+          })()}
         />
 
         <div className="ia-section-gap">
           <AdvancedAnalysisCard
             open={showAdvancedAnalysis}
             onToggle={() => setShowAdvancedAnalysis((prev) => !prev)}
-            preview={dailyPerformancePreview || `MSS ${Math.round(structureScore)} | Pressure ${pressureStateLabel} | Conflict ${conflictState}`}
+            preview={advancedAnalysisPreview}
           >
             {advancedAnalysisContent}
           </AdvancedAnalysisCard>

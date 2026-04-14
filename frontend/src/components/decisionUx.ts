@@ -55,6 +55,11 @@ export function friendlyBlockingReason(reason: DecisionBlockingReason): string {
 }
 
 export function friendlyWinningEngine(engine: WinningEngine): string {
+  const normalized = String(engine ?? "").trim().toLowerCase();
+  if (!normalized || normalized === "none" || normalized === "decision_flow" || normalized === "decision flow") {
+    return "Driven by core decision logic";
+  }
+
   switch (engine) {
     case "trap_engine":
       return "Driven by Trap Engine";
@@ -69,7 +74,7 @@ export function friendlyWinningEngine(engine: WinningEngine): string {
     case "sr_transition_guard":
       return "Driven by Level Transition";
     default:
-      return "Driven by Decision Flow";
+      return `Driven by ${String(engine).trim()}`;
   }
 }
 

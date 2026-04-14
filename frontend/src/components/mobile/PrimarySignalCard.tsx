@@ -37,8 +37,8 @@ function badgeTone(action: string) {
 
 function readinessTone(state: string) {
   const text = state.toLowerCase();
-  if (text.includes("high")) return "text-emerald-300";
-  if (text.includes("low")) return "text-rose-300";
+  if (text.includes("ready") && !text.includes("not")) return "text-emerald-300";
+  if (text.includes("not")) return "text-rose-300";
   return "text-sky-300";
 }
 

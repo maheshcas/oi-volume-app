@@ -9,10 +9,32 @@ export type TrapCardProps = {
   suggested_action: string;
   trap_reason?: string | null;
   support_reason?: string | null;
+  oi_trap_signal?: string | null;
+  oi_trap_confidence?: string | null;
+  oi_trap_reason?: string | null;
+  breach_level?: number | null;
+  breach_oi_confirming?: boolean;
+  oi_price_divergence?: boolean;
   absorption_detected?: boolean;
   absorption_message?: string | null;
   show_affected_level?: boolean;
+  key_range?: string | null;
+  institutional_levels?: string | null;
+  market_insight?: string | null;
+  putWall?: number;
+  callWall?: number;
+  oi_scenario?: string;
 };
+
+const oiScenarioLabel = (scenario: string): string =>
+  ({
+    LONG_BUILDUP: "Fresh longs building — buyers in control",
+    SHORT_BUILDUP: "Fresh shorts building — sellers in control",
+    SHORT_COVERING: "Shorts covering — move may be exhausted",
+    LONG_UNWINDING: "Longs exiting — weakness, watch for reversal",
+    PINNING: "Both sides writing — market pinned to range",
+    NEUTRAL: "",
+  })[scenario] ?? scenario;
 
 const levelStyles: Record<
   TrapLevel,
@@ -60,9 +82,21 @@ export default function TrapCard({
   suggested_action,
   trap_reason,
   support_reason,
+  oi_trap_signal,
+  oi_trap_confidence,
+  oi_trap_reason,
+  breach_level,
+  breach_oi_confirming,
+  oi_price_divergence,
   absorption_detected,
   absorption_message,
   show_affected_level = true,
+  key_range,
+  institutional_levels,
+  market_insight,
+  putWall,
+  callWall,
+  oi_scenario,
 }: TrapCardProps) {
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
   const resolvedTrapLevel = levelStyles[trap_level] ? trap_level : "Moderate";
@@ -83,9 +117,36 @@ export default function TrapCard({
     : trap_direction === "upside"
       ? `Support at risk: ${trap_zone.toLocaleString("en-IN")}`
       : `Level: ${trap_zone.toLocaleString("en-IN")}`;
+  const oiSignal = String(oi_trap_signal || "NEUTRAL").toUpperCase();
+  const showOiRow = Boolean(oiSignal);
+  const oiIsTrap = oiSignal === "BULL_TRAP" || oiSignal === "BEAR_TRAP";
+  const oiIsConfirm = oiSignal === "BULL_CONFIRM" || oiSignal === "BEAR_CONFIRM";
 
   return (
     <section className={`trap-card ${style.glow}`}>
+      {(putWall || callWall || oi_scenario) ? (
+        <div className="ia-oi-brief">
+          {putWall ? (
+            <div className="ia-oi-brief-row ia-oi-brief-bull">
+              <span className="ia-oi-brief-icon">↑</span>
+              <span>Put Wall {putWall.toLocaleString("en-IN")} — floor defended</span>
+            </div>
+          ) : null}
+          {callWall ? (
+            <div className="ia-oi-brief-row ia-oi-brief-bear">
+              <span className="ia-oi-brief-icon">↓</span>
+              <span>Call Wall {callWall.toLocaleString("en-IN")} — ceiling active</span>
+            </div>
+          ) : null}
+          {oi_scenario && oi_scenario !== "NEUTRAL" ? (
+            <div className="ia-oi-brief-row ia-oi-brief-neutral">
+              <span className="ia-oi-brief-icon">◈</span>
+              <span>{oiScenarioLabel(oi_scenario)}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="trap-header">
         <div className="trap-title-row">
           <span className="trap-lbl">Trap Risk</span>
@@ -114,6 +175,27 @@ export default function TrapCard({
       </div>
 
       <div className="trap-details">
+        {key_range ? (
+          <div className="trap-row">
+            <div className="trap-key">Key Range</div>
+            <div className="trap-value">{key_range}</div>
+          </div>
+        ) : null}
+
+        {institutional_levels ? (
+          <div className="trap-row">
+            <div className="trap-key">Institutional Levels</div>
+            <div className="trap-value">{institutional_levels}</div>
+          </div>
+        ) : null}
+
+        {market_insight ? (
+          <div className="trap-row">
+            <div className="trap-key">Market Insight</div>
+            <div className="trap-value">{market_insight}</div>
+          </div>
+        ) : null}
+
         {absorption_detected && absorption_message ? (
           <div
             className="trap-row trap-row-accent"
@@ -135,6 +217,26 @@ export default function TrapCard({
           <div className="trap-row">
             <div className="trap-key">Support Strength</div>
             <div className="trap-value">{support_reason}</div>
+          </div>
+        ) : null}
+
+        {showOiRow ? (
+          <div className="trap-row trap-row-accent">
+            <div className="trap-key">
+              <span className={`trap-oi-pill ${oiIsTrap ? "trap-oi-pill-trap" : oiIsConfirm ? "trap-oi-pill-confirm" : ""}`}>
+                {oiIsTrap ? "OI Trap Confirmed" : oiIsConfirm ? "OI Confirms Move" : "OI Matrix"}
+              </span>
+            </div>
+            <div className="trap-value">
+              {oi_trap_reason || "OI and price are not in a clear trap/confirm pattern."}
+              {oi_trap_confidence ? <div className="trap-oi-confidence">Confidence: {oi_trap_confidence}</div> : null}
+              {breach_level ? (
+                <div className="trap-oi-extra">
+                  Level {Number(breach_level).toLocaleString("en-IN")} · OI {breach_oi_confirming ? "confirming" : "diverging"}
+                  {oi_price_divergence ? " · divergence" : ""}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 

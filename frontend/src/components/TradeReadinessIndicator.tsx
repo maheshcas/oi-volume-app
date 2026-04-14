@@ -7,11 +7,12 @@ export default function TradeReadinessIndicator({
   state,
   score,
 }: TradeReadinessIndicatorProps) {
-  const normalizedState = String(state || "Low");
+  const normalizedState = String(state || "Building");
+  const normalizedLower = normalizedState.toLowerCase();
   const toneClass =
-    normalizedState === "High"
+    normalizedLower.includes("ready") && !normalizedLower.includes("not")
       ? "ia-readiness-ready"
-      : normalizedState === "Moderate"
+      : normalizedLower.includes("build")
         ? "ia-readiness-caution"
         : "ia-readiness-wait";
 

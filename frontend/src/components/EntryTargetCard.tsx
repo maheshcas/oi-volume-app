@@ -1,0 +1,120 @@
+import type { FC } from "react";
+
+type EntryTarget = {
+  trade_type?: string;
+  entry_underlying?: number | null;
+  entry_option_strike?: number | null;
+  entry_option_type?: string | null;
+  entry_option_action?: string | null;
+  entry_premium?: number | null;
+  entry_brief?: string;
+  stop_underlying?: number | null;
+  stop_premium_value?: number | null;
+  stop_brief?: string;
+  target_1?: number | null;
+  target_2?: number | null;
+  target_brief?: string;
+  rr_t1?: number | null;
+  rr_t2?: number | null;
+  rr_brief?: string;
+  call_wall_used?: number | null;
+  put_wall_used?: number | null;
+};
+
+type EntryTargetCardProps = {
+  entryTarget: EntryTarget | null | undefined;
+};
+
+function fmt(v: number | null | undefined) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "-";
+  return Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
+  const tradeType = String(entryTarget?.trade_type || "NONE").toUpperCase();
+  if (!entryTarget) return null;
+
+  if (tradeType === "NONE") {
+    return (
+      <div className="ia-card entry-target-card">
+        <div className="ia-card-title-row">
+          <h3 className="ia-card-title">Trade Setup</h3>
+          <span className="et-action-badge et-badge-neutral">WAIT</span>
+        </div>
+        <div className="et-entry-brief">
+          {entryTarget.entry_brief || "No clean setup currently. Wait for support/resistance edge test."}
+        </div>
+        <div className="et-notes">{entryTarget.stop_brief || "Unlock: wait for trap to ease or breach confirmation."}</div>
+        <div className="et-notes">{entryTarget.target_brief || "No targets while waiting."}</div>
+        <div className="et-walls">
+          CE Wall {fmt(entryTarget.call_wall_used)} | PE Wall {fmt(entryTarget.put_wall_used)}
+        </div>
+      </div>
+    );
+  }
+
+  const action = String(entryTarget.entry_option_action || "").toUpperCase();
+  const optionType = String(entryTarget.entry_option_type || "").toUpperCase();
+  const badgeLabel =
+    optionType === "STRADDLE"
+      ? "STRADDLE"
+      : `${action || "TRADE"} ${optionType || ""}`.trim();
+  const badgeClass =
+    optionType === "STRADDLE"
+      ? "et-badge-straddle"
+      : action === "BUY" && optionType === "CE"
+        ? "et-badge-buy-ce"
+        : action === "BUY" && optionType === "PE"
+          ? "et-badge-buy-pe"
+          : action === "SELL"
+            ? "et-badge-sell"
+            : "et-badge-neutral";
+
+  return (
+    <div className="ia-card entry-target-card">
+      <div className="ia-card-title-row">
+        <h3 className="ia-card-title">Trade Setup</h3>
+        <span className={`et-action-badge ${badgeClass}`}>{badgeLabel}</span>
+      </div>
+
+      <div className="et-entry-brief">{entryTarget.entry_brief || "No setup brief available."}</div>
+
+      <div className="et-grid">
+        <div className="et-item">
+          <span className="et-label">Entry</span>
+          <span className="et-value">{fmt(entryTarget.entry_underlying)}</span>
+        </div>
+        <div className="et-item">
+          <span className="et-label">Stop</span>
+          <span className="et-value">
+            {fmt(entryTarget.stop_underlying)}
+            {entryTarget.stop_premium_value != null ? `  ₹${entryTarget.stop_premium_value.toFixed(1)}` : ""}
+          </span>
+        </div>
+        <div className="et-item">
+          <span className="et-label">T1</span>
+          <span className="et-value">
+            {fmt(entryTarget.target_1)}
+            {entryTarget.rr_t1 != null ? ` (${entryTarget.rr_t1.toFixed(1)}x RR)` : ""}
+          </span>
+        </div>
+        <div className="et-item">
+          <span className="et-label">T2</span>
+          <span className="et-value">
+            {fmt(entryTarget.target_2)}
+            {entryTarget.rr_t2 != null ? ` (${entryTarget.rr_t2.toFixed(1)}x RR)` : ""}
+          </span>
+        </div>
+      </div>
+
+      <div className="et-notes">{entryTarget.stop_brief || "-"}</div>
+      <div className="et-notes">{entryTarget.target_brief || entryTarget.rr_brief || "-"}</div>
+
+      <div className="et-walls">
+        CE Wall {fmt(entryTarget.call_wall_used)} | PE Wall {fmt(entryTarget.put_wall_used)}
+      </div>
+    </div>
+  );
+};
+
+export default EntryTargetCard;

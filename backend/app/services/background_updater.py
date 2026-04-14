@@ -44,6 +44,9 @@ from app.engines.volume_analyzer import run_volume_analysis
 from app.engines.greeks_engine import compute_chain_greeks
 from app.engines.iv_rank_engine import compute_iv_rank
 from app.engines.strike_selector_engine import generate_strike_guidance
+from app.engines.strike_intelligence_engine import compute_strike_intelligence
+from app.engines.entry_target_engine import compute_entry_target
+from app.engines.historical_zone_engine import get_intraday_zones
 from app.services.decision_engine import build_decision_input, master_decision_engine
 from app.services.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
@@ -678,6 +681,29 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "iv_context",
         "selling_favoured",
         "strike_guidance",
+        "strike_intelligence",
+        "entry_target",
+        "trade_side",
+        "trade_side_reason",
+        "entry_signal",
+        "entry_signal_reason",
+        "entry_signal_strength",
+        "recommended_strike",
+        "recommended_option",
+        "recommended_action",
+        "delta_target_min",
+        "delta_target_max",
+        "position_size_fraction",
+        "stop_description",
+        "target_description",
+        "max_pain_strike",
+        "max_pain_pull",
+        "iv_skew",
+        "atm_straddle_premium",
+        "straddle_trend",
+        "ce_wall_holding",
+        "pe_wall_holding",
+        "volume_spike_strikes",
         "sr_first_cycle_after_reset",
         "sr_cold_start_guard_applied",
         "sr_previous_support_anchor_used",
@@ -692,6 +718,7 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "adaptive_weights",
         "directional_force",
         "reversal_risk",
+        "reversal_decay_cycles",
     }
     if ENABLE_HZC:
         allowed_keys.update(
@@ -731,6 +758,12 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "trap_state": trap.get("trap_state"),
         "trap_reason": trap.get("trap_reason"),
         "support_reason": trap.get("support_reason"),
+        "oi_trap_signal": trap.get("oi_trap_signal"),
+        "oi_trap_confidence": trap.get("oi_trap_confidence"),
+        "oi_trap_reason": trap.get("oi_trap_reason"),
+        "breach_level": trap.get("breach_level"),
+        "breach_oi_confirming": trap.get("breach_oi_confirming"),
+        "oi_price_divergence": trap.get("oi_price_divergence"),
     }
 
     material_breach = (
@@ -797,6 +830,16 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "expiry_mode": expiry_adaptive.get("expiry_mode"),
         "expiry_multiplier": expiry_adaptive.get("expiry_multiplier"),
         "adjustedMove": expiry_adaptive.get("adjustedMove"),
+    }
+    intraday_zones = (
+        signals.get("intraday_zones") if isinstance(signals.get("intraday_zones"), dict) else {}
+    )
+    sanitized["intraday_zones"] = {
+        "zones": _trim_list(intraday_zones.get("zones"), 12),
+        "nearest_intraday_zone": intraday_zones.get("nearest_intraday_zone"),
+        "opening_range_broken": intraday_zones.get("opening_range_broken"),
+        "opening_range_width": intraday_zones.get("opening_range_width"),
+        "session_range_width": intraday_zones.get("session_range_width"),
     }
     sanitized["chain_greeks"] = _trim_list(signals.get("chain_greeks"), 20)
 
@@ -2906,6 +2949,49 @@ async def _fetch_index_data_async() -> dict[str, Any]:
     return await asyncio.to_thread(fetch_index_data)
 
 
+def _parse_expiry_label(expiry: str) -> datetime | None:
+    text = str(expiry or "").strip()
+    if not text:
+        return None
+    for fmt in ("%d-%b-%Y", "%d %b %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=IST)
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_active_expiries(expiries: list[str]) -> list[str]:
+    if not expiries:
+        return []
+
+    now_ist = datetime.now(IST)
+    market_closed = now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 30)
+    if not market_closed:
+        return expiries
+
+    parsed: list[tuple[str, datetime]] = []
+    for item in expiries:
+        dt = _parse_expiry_label(item)
+        if dt is not None:
+            parsed.append((item, dt))
+    if not parsed:
+        return expiries
+
+    today = now_ist.date()
+    parsed.sort(key=lambda item: item[1])
+    today_expiry = next((label for label, dt in parsed if dt.date() == today), None)
+    if not today_expiry:
+        return expiries
+
+    next_future = next((label for label, dt in parsed if dt.date() > today), None)
+    if not next_future:
+        return expiries
+
+    # After close on expiry day, move active computation to next available expiry.
+    return [item for item in expiries if item != today_expiry]
+
+
 def _resolve_sr_anchor(previous_state: dict[str, Any] | None, side: str) -> tuple[float | None, str | None]:
     """
     Resolve the last known active structural anchor from persisted state.
@@ -3121,7 +3207,18 @@ def _run_ordered_pipeline(
 
     base_volume = run_volume_analysis(features, previous_state=previous_state)
     base_breakout = run_breakout_engine(features, sr)
-    base_trap = run_trap_engine(features, base_breakout, oi, base_volume, previous_state=previous_state)
+    liquidity_map_for_trap = build_liquidity_map(rows=features.get("rows") or [], spot=features.get("spot"))
+    base_trap = run_trap_engine(
+        features,
+        base_breakout,
+        oi,
+        base_volume,
+        previous_state=previous_state,
+        liquidity_map=liquidity_map_for_trap,
+        prev_spot=_safe_float((previous_state or {}).get("spot")),
+        prev_oi_total=_safe_float((previous_state or {}).get("total_chain_oi")),
+        strike_gap=int(float(features.get("strike_gap", 50.0) or 50.0)),
+    )
     base_material_breach = detect_material_breach(
         spot=features.get("spot"),
         support=sr.get("support", {}).get("strike"),
@@ -3160,7 +3257,17 @@ def _run_ordered_pipeline(
 
     volume = run_volume_analysis(features, expansion_threshold=volume_threshold, previous_state=previous_state)
     breakout = run_breakout_engine(features, sr, atr_multiplier=breakout_atr_multiplier)
-    trap = run_trap_engine(features, breakout, oi, volume, previous_state=previous_state)
+    trap = run_trap_engine(
+        features,
+        breakout,
+        oi,
+        volume,
+        previous_state=previous_state,
+        liquidity_map=liquidity_map_for_trap,
+        prev_spot=_safe_float((previous_state or {}).get("spot")),
+        prev_oi_total=_safe_float((previous_state or {}).get("total_chain_oi")),
+        strike_gap=int(float(features.get("strike_gap", 50.0) or 50.0)),
+    )
     regime = run_regime_engine(
         oi,
         volume,
@@ -3195,6 +3302,37 @@ def _safe_float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _build_per_strike_liquidity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        strike = _safe_float(row.get("strike"))
+        if strike is None:
+            continue
+        ce_oi = _safe_float(row.get("CE_OI")) or 0.0
+        pe_oi = _safe_float(row.get("PE_OI")) or 0.0
+        ce_vol = _safe_float(row.get("CE_Volume")) or 0.0
+        pe_vol = _safe_float(row.get("PE_Volume")) or 0.0
+        # parser emits change pct in percent units (e.g. -3.2); normalize to ratio (-0.032).
+        ce_change = (_safe_float(row.get("CE_OIChangePct")) or 0.0) / 100.0
+        pe_change = (_safe_float(row.get("PE_OIChangePct")) or 0.0) / 100.0
+        liquidity_score = ce_oi + pe_oi + 0.2 * (ce_vol + pe_vol)
+        normalized.append(
+            {
+                "strike": int(round(strike)),
+                "oi_ce": ce_oi,
+                "oi_pe": pe_oi,
+                "vol_ce": ce_vol,
+                "vol_pe": pe_vol,
+                "oi_ce_change": ce_change,
+                "oi_pe_change": pe_change,
+                "liquidity_score": liquidity_score,
+            }
+        )
+    return normalized
 
 
 def detect_data_anomalies(
@@ -4817,6 +4955,30 @@ def _build_v2_intelligence(
     decision["readiness_transition_guard_applied"] = bool(
         readiness_v2.get("readiness_transition_guard_applied", False)
     )
+
+    # Re-evaluate range-lock/no-edge with the active readiness contract (V2).
+    # Earlier pipeline stages may still run with pre-V2 readiness for regime
+    # stabilization continuity, but published lock flags must follow spec:
+    # trap >= 55 and readiness <= RANGE_LOCK_READINESS_MAX (45).
+    range_lock_payload_v2 = _apply_range_lock_and_no_edge(
+        raw_candidate_regime=str(decision.get("regime_candidate") or detected_committed_regime or committed_regime),
+        structural_state=structural_state,
+        trap_probability=trap_probability,
+        trade_readiness=float(decision.get("trade_readiness", 0.0) or 0.0),
+        breach_confirmed=material_breach_confirmed,
+        pressure_state=str(decision.get("pressure_state", "") or ""),
+        current_regime=committed_regime,
+    )
+    range_locked = bool(range_lock_payload_v2.get("range_locked", False))
+    no_edge = bool(range_lock_payload_v2.get("no_edge", False))
+    derived_market_state = str(range_lock_payload_v2.get("market_state") or derived_market_state or "")
+    decision["range_locked"] = range_locked
+    decision["no_edge"] = no_edge
+    decision["market_state_marker"] = derived_market_state
+    if no_edge:
+        decision["trade_action"] = "WAIT"
+        decision["projection"] = "No Confirmed Breakout"
+
     if not bool(decision.get("readiness_active", False)) and str(decision.get("trade_action", "")) in {
         "LONG BIAS",
         "SHORT BIAS",
@@ -5056,6 +5218,36 @@ def _build_v2_intelligence(
         )
 
     event_timestamp = evaluation_time or _parse_timestamp_utc(features.get("meta", {}).get("timestamp"))
+    event_timestamp_ist = event_timestamp.astimezone(IST)
+    minute_of_day = event_timestamp_ist.hour * 60 + event_timestamp_ist.minute
+    opening_window_start = 9 * 60 + 15
+    opening_window_end = 9 * 60 + 30
+    in_opening_window = opening_window_start <= minute_of_day < opening_window_end
+    spot_value = _safe_float(spot)
+    session_high_value = _safe_float(day_high)
+    session_low_value = _safe_float(day_low)
+    prev_opening_high = _safe_float((previous_state or {}).get("opening_range_high"))
+    prev_opening_low = _safe_float((previous_state or {}).get("opening_range_low"))
+
+    opening_high_candidates = [value for value in (prev_opening_high, session_high_value, spot_value) if value is not None]
+    opening_low_candidates = [value for value in (prev_opening_low, session_low_value, spot_value) if value is not None]
+    if in_opening_window:
+        opening_range_high = max(opening_high_candidates) if opening_high_candidates else None
+        opening_range_low = min(opening_low_candidates) if opening_low_candidates else None
+    else:
+        opening_range_high = prev_opening_high
+        opening_range_low = prev_opening_low
+
+    intraday_zones = get_intraday_zones(
+        session_high=session_high_value,
+        session_low=session_low_value,
+        opening_high=opening_range_high,
+        opening_low=opening_range_low,
+        spot=spot_value,
+        previous_close=_safe_float(previous_close),
+        vwap=_safe_float(features.get("vwap")),
+    )
+
     event_messages: list[str] = []
     if bool(material_breach.get("resistance_broken")):
         event_messages.append("Resistance break")
@@ -5118,7 +5310,58 @@ def _build_v2_intelligence(
         expiry_str=expiry or "",
         fallback_iv=atm_iv if atm_iv > 0 else None,
     )
+    per_strike_liquidity_rows = _build_per_strike_liquidity_rows(rows)
     days_exp = chain_greeks[0]["ce"]["days_to_expiry"] if chain_greeks else 0
+    _raw_atm_pe_iv = float((atm_row or {}).get("PE_IV", 0) or 0)
+    atm_pe_iv = _raw_atm_pe_iv / 100.0 if _raw_atm_pe_iv > 1.0 else _raw_atm_pe_iv
+    if atm_pe_iv <= 0.001:
+        atm_pe_iv = 0.0
+    strike_intelligence = compute_strike_intelligence(
+        {
+            "spot": float(spot or 0.0),
+            "support": float(support_level or 0.0),
+            "resistance": float(resistance_level or 0.0),
+            "strike_gap": int(float(features.get("strike_gap", 50.0) or 50.0)),
+            "chain_greeks": chain_greeks,
+            "liquidity_map": per_strike_liquidity_rows,
+            "iv_rank": float(iv_rank_result.get("iv_rank") or 0.0),
+            "iv_percentile": float(iv_rank_result.get("iv_percentile") or 0.0),
+            "atm_ce_iv": float(atm_iv or 0.0),
+            "atm_pe_iv": float(atm_pe_iv or 0.0),
+            "prev_straddle_premium": (previous_state or {}).get("prev_straddle_premium"),
+            "trap_probability": float(trap_probability or 0.0),
+            "trap_direction": str(trap_direction or ""),
+            "bias": str(stable_bias or "Neutral"),
+            "session_phase": str(session_phase_payload.get("session_phase", "")),
+            "days_to_expiry": int(days_exp or 0),
+            "oi_scenario": str(decision.get("oi_scenario") or ""),
+            "defense_ratio_ce": float((sr.get("resistance", {}) or {}).get("defense_score") or 0.0),
+            "defense_ratio_pe": float((sr.get("support", {}) or {}).get("defense_score") or 0.0),
+        }
+    )
+    entry_target = compute_entry_target(
+        {
+            "spot": float(spot or 0.0),
+            "support": float(support_level or 0.0),
+            "resistance": float(resistance_level or 0.0),
+            "strike_gap": int(float(features.get("strike_gap", 50.0) or 50.0)),
+            "put_wall": float((liquidity_map or {}).get("put_wall") or 0.0),
+            "call_wall": float((liquidity_map or {}).get("call_wall") or 0.0),
+            "max_pain_strike": strike_intelligence.get("max_pain_strike"),
+            "defense_ratio_ce": float((sr.get("resistance", {}) or {}).get("defense_score") or 0.0),
+            "defense_ratio_pe": float((sr.get("support", {}) or {}).get("defense_score") or 0.0),
+            "liquidity_map": per_strike_liquidity_rows,
+            "chain_greeks": chain_greeks,
+            "trap_probability": float(trap_probability or 0.0),
+            "bias": str(stable_bias or "Neutral"),
+            "oi_scenario": str(decision.get("oi_scenario") or ""),
+            "session_phase": str(session_phase_payload.get("session_phase", "")),
+            "days_to_expiry": int(days_exp or 0),
+            "iv_rank": float(iv_rank_result.get("iv_rank") or 0.0),
+            "atm_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
+            "entry_signal": strike_intelligence.get("entry_signal", "WAIT_NO_SETUP"),
+        }
+    )
     strike_guidance = generate_strike_guidance(
         trade_action=str(decision.get("trade_action", "WAIT")),
         readiness_active=bool(readiness_v2.get("readiness_active_v2", False)),
@@ -5130,6 +5373,15 @@ def _build_v2_intelligence(
         bias=str(stable_bias or "Neutral"),
         support=support_level,
         resistance=resistance_level,
+        spc_state=str(decision.get("spc_state") or ""),
+        execution_mode=str(trade_plan.get("trade_plan", {}).get("execution_mode") or ""),
+        delta_guidance=str(trade_plan.get("trade_plan", {}).get("delta_strike_guidance") or ""),
+        avoid_buying_premium=bool(trade_plan.get("trade_plan", {}).get("avoid_buying_premium", False)),
+        entry_zone=str(trade_plan.get("trade_plan", {}).get("entry_zone") or ""),
+        stop_zone=str(trade_plan.get("trade_plan", {}).get("stop_zone") or ""),
+        target_zone=str(trade_plan.get("trade_plan", {}).get("target_zone") or ""),
+        position_size_fraction=_safe_float(trade_plan.get("trade_plan", {}).get("position_size_fraction")),
+        position_size_label=str(trade_plan.get("trade_plan", {}).get("position_size_label") or ""),
     )
 
     session_phase_payload = _stabilize_session_phase(
@@ -5324,6 +5576,7 @@ def _build_v2_intelligence(
             "spc_decision": decision.get("spc_decision"),
             "pinning_active": bool(decision.get("pinning_active", False)),
             "pinning_trap_modifier_points": decision.get("pinning_trap_modifier_points"),
+            "reversal_decay_cycles": int(decision.get("reversal_decay_cycles", 0) or 0),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "pressure_explanation": decision.get("pressure_explanation"),
@@ -5371,6 +5624,29 @@ def _build_v2_intelligence(
             "iv_context": iv_rank_result.get("iv_context"),
             "selling_favoured": iv_rank_result.get("selling_favoured"),
             "strike_guidance": strike_guidance,
+            "strike_intelligence": strike_intelligence,
+            "entry_target": entry_target,
+            "trade_side": strike_intelligence.get("trade_side"),
+            "trade_side_reason": strike_intelligence.get("trade_side_reason"),
+            "entry_signal": strike_intelligence.get("entry_signal"),
+            "entry_signal_reason": strike_intelligence.get("entry_signal_reason"),
+            "entry_signal_strength": strike_intelligence.get("entry_signal_strength"),
+            "recommended_strike": strike_intelligence.get("recommended_strike"),
+            "recommended_option": strike_intelligence.get("recommended_option"),
+            "recommended_action": strike_intelligence.get("recommended_action"),
+            "delta_target_min": strike_intelligence.get("delta_target_min"),
+            "delta_target_max": strike_intelligence.get("delta_target_max"),
+            "position_size_fraction": strike_intelligence.get("position_size_fraction"),
+            "stop_description": strike_intelligence.get("stop_description"),
+            "target_description": strike_intelligence.get("target_description"),
+            "max_pain_strike": strike_intelligence.get("max_pain_strike"),
+            "max_pain_pull": strike_intelligence.get("max_pain_pull"),
+            "iv_skew": strike_intelligence.get("iv_skew"),
+            "atm_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
+            "straddle_trend": strike_intelligence.get("straddle_trend"),
+            "ce_wall_holding": strike_intelligence.get("ce_wall_holding"),
+            "pe_wall_holding": strike_intelligence.get("pe_wall_holding"),
+            "volume_spike_strikes": strike_intelligence.get("volume_spike_strikes"),
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "momentum_score": momentum_score,
             "momentum_direction": momentum_direction,
@@ -5439,6 +5715,7 @@ def _build_v2_intelligence(
             "spc_decision": decision.get("spc_decision"),
             "pinning_active": bool(decision.get("pinning_active", False)),
             "pinning_trap_modifier_points": decision.get("pinning_trap_modifier_points"),
+            "reversal_decay_cycles": int(decision.get("reversal_decay_cycles", 0) or 0),
             "pressure_state": decision.get("pressure_state"),
             "trade_action": decision.get("trade_action"),
             "trade_readiness": decision.get("trade_readiness"),
@@ -5544,6 +5821,7 @@ def _build_v2_intelligence(
             "auto_exit": auto_exit,
             "prioritized_signals": prioritized.get("prioritized_signals", []),
             "expiry_adaptive": expiry_adaptive,
+            "intraday_zones": intraday_zones,
             "chain_greeks": _atm_centered,
             "alerts": typed_alerts,
             "alerts_meta": {
@@ -5594,9 +5872,11 @@ def _build_v2_intelligence(
             "trap_smoothed_prev": round(
                 float(trap.get("trap_smoothed_prev", trap.get("trap_smoothed", trap.get("trap_raw", 0.0))) or 0.0), 4
             ),
+            "prev_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
             "trap_state": str(trap.get("trap_state") or trap.get("trap_level") or ""),
             "trap_trend_adjustment_applied": bool(trap.get("trap_trend_adjustment_applied", False)),
             "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
+            "total_chain_oi": float(trap.get("total_chain_oi", 0.0) or 0.0),
             "previous_bias": stable_bias,
             "previous_projection": stable_projection,
             "bias_change_counter": int(bias_change_counter),
@@ -5678,6 +5958,8 @@ def _build_v2_intelligence(
             "session_phase_confidence": session_phase_payload.get("confidence"),
             "session_phase_session_key": session_phase_payload.get("session_key"),
             "session_date": session_phase_payload.get("session_key"),
+            "opening_range_high": opening_range_high,
+            "opening_range_low": opening_range_low,
             "levels": {
                 "support": {
                     "immediate": sr.get("support", {}).get("immediate"),
@@ -5723,7 +6005,8 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
     }
     option_chain_section["daily_context"] = daily_context
 
-    expiries_to_fetch = expiries[:MAX_EXPIRIES_PER_SYMBOL]
+    active_expiries = _resolve_active_expiries(expiries)
+    expiries_to_fetch = active_expiries[:MAX_EXPIRIES_PER_SYMBOL]
     if not expiries_to_fetch:
         return option_chain_section, summary_section
 
@@ -5737,7 +6020,7 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
         else:
             raw = await _fetch_option_chain_async(symbol=symbol, expiry=expiry, instrument_type=instrument_type)
         records = raw.get("records", {})
-        rows = build_oi_volume_summary(raw)
+        rows = build_oi_volume_summary(raw, expiry=expiry)
         if not rows:
             continue
 
@@ -5803,14 +6086,37 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
             evaluation_time=_parse_timestamp_utc(records.get("timestamp")),
         )
         daily_levels = (daily_context.get("levels") or {}) if isinstance(daily_context, dict) else {}
+        daily_prev = (daily_context.get("previous_day") or {}) if isinstance(daily_context, dict) else {}
         daily_window = (daily_context.get("rolling_3m") or {}) if isinstance(daily_context, dict) else {}
         market_state = v2_payload.setdefault("market_state", {})
         market_state["daily_context"] = daily_context
-        market_state["previous_day_open"] = daily_levels.get("previous_day_open")
-        market_state["previous_day_high"] = daily_levels.get("previous_day_high")
-        market_state["previous_day_low"] = daily_levels.get("previous_day_low")
-        market_state["previous_day_close"] = daily_levels.get("previous_day_close")
-        market_state["daily_trend_bias"] = daily_window.get("trend_bias")
+        market_state["previous_day_open"] = (
+            market_state.get("previous_day_open")
+            or daily_levels.get("previous_day_open")
+            or daily_prev.get("open")
+        )
+        market_state["previous_day_high"] = (
+            market_state.get("previous_day_high")
+            or daily_levels.get("previous_day_high")
+            or daily_prev.get("high")
+        )
+        market_state["previous_day_low"] = (
+            market_state.get("previous_day_low")
+            or daily_levels.get("previous_day_low")
+            or daily_prev.get("low")
+        )
+        market_state["previous_day_close"] = (
+            market_state.get("previous_day_close")
+            or daily_levels.get("previous_day_close")
+            or daily_prev.get("close")
+        )
+        market_state["daily_trend_bias"] = (
+            market_state.get("daily_trend_bias")
+            or daily_window.get("trend_bias")
+            or daily_context.get("trend_bias")
+            if isinstance(daily_context, dict)
+            else None
+        )
         v2_payload["daily_context"] = daily_context
         mstate = v2_payload.get("market_state", {}) or {}
         signals = v2_payload.get("signals", {}) or {}
@@ -5918,6 +6224,12 @@ async def run_update_cycle() -> None:
             "interpretations": {},
             "v2": {},
         }
+        cached_data = await cache.get_cached_data()
+        cached_summary_data = (cached_data.get("summary_data") or {}) if isinstance(cached_data, dict) else {}
+        cached_summaries = (cached_summary_data.get("summaries") or {}) if isinstance(cached_summary_data, dict) else {}
+        cached_targets = (cached_summary_data.get("target_projections") or {}) if isinstance(cached_summary_data, dict) else {}
+        cached_interpretations = (cached_summary_data.get("interpretations") or {}) if isinstance(cached_summary_data, dict) else {}
+        cached_v2 = (cached_summary_data.get("v2") or {}) if isinstance(cached_summary_data, dict) else {}
 
         index_raw = await _fetch_index_data_async()
         option_chain_data["index_data"] = {"data": index_raw.get("data", [])}
@@ -5931,6 +6243,28 @@ async def run_update_cycle() -> None:
                 summary_data["target_projections"][key] = payload["target_projection"]
                 summary_data["interpretations"][key] = payload["interpretations"]
                 summary_data["v2"][key] = payload["v2"]
+
+            # Guardrail: if a symbol returns no fresh summaries for this cycle,
+            # carry forward its last cached summaries to avoid meta-only shells.
+            if not symbol_summaries:
+                symbol_prefix = f"{INSTRUMENT_TYPE.upper()}::{symbol.upper()}::"
+                carried = 0
+                for key, payload in cached_summaries.items():
+                    if isinstance(key, str) and key.startswith(symbol_prefix):
+                        summary_data["summaries"][key] = payload
+                        if key in cached_targets:
+                            summary_data["target_projections"][key] = cached_targets[key]
+                        if key in cached_interpretations:
+                            summary_data["interpretations"][key] = cached_interpretations[key]
+                        if key in cached_v2:
+                            summary_data["v2"][key] = cached_v2[key]
+                        carried += 1
+                if carried > 0:
+                    logger.warning(
+                        "No fresh summaries for %s; carried forward %d cached payload(s).",
+                        symbol,
+                        carried,
+                    )
 
         await cache.update_cache(option_chain_data, summary_data)
         latency_ms = (time.perf_counter() - started) * 1000

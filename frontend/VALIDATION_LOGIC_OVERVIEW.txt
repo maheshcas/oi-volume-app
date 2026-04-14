@@ -37,6 +37,8 @@ frontend/src/components/StructureBand.tsx
 3. Readiness display contract
 - Active display uses backend `market_state.trade_readiness` / `readiness_state`.
 - Backend currently promotes Readiness V2 into primary keys.
+- Range-lock threshold contract is `readiness <= 45`.
+- Current backend implementation computes `range_locked` from the pre-V2 `trade_readiness` path before final V2 rebinding; validate this explicitly during readiness audits.
 - V2 diagnostics may be shown/used when present:
   - `trade_readiness_v2`
   - `readiness_state_v2`

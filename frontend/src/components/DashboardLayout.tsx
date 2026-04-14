@@ -5,6 +5,7 @@ import TrapCard from "./TrapCard";
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
 import TradePlanCard from "./TradePlanCard";
 import StrikeGuidanceCard from "./StrikeGuidanceCard";
+import EntryTargetCard from "./EntryTargetCard";
 
 type DashboardLayoutProps = {
   decision: {
@@ -24,6 +25,7 @@ type DashboardLayoutProps = {
     support: string;
     resistance: string;
     blockingReason?: string;
+    trapPct?: number | null;
     winningEngine?: string;
     decisionConfidence?: number | null;
     supportTransitionBadge?: boolean;
@@ -103,6 +105,9 @@ type DashboardLayoutProps = {
     targetZone?: string | null;
     executionMode?: string | null;
     deltaGuidance?: string | null;
+    bullishTrigger?: string | null;
+    bearishTrigger?: string | null;
+    invalidation?: string | null;
   };
   tradePlan: {
     bias: string;
@@ -127,9 +132,21 @@ type DashboardLayoutProps = {
     suggested_action: string;
     trap_reason?: string | null;
     support_reason?: string | null;
+    oi_trap_signal?: string | null;
+    oi_trap_confidence?: string | null;
+    oi_trap_reason?: string | null;
+    breach_level?: number | null;
+    breach_oi_confirming?: boolean;
+    oi_price_divergence?: boolean;
     absorption_detected?: boolean;
     absorption_message?: string | null;
     show_affected_level?: boolean;
+    key_range?: string | null;
+    institutional_levels?: string | null;
+    market_insight?: string | null;
+    putWall?: number;
+    callWall?: number;
+    oi_scenario?: string;
   };
   alerts: Array<{
     message: string;
@@ -147,6 +164,55 @@ type DashboardLayoutProps = {
     iv_context: string | null;
     risk_reward_note: string | null;
     selling_favoured: boolean;
+    position_size_fraction?: number | null;
+    position_size_label?: string | null;
+    execution_layer?: string | null;
+    delta_guidance?: string | null;
+    avoid_buying_premium?: boolean;
+    entry_zone?: string | null;
+    stop_zone?: string | null;
+    target_zone?: string | null;
+    strikeIntelligence?: {
+      entry_signal?: string;
+      entry_signal_reason?: string;
+      entry_signal_strength?: string;
+      recommended_action?: string;
+      recommended_option?: string;
+      recommended_strike?: number | null;
+      trade_side?: string;
+      position_size_fraction?: number;
+      stop_description?: string;
+      target_description?: string;
+      delta_target_min?: number | null;
+      delta_target_max?: number | null;
+      max_pain_strike?: number | null;
+      max_pain_pull?: string;
+      iv_skew?: string;
+      straddle_trend?: string;
+      atm_straddle_premium?: number | null;
+      ce_wall_holding?: boolean;
+      pe_wall_holding?: boolean;
+    } | null;
+  } | null;
+  entryTarget?: {
+    trade_type?: string;
+    entry_underlying?: number | null;
+    entry_option_strike?: number | null;
+    entry_option_type?: string | null;
+    entry_option_action?: string | null;
+    entry_premium?: number | null;
+    entry_brief?: string;
+    stop_underlying?: number | null;
+    stop_premium_value?: number | null;
+    stop_brief?: string;
+    target_1?: number | null;
+    target_2?: number | null;
+    target_brief?: string;
+    rr_t1?: number | null;
+    rr_t2?: number | null;
+    rr_brief?: string;
+    call_wall_used?: number | null;
+    put_wall_used?: number | null;
   } | null;
 };
 
@@ -159,6 +225,7 @@ export default function DashboardLayout({
   trap,
   alerts,
   strikeGuidance,
+  entryTarget,
 }: DashboardLayoutProps) {
   return (
     <div className="ia-dashboard-layout">
@@ -180,18 +247,24 @@ export default function DashboardLayout({
           support={decision.support}
           resistance={decision.resistance}
           blockingReason={decision.blockingReason}
+          trapPct={decision.trapPct}
           winningEngine={decision.winningEngine}
           decisionConfidence={decision.decisionConfidence}
           supportTransitionBadge={decision.supportTransitionBadge}
           resistanceTransitionBadge={decision.resistanceTransitionBadge}
         />
+        {entryTarget ? (
+          <div className="ia-decision-entry-target">
+            <EntryTargetCard entryTarget={entryTarget} />
+          </div>
+        ) : null}
       </div>
 
-      <div className="ia-layout-decision-layer">{decisionLayer}</div>
+      <div className="ia-layout-decision-layer">{false && decisionLayer}</div>
 
       <div className="ia-layout-levels">
         <div className="ia-card-stack">
-          <KeyLevelsCard
+          {false && <KeyLevelsCard
             support={keyLevels.support}
             resistance={keyLevels.resistance}
             supportDefenseRatio={keyLevels.supportDefenseRatio}
@@ -206,7 +279,7 @@ export default function DashboardLayout({
             trapRisk={keyLevels.trapRisk}
             watchNote={keyLevels.watchNote}
             breakoutProbability={keyLevels.breakoutProbability}
-          />
+          />}
         </div>
       </div>
 
@@ -265,12 +338,15 @@ export default function DashboardLayout({
             targetZone={structure.targetZone}
             executionMode={structure.executionMode}
             deltaGuidance={structure.deltaGuidance}
+            bullishTrigger={structure.bullishTrigger}
+            bearishTrigger={structure.bearishTrigger}
+            invalidation={structure.invalidation}
           />
         </div>
       </div>
 
       <div className="ia-layout-playbook">
-        <TradePlanCard
+        {false && <TradePlanCard
           bias={tradePlan.bias}
           regime={tradePlan.regime}
           plan={tradePlan.plan}
@@ -283,7 +359,7 @@ export default function DashboardLayout({
           bullishTrigger={tradePlan.bullishTrigger}
           bearishTrigger={tradePlan.bearishTrigger}
           invalidation={tradePlan.invalidation}
-        />
+        />}
       </div>
       {strikeGuidance ? (
         <div className="ia-layout-strike-guidance">
@@ -298,6 +374,15 @@ export default function DashboardLayout({
             iv_context={strikeGuidance.iv_context}
             risk_reward_note={strikeGuidance.risk_reward_note}
             selling_favoured={strikeGuidance.selling_favoured}
+            position_size_fraction={strikeGuidance.position_size_fraction ?? null}
+            position_size_label={strikeGuidance.position_size_label ?? null}
+            execution_layer={strikeGuidance.execution_layer ?? null}
+            delta_guidance={strikeGuidance.delta_guidance ?? null}
+            avoid_buying_premium={Boolean(strikeGuidance.avoid_buying_premium)}
+            entry_zone={strikeGuidance.entry_zone ?? null}
+            stop_zone={strikeGuidance.stop_zone ?? null}
+            target_zone={strikeGuidance.target_zone ?? null}
+            strikeIntelligence={strikeGuidance.strikeIntelligence ?? null}
           />
         </div>
       ) : null}
@@ -314,9 +399,21 @@ export default function DashboardLayout({
             suggested_action={trap.suggested_action}
             trap_reason={trap.trap_reason}
             support_reason={trap.support_reason}
+            oi_trap_signal={trap.oi_trap_signal}
+            oi_trap_confidence={trap.oi_trap_confidence}
+            oi_trap_reason={trap.oi_trap_reason}
+            breach_level={trap.breach_level}
+            breach_oi_confirming={trap.breach_oi_confirming}
+            oi_price_divergence={trap.oi_price_divergence}
             absorption_detected={trap.absorption_detected}
             absorption_message={trap.absorption_message}
             show_affected_level={trap.show_affected_level}
+            key_range={trap.key_range}
+            institutional_levels={trap.institutional_levels}
+            market_insight={trap.market_insight}
+            putWall={trap.putWall}
+            callWall={trap.callWall}
+            oi_scenario={trap.oi_scenario}
           />
           {alerts.length ? (
             <div className="ia-trap-alerts">

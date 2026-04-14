@@ -172,10 +172,17 @@ def build_strike_ladder_interpretations(rows):
     return output
 
 
-def build_oi_volume_summary(nse_json):
+def build_oi_volume_summary(nse_json, expiry: str | None = None):
     records = nse_json.get("records", {})
     data = records.get("data", [])
     spot = records.get("underlyingValue")
+    expiry_filter = str(expiry or "").strip().lower()
+    if expiry_filter:
+        data = [
+            item
+            for item in data
+            if str(item.get("expiryDate", "")).strip().lower() == expiry_filter
+        ]
 
     # Average volume + top 20% thresholds (per option type)
     ce_vols = []

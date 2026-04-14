@@ -1,7 +1,6 @@
 import {
   confidenceLabel,
   friendlyBlockingReason,
-  friendlyWinningEngine,
 } from "./decisionUx";
 
 type DecisionBannerProps = {
@@ -21,6 +20,7 @@ type DecisionBannerProps = {
   support: string;
   resistance: string;
   blockingReason?: string;
+  trapPct?: number | null;
   winningEngine?: string;
   decisionConfidence?: number | null;
   supportTransitionBadge?: boolean;
@@ -39,6 +39,16 @@ function formatDirectionLabel(direction: DecisionBannerProps["direction"]) {
   if (direction === "Neutral") return "Neutral Bias";
   if (direction === "Conflict") return "Range Conflict";
   return direction;
+}
+
+function formatWinningEngineLabel(winningEngine?: string | null): string {
+  const raw = String(winningEngine || "").trim();
+  if (!raw) return "core decision logic";
+  const normalized = raw.toLowerCase();
+  if (normalized === "none" || normalized === "decision_flow" || normalized === "decision flow") {
+    return "core decision logic";
+  }
+  return raw;
 }
 
 function normalizeExplanation(
@@ -97,13 +107,14 @@ export default function DecisionBanner({
   readinessExplainability = null,
   pressureState,
   regime,
-  detailSummary,
-  detailInsight,
-  detailWalls,
+  detailSummary: _detailSummary,
+  detailInsight: _detailInsight,
+  detailWalls: _detailWalls,
   support: _support,
   resistance: _resistance,
   blockingReason = "NONE",
-  winningEngine = "none",
+  trapPct = null,
+  winningEngine = "",
   decisionConfidence = null,
   supportTransitionBadge = false,
   resistanceTransitionBadge = false,
@@ -120,12 +131,13 @@ export default function DecisionBanner({
   const confidencePct = Math.max(0, Math.min(100, Number(decisionConfidence) || 0));
   const biasLabel = bias || formatDirectionLabel(direction);
   const readinessStateClass =
-    readinessState.toLowerCase().includes("high") || readinessState.toLowerCase().includes("active")
+    readinessState.toLowerCase().includes("ready")
       ? "ia-text-bull"
-      : readinessState.toLowerCase().includes("low")
+      : readinessState.toLowerCase().includes("not")
         ? "ia-text-bear"
         : "ia-text-warn";
   const pressureLabel = pressureState.replace(/\s*Pressure$/i, "").trim() || pressureState;
+  const marketToneLabel = `${biasLabel} · ${pressureLabel} · ${regime || "-"}`;
   const confidenceTone = confidenceLabel(decisionConfidence);
   const transitionLabel = supportTransitionBadge
     ? "Support Transition Active"
@@ -133,6 +145,8 @@ export default function DecisionBanner({
       ? "Resistance Transition Active"
       : null;
   const hasBlocker = blockingReason && blockingReason !== "NONE";
+  const rawEngine = formatWinningEngineLabel(winningEngine);
+  const rawCap = String(blockingReason || "").trim();
   const showBlocker = false;
   const dominantMessage = hasBlocker
     ? `${friendlyBlockingReason(blockingReason)} - ${action}`
@@ -155,12 +169,11 @@ export default function DecisionBanner({
 
         <div className="ia-decision-banner-explanation">{dominantMessage}</div>
 
-        <div className="ia-decision-meta-row">
-          <span className="ia-decision-meta-chip">{friendlyWinningEngine(winningEngine)}</span>
-          {transitionLabel ? (
+        {transitionLabel ? (
+          <div className="ia-decision-meta-row">
             <span className="ia-decision-meta-chip ia-decision-meta-chip-transition">{transitionLabel}</span>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
         <div className="ia-readiness-wrap">
           <div className="ia-readiness-row">
@@ -196,17 +209,9 @@ export default function DecisionBanner({
         </div>
 
         <div className="ia-decision-grid">
-          <div className="ia-decision-grid-item ia-decision-grid-item-primary">
-            <div className="ia-decision-grid-label">Bias</div>
-            <div className="ia-decision-grid-value">{biasLabel}</div>
-          </div>
-          <div className="ia-decision-grid-item ia-decision-grid-item-primary">
-            <div className="ia-decision-grid-label">Pressure</div>
-            <div className="ia-decision-grid-value">{pressureLabel}</div>
-          </div>
-          <div className="ia-decision-grid-item">
-            <div className="ia-decision-grid-label">Regime</div>
-            <div className="ia-decision-grid-value ia-text-muted">{regime || "-"}</div>
+          <div className="ia-decision-grid-item ia-decision-grid-item-primary ia-decision-grid-item-tone">
+            <div className="ia-decision-grid-label">Market Tone</div>
+            <div className="ia-decision-grid-value">{marketToneLabel}</div>
           </div>
           <div className="ia-decision-grid-item">
             <div className="ia-decision-grid-label">Readiness State</div>
@@ -214,30 +219,26 @@ export default function DecisionBanner({
           </div>
         </div>
 
-        {(detailSummary || detailInsight || detailWalls) ? (
-          <details className="ia-decision-more">
-            <summary>More detail</summary>
-            <div className="ia-decision-more-body">
-              {detailSummary ? (
-                <div className="ia-decision-more-block">
-                  <div className="ia-decision-more-label">Key Range</div>
-                  <div className="ia-decision-more-text">{detailSummary}</div>
-                </div>
-              ) : null}
-              {detailWalls ? (
-                <div className="ia-decision-more-block">
-                  <div className="ia-decision-more-label">Institutional Levels</div>
-                  <div className="ia-decision-more-text">{detailWalls}</div>
-                </div>
-              ) : null}
-              {detailInsight ? (
-                <div className="ia-decision-more-block">
-                  <div className="ia-decision-more-label">Market Insight</div>
-                  <div className="ia-decision-more-text">{detailInsight}</div>
-                </div>
-              ) : null}
-            </div>
-          </details>
+        {(rawEngine || (rawCap && rawCap.toUpperCase() !== "NONE")) ? (
+          <div className="ia-decision-footer">
+            {rawEngine ? <span>Driven by {rawEngine}</span> : null}
+            {rawCap && rawCap.toUpperCase() !== "NONE" ? <span>Cap: {rawCap}</span> : null}
+          </div>
+        ) : null}
+        {blockingReason === "RANGE_CONFLICT" ? (
+          <div className="ia-decision-unlock">
+            Unlock: wait for spot to reach S or R edge
+          </div>
+        ) : null}
+        {blockingReason === "TRAP_HIGH" && trapPct !== null ? (
+          <div className="ia-decision-unlock">
+            Unlock: trap needs to drop below 55% (now {Math.round(trapPct)}%)
+          </div>
+        ) : null}
+        {blockingReason === "HIGH_TRAP_NO_BREACH_CAP" ? (
+          <div className="ia-decision-unlock">
+            Unlock: trap easing + level breach needed
+          </div>
         ) : null}
       </div>
     </div>

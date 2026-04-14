@@ -53,6 +53,9 @@ type Props = {
   targetZone?: string | null;
   executionMode?: string | null;
   deltaGuidance?: string | null;
+  bullishTrigger?: string | null;
+  bearishTrigger?: string | null;
+  invalidation?: string | null;
 };
 
 const fmt = (v: number | null | undefined, d = 0) =>
@@ -69,7 +72,6 @@ const human = (v: string | null | undefined, fb: string) => {
   const t = String(v || "").trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   return t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}` : fb;
 };
-const confidenceLabel = (v?: number | null) => (typeof v === "number" && Number.isFinite(v) ? (v >= 75 ? "High" : v >= 55 ? "Moderate" : "Low") : null);
 const trapBadge = (v?: number | null) => {
   const risk = typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
   if (risk <= 10) return "No Trap";
@@ -194,10 +196,6 @@ const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
   if (normalized === "low") return 0.28;
   return 0.16;
 };
-const compactValue = (value?: string | null, fallback = "-") => {
-  const t = String(value || "").trim();
-  return t ? t : fallback;
-};
 const formatReason = ({
   resolvedReason,
   decisionExplanation,
@@ -271,22 +269,11 @@ const formatStructuralHeadline = ({
   }
   return fallbackReason;
 };
-const actionTone = (v: string) => {
-  const t = v.toUpperCase();
-  if (t.includes("BREAKOUT") || t.includes("LONG")) return "bullish";
-  if (t.includes("BREAKDOWN") || t.includes("SHORT")) return "bearish";
-  if (t.includes("ABSORPTION")) return "amber";
-  return "neutral";
-};
-const biasTone = (value?: string | null) => {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized.includes("bearish")) return "bearish";
-  if (normalized.includes("bullish")) return "bullish";
-  return "neutral";
-};
 const compactTagLabel = (value?: string | null, fallback = "-") => {
   const raw = String(value || "").trim();
   if (!raw) return fallback;
+  const normalized = raw.toUpperCase();
+  if (normalized === "SUSPECT") return "LOW QUALITY";
   return raw.replace(/_/g, " ").replace(/\s+/g, " ").trim();
 };
 const compactTagTone = (kind: "state" | "quality" | "decision", value?: string | null) => {
@@ -392,7 +379,7 @@ export default function StructuralPriceContextCard(props: Props) {
     return (
       <div className="spc-card">
         <div className="spc-head">
-          <div><div className="spc-title">Structural Price Context</div></div>
+          <div><div className="spc-title">Structure</div></div>
         </div>
         <div className="spc-compact-panel"><div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div></div>
       </div>
@@ -419,11 +406,11 @@ export default function StructuralPriceContextCard(props: Props) {
     summary,
     fallbackReason: baseReason,
   });
+  const blockingReasonCode = String(props.blockingReason || "").trim().toUpperCase();
   const dominantMessage =
-    String(props.blockingReason || "").trim().toUpperCase() !== "NONE"
-      ? `${baseReason} - ${act}`
+    blockingReasonCode && blockingReasonCode !== "NONE"
+      ? `${baseReason} · Decision Engine`
       : reason;
-  const confLabel = confidenceLabel(props.decisionConfidence);
   const phaseBadge = formatPhaseBadge({
     phase: props.sessionPhase,
     supportTransition,
@@ -443,25 +430,35 @@ export default function StructuralPriceContextCard(props: Props) {
       : summary.lowerThird || summary.nearS
         ? "spc-range-label-watch-support"
         : "";
+  const distToS = Number.isFinite(summary.spot) && Number.isFinite(summary.support)
+    ? Math.round(summary.spot - summary.support)
+    : null;
+  const distToR = Number.isFinite(summary.spot) && Number.isFinite(summary.resistance)
+    ? Math.round(summary.resistance - summary.spot)
+    : null;
+  const nearS = distToS !== null && distToS < 100;
+  const nearR = distToR !== null && distToR < 100;
+  const proximitySummary =
+    nearS && distToS !== null ? `Near support (${distToS} pts)`
+      : nearR && distToR !== null ? `Near resistance (${distToR} pts)`
+        : positionTextFriendly;
+  const situationLabel =
+    nearS && nearR ? `COMPRESSED · S${distToS}pts  R${distToR}pts`
+      : nearS ? `NEAR SUPPORT · ${distToS}pts to ${summary.support.toLocaleString("en-IN")}`
+        : nearR ? `NEAR RESISTANCE · ${distToR}pts to ${summary.resistance.toLocaleString("en-IN")}`
+          : `IN RANGE · S${distToS}pts  R${distToR}pts`;
 
   return (
     <div className="spc-card">
       <div className="spc-head">
         <div>
-          <div className="spc-title">Structural Price Context</div>
+          <div className="spc-title">Structure</div>
         </div>
       </div>
       <div className="spc-compact-panel">
         <div className="spc-hero-row">
           <div className="spc-hero-copy spc-hero-copy-decision">
-            <div className={`spc-action-label spc-action-${actionTone(act)}`}>{act}</div>
             <div className="spc-hero-state">{dominantMessage}</div>
-          </div>
-          <div className="spc-hero-side">
-            <div className="spc-hero-side-row">
-              <div className={`spc-hero-bias spc-hero-bias-${biasTone(props.bias)}`}>Bias: {props.bias}</div>
-              {typeof props.decisionConfidence === "number" && confLabel ? <div className={`spc-confidence-chip spc-confidence-${confLabel.toLowerCase()}`}>Confidence: {confLabel} {Math.round(props.decisionConfidence)}%</div> : null}
-            </div>
           </div>
         </div>
         <div className="spc-status-row spc-status-row-decision">
@@ -470,16 +467,13 @@ export default function StructuralPriceContextCard(props: Props) {
             {trapRisk <= 10 ? "No Trap - clean structure" : trapBadge(props.trapProbability)}
           </span>
         </div>
-        {(props.spcState || props.moveQuality || props.spcDecision) ? (
+        <div className={`spc-situation-badge ${nearS || nearR ? "spc-situation-active" : "spc-situation-neutral"}`}>
+          {situationLabel}
+        </div>
+        {(props.spcState || props.moveQuality) ? (
           <div className="spc-status-row spc-status-row-compact">
             <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("state", props.spcState)}`}>
-              SPC: {compactTagLabel(props.spcState)}
-            </span>
-            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("quality", props.moveQuality)}`}>
-              Quality: {compactTagLabel(props.moveQuality)}
-            </span>
-            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("decision", props.spcDecision)}`}>
-              Decision: {compactTagLabel(props.spcDecision)}
+              {compactTagLabel(props.spcState)} · {compactTagLabel(props.moveQuality)}
             </span>
           </div>
         ) : null}
@@ -495,7 +489,7 @@ export default function StructuralPriceContextCard(props: Props) {
           <div className="spc-compact-metric spc-compact-metric-spot">
             <span>Spot</span>
             <strong>{fmt(summary.spot, 2)}</strong>
-            <em className="spc-compact-center-meta">{positionTextFriendly}</em>
+            <em className="spc-compact-center-meta spc-compact-center-meta-strong">{proximitySummary}</em>
           </div>
           <div className="spc-compact-metric spc-compact-metric-resistance">
             <span>Resistance</span>
@@ -506,7 +500,7 @@ export default function StructuralPriceContextCard(props: Props) {
             {typeof props.resistanceDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />CE/PE {props.resistanceDefenseRatio.toFixed(2)}x ({props.resistanceDefenseRatio >= 1 ? "Defended" : "Exposed"})</em> : null}
           </div>
         </div>
-        {(summary.supportShifted && summary.prevS != null) || (summary.resistanceShifted && summary.prevR != null) ? (
+        {/*
           <div className="spc-level-shift-notice">
             {summary.supportShifted && summary.prevS != null ? (
               <div className="spc-shift-line spc-shift-line-support">Support shifted {fmt(summary.prevS)} → {fmt(summary.support)}</div>
@@ -515,7 +509,7 @@ export default function StructuralPriceContextCard(props: Props) {
               <div className="spc-shift-line spc-shift-line-resistance">Resistance shifted {fmt(summary.prevR)} → {fmt(summary.resistance)}</div>
             ) : null}
           </div>
-        ) : null}
+        */}
         <div className="spc-range-meta">
           <span className="spc-range-label">Defended Support</span>
           <span className="spc-range-label">Active Zone</span>
@@ -585,24 +579,26 @@ export default function StructuralPriceContextCard(props: Props) {
             ) : null}
           </div>
         </div>
-        {(props.entryZone || props.stopZone || props.targetZone || props.deltaGuidance || props.executionMode) ? (
-          <div className="spc-execution-row">
-            <div className="spc-execution-item">
-              <span className="spc-execution-label">Entry</span>
-              <span className="spc-execution-value">{compactValue(props.entryZone)}</span>
-            </div>
-            <div className="spc-execution-item">
-              <span className="spc-execution-label">Stop</span>
-              <span className="spc-execution-value">{compactValue(props.stopZone)}</span>
-            </div>
-            <div className="spc-execution-item">
-              <span className="spc-execution-label">Target</span>
-              <span className="spc-execution-value">{compactValue(props.targetZone)}</span>
-            </div>
-            <div className="spc-execution-item spc-execution-item-wide">
-              <span className="spc-execution-label">Delta</span>
-              <span className="spc-execution-value">{compactValue(props.deltaGuidance, props.executionMode ? compactValue(props.executionMode) : "-")}</span>
-            </div>
+        {(props.bullishTrigger || props.bearishTrigger || props.invalidation) ? (
+          <div className="spc-trigger-strip">
+            {props.bullishTrigger ? (
+              <div className="spc-trigger-row">
+                <span className="spc-trigger-label">Bullish trigger</span>
+                <span className="spc-trigger-value">{props.bullishTrigger}</span>
+              </div>
+            ) : null}
+            {props.bearishTrigger ? (
+              <div className="spc-trigger-row">
+                <span className="spc-trigger-label">Bearish trigger</span>
+                <span className="spc-trigger-value">{props.bearishTrigger}</span>
+              </div>
+            ) : null}
+            {props.invalidation ? (
+              <div className="spc-trigger-row">
+                <span className="spc-trigger-label">Invalidation</span>
+                <span className="spc-trigger-value">{props.invalidation}</span>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

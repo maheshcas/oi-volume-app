@@ -16,10 +16,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 LOOKBACK_DAYS = max(60, int(os.getenv("OPTIONLENS_DAILY_CONTEXT_LOOKBACK_DAYS", "90")))
 DAILY_CONTEXT_DIR = Path(__file__).resolve().parents[2] / "data" / "daily_context"
 
-SYMBOL_TO_INDEX_NAME: dict[str, str] = {
-    "NIFTY": "NIFTY 50",
-    "BANKNIFTY": "NIFTY BANK",
-    "FINNIFTY": "NIFTY FINANCIAL SERVICES",
+SYMBOL_TO_INDEX_NAMES: dict[str, tuple[str, ...]] = {
+    "NIFTY": ("NIFTY 50",),
+    "BANKNIFTY": ("NIFTY BANK",),
+    "FINNIFTY": ("NIFTY FINANCIAL SERVICES",),
+    # NSE historical endpoint naming may vary for Sensex. Try known aliases.
+    "SENSEX": ("BSE SENSEX", "S&P BSE SENSEX", "SENSEX"),
 }
 
 _LOCK = threading.Lock()
@@ -223,8 +225,8 @@ def get_daily_context(symbol: str, now_utc: datetime | None = None) -> dict[str,
     This is intentionally read-only context for OptionLens and must not drive intraday SPC logic.
     """
     symbol_key = str(symbol or "").strip().upper()
-    index_name = SYMBOL_TO_INDEX_NAME.get(symbol_key)
-    if not index_name:
+    index_names = SYMBOL_TO_INDEX_NAMES.get(symbol_key)
+    if not index_names:
         return {}
 
     refresh_date = _current_ist_date(now_utc).isoformat()
@@ -267,11 +269,29 @@ def get_daily_context(symbol: str, now_utc: datetime | None = None) -> dict[str,
         to_date = current_ist.strftime("%d-%m-%Y")
 
     try:
-        raw = fetch_index_history(index_type=index_name, from_date=from_date, to_date=to_date)
-        raw_rows = raw.get("data", []) if isinstance(raw, dict) else []
-        new_rows = [_normalize_row(row) for row in raw_rows if isinstance(row, dict) and row.get("EOD_TIMESTAMP")]
+        selected_index_name: str | None = None
+        new_rows: list[dict[str, Any]] = []
+        for index_name in index_names:
+            raw = fetch_index_history(index_type=index_name, from_date=from_date, to_date=to_date)
+            raw_rows = raw.get("data", []) if isinstance(raw, dict) else []
+            candidate_rows = [
+                _normalize_row(row)
+                for row in raw_rows
+                if isinstance(row, dict) and row.get("EOD_TIMESTAMP")
+            ]
+            if candidate_rows:
+                selected_index_name = index_name
+                new_rows = candidate_rows
+                break
+            if selected_index_name is None:
+                selected_index_name = index_name
         rows = _merge_deduplicate_rows(existing_rows, new_rows)
-        payload = _build_payload(symbol=symbol_key, index_name=index_name, rows=rows, now_utc=now_utc)
+        payload = _build_payload(
+            symbol=symbol_key,
+            index_name=selected_index_name or index_names[0],
+            rows=rows,
+            now_utc=now_utc,
+        )
         with _LOCK:
             _MEMORY_CACHE[symbol_key] = payload
         _persist_to_disk(symbol_key, {"context": payload, "rows": rows})

@@ -22,7 +22,7 @@ def _infer_session_phase(timestamp: str | None) -> str:
 
 
 def normalize_chain(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = []
+    normalized: list[dict[str, Any]] = []
     for row in rows:
         normalized.append(
             {
@@ -31,12 +31,26 @@ def normalize_chain(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "CE_DeltaOI": float(row.get("CE_DeltaOI") or 0),
                 "CE_Volume": float(row.get("CE_Volume") or 0),
                 "CE_LastPrice": float(row.get("CE_LastPrice") or 0),
+                "CE_IV": float(
+                    row.get("CE_IV")
+                    or row.get("ce_iv")
+                    or row.get("CE_ImpliedVolatility")
+                    or row.get("impliedVolatility_CE")
+                    or 0
+                ),
                 "PE_OI": float(row.get("PE_OI") or 0),
                 "PE_DeltaOI": float(row.get("PE_DeltaOI") or 0),
                 "PE_Volume": float(row.get("PE_Volume") or 0),
                 "PE_LastPrice": float(row.get("PE_LastPrice") or 0),
-                "CE_PriceDir": row.get("CE_PriceDir") or "→",
-                "PE_PriceDir": row.get("PE_PriceDir") or "→",
+                "PE_IV": float(
+                    row.get("PE_IV")
+                    or row.get("pe_iv")
+                    or row.get("PE_ImpliedVolatility")
+                    or row.get("impliedVolatility_PE")
+                    or 0
+                ),
+                "CE_PriceDir": row.get("CE_PriceDir") or "->",
+                "PE_PriceDir": row.get("PE_PriceDir") or "->",
             }
         )
     return normalized
@@ -79,6 +93,7 @@ def build_feature_frame(
     strike_diffs = [abs(strikes[i] - strikes[i - 1]) for i in range(1, len(strikes))]
     strike_gap = strike_diffs[0] if strike_diffs else 50.0
 
+    # ATM row is the closest strike to current spot.
     atm_row = min(sorted_rows, key=lambda r: abs(r["strike"] - (spot or 0)))
 
     ce_total_oi = sum(r["CE_OI"] for r in sorted_rows)
