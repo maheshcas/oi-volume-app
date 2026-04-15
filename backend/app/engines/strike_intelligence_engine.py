@@ -122,6 +122,116 @@ def _compute_max_pain_pull(spot: float, max_pain_strike: int | None, strike_gap:
     return distance, "at"
 
 
+def _compute_price_magnet(
+    liquidity_map: list[dict[str, Any]],
+    spot: float,
+    strike_gap: int,
+) -> dict[str, Any]:
+    """
+    Price Magnet Effect: the underlying price tends to move toward
+    the strike with the highest COMBINED open interest (CE + PE).
+    This is the intraday gravitational pull level — different from
+    max pain which is the expiry settlement target.
+    """
+    if not liquidity_map:
+        return {
+            "price_magnet_strike": None,
+            "price_magnet_combined": 0.0,
+            "magnet_pull_direction": "unknown",
+            "magnet_distance_pts": None,
+            "secondary_magnet": None,
+            "between_magnets": False,
+            "magnet_ce_pct": 0.0,
+            "magnet_pe_pct": 0.0,
+            "magnet_character": "unknown",
+            "compression_zone": False,
+        }
+
+    scored: list[dict[str, Any]] = []
+    for row in liquidity_map:
+        s = _safe_int(row.get("strike"), 0)
+        if s <= 0:
+            continue
+        ce_oi = max(0.0, _safe_float(row.get("oi_ce"), 0.0))
+        pe_oi = max(0.0, _safe_float(row.get("oi_pe"), 0.0))
+        combined = ce_oi + pe_oi
+        if combined > 0:
+            scored.append(
+                {
+                    "strike": s,
+                    "combined": combined,
+                    "ce_oi": ce_oi,
+                    "pe_oi": pe_oi,
+                }
+            )
+
+    if not scored:
+        return {
+            "price_magnet_strike": None,
+            "price_magnet_combined": 0.0,
+            "magnet_pull_direction": "unknown",
+            "magnet_distance_pts": None,
+            "secondary_magnet": None,
+            "between_magnets": False,
+            "magnet_ce_pct": 0.0,
+            "magnet_pe_pct": 0.0,
+            "magnet_character": "unknown",
+            "compression_zone": False,
+        }
+
+    scored.sort(key=lambda x: x["combined"], reverse=True)
+    primary = scored[0]
+    secondary = scored[1] if len(scored) > 1 else None
+
+    magnet_strike = int(primary["strike"])
+    magnet_combined = float(primary["combined"])
+    ce_oi = float(primary["ce_oi"])
+    pe_oi = float(primary["pe_oi"])
+
+    if spot < magnet_strike - strike_gap:
+        pull = "up"
+    elif spot > magnet_strike + strike_gap:
+        pull = "down"
+    else:
+        pull = "at"
+
+    distance = abs(float(spot) - float(magnet_strike)) if magnet_strike else None
+    ce_pct = (ce_oi / magnet_combined * 100.0) if magnet_combined > 0 else 0.0
+    pe_pct = (pe_oi / magnet_combined * 100.0) if magnet_combined > 0 else 0.0
+
+    if ce_pct >= 60:
+        character = "resistance"
+    elif pe_pct >= 60:
+        character = "support"
+    else:
+        character = "balanced"
+
+    between = False
+    compression = False
+    sec_strike: int | None = None
+    if secondary:
+        sec_strike = int(secondary["strike"])
+        lo = min(magnet_strike, sec_strike)
+        hi = max(magnet_strike, sec_strike)
+        between = lo <= spot <= hi
+        dist_primary = abs(spot - magnet_strike)
+        dist_secondary = abs(spot - sec_strike)
+        compression = dist_primary <= 3 * strike_gap and dist_secondary <= 3 * strike_gap
+
+    return {
+        "price_magnet_strike": magnet_strike,
+        "price_magnet_combined": round(magnet_combined, 0),
+        "magnet_pull_direction": pull,
+        "magnet_distance_pts": round(distance, 1) if distance is not None else None,
+        "secondary_magnet": sec_strike,
+        "between_magnets": between,
+        "magnet_ce_pct": round(ce_pct, 1),
+        "magnet_pe_pct": round(pe_pct, 1),
+        "magnet_character": character,
+        "compression_zone": compression,
+    }
+
+
 def _compute_level_pcr(level_row: dict[str, Any] | None) -> float | None:
     if not level_row:
         return None
@@ -353,6 +463,7 @@ def compute_strike_intelligence(context: dict) -> dict:
         session_phase = _non_empty_text(context.get("session_phase"), "Transition")
         days_to_expiry = max(0, _safe_int(context.get("days_to_expiry"), 0))
         oi_scenario = _non_empty_text(context.get("oi_scenario"), "NEUTRAL")
+        session_range_pct = _safe_float(context.get("session_range_pct"), 0.0)
         defense_ratio_ce = _safe_float(context.get("defense_ratio_ce"), 0.0)
         defense_ratio_pe = _safe_float(context.get("defense_ratio_pe"), 0.0)
 
@@ -367,6 +478,11 @@ def compute_strike_intelligence(context: dict) -> dict:
 
         max_pain_strike = _compute_max_pain_strike(liquidity_map, spot)
         max_pain_distance, max_pain_pull = _compute_max_pain_pull(spot, max_pain_strike, strike_gap)
+        magnet_result = _compute_price_magnet(
+            liquidity_map=liquidity_map,
+            spot=spot,
+            strike_gap=strike_gap,
+        )
 
         resistance_row = _closest_row_by_strike(liquidity_map, resistance)
         support_row = _closest_row_by_strike(liquidity_map, support)
@@ -414,7 +530,14 @@ def compute_strike_intelligence(context: dict) -> dict:
             and straddle_trend in {"expanding", "stable"}
         )
         b4 = (
-            trap_probability < 35
+            (
+                trap_probability < 35
+                or (
+                    trap_probability < 55
+                    and oi_scenario == "PINNING"
+                    and session_range_pct > 1.0
+                )
+            )
             and bias == "Bullish"
             and spot > resistance + strike_gap
             and not ce_wall_holding
@@ -610,12 +733,18 @@ def compute_strike_intelligence(context: dict) -> dict:
                     _is_borderline_abs(abs(spot - resistance), 3 * strike_gap),
                 ]
             )
+            s1_reason = "Resistance wall holding in range/structure phase; OTM CE decay sell setup."
+            if magnet_result.get("magnet_pull_direction") == "down" and magnet_result.get("price_magnet_strike"):
+                s1_reason = (
+                    f"CE wall holding at resistance; magnet {int(magnet_result['price_magnet_strike'])} "
+                    f"pulling price down {float(magnet_result.get('magnet_distance_pts') or 0):.0f}pts — sell CE."
+                )
             seller_outputs.append(
                 (
                     True,
                     _build_signal_output(
                         signal="SELL_CE_RESISTANCE",
-                        reason="Resistance wall holding in range/structure phase; OTM CE decay sell setup.",
+                        reason=s1_reason,
                         strength=_strength_from_borderlines(b_count),
                         option="CE",
                         action="SELL",
@@ -637,12 +766,18 @@ def compute_strike_intelligence(context: dict) -> dict:
                     _is_borderline_abs(abs(spot - support), 3 * strike_gap),
                 ]
             )
+            s2_reason = "Support wall holding in range/structure phase; OTM PE decay sell setup."
+            if magnet_result.get("magnet_pull_direction") == "up" and magnet_result.get("price_magnet_strike"):
+                s2_reason = (
+                    f"PE wall holding at support; magnet {int(magnet_result['price_magnet_strike'])} "
+                    f"pulling price up {float(magnet_result.get('magnet_distance_pts') or 0):.0f}pts — sell PE."
+                )
             seller_outputs.append(
                 (
                     True,
                     _build_signal_output(
                         signal="SELL_PE_SUPPORT",
-                        reason="Support wall holding in range/structure phase; OTM PE decay sell setup.",
+                        reason=s2_reason,
                         strength=_strength_from_borderlines(b_count),
                         option="PE",
                         action="SELL",
@@ -663,12 +798,22 @@ def compute_strike_intelligence(context: dict) -> dict:
                     _is_borderline_upper(atm_straddle_premium or 0.0, 80),
                 ]
             )
+            s3_anchor = (
+                magnet_result.get("price_magnet_strike")
+                if magnet_result.get("between_magnets")
+                else (max_pain_strike or magnet_result.get("price_magnet_strike"))
+            )
+            s3_reason = (
+                f"Expiry-day pin near {int(s3_anchor)} with compression; theta-focused short straddle setup."
+                if s3_anchor
+                else "Expiry-day pin near max pain with compression; theta-focused short straddle setup."
+            )
             seller_outputs.append(
                 (
                     True,
                     _build_signal_output(
                         signal="SELL_STRADDLE_EXPIRY",
-                        reason="Expiry-day pin near max pain with compression; theta-focused short straddle setup.",
+                        reason=s3_reason,
                         strength=_strength_from_borderlines(b_count),
                         option="STRADDLE",
                         action="SELL",
@@ -806,6 +951,16 @@ def compute_strike_intelligence(context: dict) -> dict:
             "max_pain_strike": max_pain_strike,
             "max_pain_distance": max_pain_distance,
             "max_pain_pull": max_pain_pull,
+            "price_magnet_strike": magnet_result.get("price_magnet_strike"),
+            "price_magnet_combined": magnet_result.get("price_magnet_combined"),
+            "magnet_pull_direction": magnet_result.get("magnet_pull_direction"),
+            "magnet_distance_pts": magnet_result.get("magnet_distance_pts"),
+            "secondary_magnet": magnet_result.get("secondary_magnet"),
+            "between_magnets": bool(magnet_result.get("between_magnets", False)),
+            "magnet_ce_pct": magnet_result.get("magnet_ce_pct"),
+            "magnet_pe_pct": magnet_result.get("magnet_pe_pct"),
+            "magnet_character": magnet_result.get("magnet_character"),
+            "compression_zone": bool(magnet_result.get("compression_zone", False)),
             "iv_skew": iv_skew,
             "iv_skew_magnitude": iv_skew_magnitude,
             "atm_straddle_premium": atm_straddle_premium,
@@ -837,6 +992,16 @@ def compute_strike_intelligence(context: dict) -> dict:
             "max_pain_strike": None,
             "max_pain_distance": None,
             "max_pain_pull": "unknown",
+            "price_magnet_strike": None,
+            "price_magnet_combined": 0.0,
+            "magnet_pull_direction": "unknown",
+            "magnet_distance_pts": None,
+            "secondary_magnet": None,
+            "between_magnets": False,
+            "magnet_ce_pct": 0.0,
+            "magnet_pe_pct": 0.0,
+            "magnet_character": "unknown",
+            "compression_zone": False,
             "iv_skew": "neutral",
             "iv_skew_magnitude": 0.0,
             "atm_straddle_premium": None,

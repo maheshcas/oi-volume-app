@@ -294,6 +294,8 @@ type IntelligenceResponse = {
       straddle_entry_premium?: number | null;
       straddle_target_premium?: number | null;
     };
+    price_magnet_strike?: number | null;
+    max_pain_strike?: number | null;
     session_phase_confidence?: number;
     breakout_probability?: {
       upside?: number;
@@ -3572,6 +3574,45 @@ export default function App() {
             invalidation: "Range compression breaks.",
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel,
+            peWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
+            ceWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+            magnet:
+              typeof intelligence?.market_state?.price_magnet_strike === "number"
+                ? intelligence.market_state.price_magnet_strike
+                : null,
+            maxPain:
+              typeof intelligence?.market_state?.max_pain_strike === "number"
+                ? intelligence.market_state.max_pain_strike
+                : (typeof intelligence?.market_state?.strike_intelligence?.max_pain_strike === "number"
+                  ? intelligence.market_state.strike_intelligence.max_pain_strike
+                  : null),
+            strikeGap: 50,
+            strikes: displayRows
+              .filter((row) => Number.isFinite(Number(row?.strike)))
+              .map((row) => {
+                const strike = Number(row.strike);
+                const putWall = typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
+                const callWall = typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
+                const magnetStrike = typeof intelligence?.market_state?.price_magnet_strike === "number"
+                  ? intelligence.market_state.price_magnet_strike
+                  : null;
+                const maxPainStrike = typeof intelligence?.market_state?.max_pain_strike === "number"
+                  ? intelligence.market_state.max_pain_strike
+                  : (typeof intelligence?.market_state?.strike_intelligence?.max_pain_strike === "number"
+                    ? intelligence.market_state.strike_intelligence.max_pain_strike
+                    : null);
+                let tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null = null;
+                if (putWall !== null && strike === putWall) tag = "pe_wall";
+                else if (callWall !== null && strike === callWall) tag = "ce_wall";
+                else if (magnetStrike !== null && strike === magnetStrike) tag = "magnet";
+                else if (maxPainStrike !== null && strike === maxPainStrike) tag = "maxpain";
+                return {
+                  strike,
+                  oi_ce: Number(row.CE_OI ?? 0) || 0,
+                  oi_pe: Number(row.PE_OI ?? 0) || 0,
+                  tag,
+                };
+              }),
           }}
           tradePlan={{
             bias: String(playbook?.bias ?? displayPrimaryBias),

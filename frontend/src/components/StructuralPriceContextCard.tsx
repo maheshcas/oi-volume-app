@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import StructureBand from "./StructureBand";
+import StructureBandBar from "./StructureBandBar";
 
 type Props = {
   spotPrice: number | null;
@@ -56,15 +57,27 @@ type Props = {
   bullishTrigger?: string | null;
   bearishTrigger?: string | null;
   invalidation?: string | null;
+  peWall?: number | null;
+  ceWall?: number | null;
+  magnet?: number | null;
+  maxPain?: number | null;
+  strikeGap?: number | null;
+  strikes?: Array<{
+    strike: number;
+    oi_ce: number;
+    oi_pe: number;
+    tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
+  }> | null;
 };
 
 const fmt = (v: number | null | undefined, d = 0) =>
   typeof v === "number" && Number.isFinite(v)
     ? v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d })
     : "-";
+
 const phaseLabel = (v?: string | null) => {
   const t = String(v || "").trim();
-  if (!t) return "Transition Phase";
+  if (!t) return "Transition";
   return t.toLowerCase().includes("phase") ? t : `${t} Phase`;
 };
 const actionLabel = (v?: string | null) => String(v || "").trim() || "WAIT";
@@ -76,8 +89,9 @@ const trapBadge = (v?: number | null) => {
   const risk = typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0;
   if (risk <= 10) return "No Trap";
   if (risk >= 60) return `High Trap ${Math.round(risk)}%`;
-  return `Trap Risk ${Math.round(risk)}%`;
+  return `Trap ${Math.round(risk)}%`;
 };
+
 type SPCLabelState =
   | "BELOW_SUPPORT"
   | "ABOVE_RESISTANCE"
@@ -117,19 +131,19 @@ const positionSummary = ({
   const labelState = resolveSPCLabelState({ position, distToSupport, distToResistance });
   switch (labelState) {
     case "BELOW_SUPPORT":
-      return `Below support (${Math.round(Math.abs(distToSupport))} pts below)`;
+      return `${Math.round(Math.abs(distToSupport))} pts below S`;
     case "ABOVE_RESISTANCE":
-      return `Above resistance (${Math.round(Math.abs(distToResistance))} pts above)`;
+      return `+${Math.round(Math.abs(distToResistance))} pts above R`;
     case "NEAR_SUPPORT":
-      return `Near support (${Math.round(distToSupport)} pts above)`;
+      return `${Math.round(distToSupport)} pts above S`;
     case "NEAR_RESISTANCE":
-      return `Near resistance (${Math.round(distToResistance)} pts below)`;
+      return `${Math.round(distToResistance)} pts below R`;
     case "LOWER_BAND":
       return "Close to support";
     case "UPPER_BAND":
       return "Close to resistance";
     default:
-      return "Inside active band";
+      return "Inside band";
   }
 };
 
@@ -139,12 +153,14 @@ const sanitizeReadinessExplainability = (value?: string | null) => {
   if (text.toLowerCase() === "no clean edge") return null;
   return text;
 };
+
 const probabilityLabel = (v?: number | null) => {
   if (typeof v !== "number" || !Number.isFinite(v)) return null;
   const pct = Math.max(0, Math.min(100, v));
-  const tone = pct >= 60 ? "High" : pct >= 35 ? "Moderate" : "Low";
-  return `${Math.round(pct)}% (${tone})`;
+  const tone = pct >= 60 ? "High" : pct >= 35 ? "Mid" : "Low";
+  return `${Math.round(pct)}% ${tone}`;
 };
+
 const formatPhaseBadge = ({
   phase,
   supportTransition,
@@ -157,9 +173,10 @@ const formatPhaseBadge = ({
   if (supportTransition) return "Support Transition";
   if (resistanceTransition) return "Resistance Transition";
   const base = phaseLabel(phase);
-  if (String(phase || "").toLowerCase().includes("transition")) return "Transition Phase";
+  if (String(phase || "").toLowerCase().includes("transition")) return "Transition";
   return base;
 };
+
 const buildAlertMessage = ({
   summary,
 }: {
@@ -180,12 +197,17 @@ const buildAlertMessage = ({
     distToSupport: summary.distS,
     distToResistance: summary.distR,
   });
-  if (labelState === "BELOW_SUPPORT") return `Below support at ${fmt(summary.support)} — watch for failed reclaim or continuation breakdown`;
-  if (labelState === "ABOVE_RESISTANCE") return `Above resistance at ${fmt(summary.resistance)} — watch for acceptance or false breakout reversal`;
-  if (labelState === "NEAR_SUPPORT") return `Approaching support at ${fmt(summary.support)} — watch for absorption or rejection`;
-  if (labelState === "NEAR_RESISTANCE") return `Approaching resistance at ${fmt(summary.resistance)} — watch for rejection or breakout attempt`;
+  if (labelState === "BELOW_SUPPORT")
+    return `Below support · ${fmt(summary.support)} — watch for failed reclaim or breakdown continuation`;
+  if (labelState === "ABOVE_RESISTANCE")
+    return `Above resistance · ${fmt(summary.resistance)} — watch for acceptance or false breakout reversal`;
+  if (labelState === "NEAR_SUPPORT")
+    return `Approaching support · ${fmt(summary.support)} — watch for absorption or rejection`;
+  if (labelState === "NEAR_RESISTANCE")
+    return `Approaching resistance · ${fmt(summary.resistance)} — watch for rejection or breakout attempt`;
   return null;
 };
+
 const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
   if (typeof score === "number" && Number.isFinite(score)) {
     return Math.max(0.14, Math.min(0.68, score / 100));
@@ -196,6 +218,7 @@ const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
   if (normalized === "low") return 0.28;
   return 0.16;
 };
+
 const formatReason = ({
   resolvedReason,
   decisionExplanation,
@@ -220,9 +243,8 @@ const formatReason = ({
   const blocker = String(blockingReason || "").trim().toUpperCase();
   if (blocker && blocker !== "NONE") {
     if (blocker === "TRAP_HIGH") return "Fake breakout risk";
-    if (blocker === "NO_BREAK_CONFIRMATION" || blocker === "NO_BREACH_CONFIRMATION") {
+    if (blocker === "NO_BREAK_CONFIRMATION" || blocker === "NO_BREACH_CONFIRMATION")
       return "No breakout confirmation";
-    }
     if (blocker === "ABSORPTION_ACTIVE") return "Support absorption active";
     if (blocker === "SUPPORT_TRANSITION") return "Support transition active";
     if (blocker === "RESISTANCE_TRANSITION") return "Resistance transition active";
@@ -233,14 +255,14 @@ const formatReason = ({
   if (resolved && resolved.toLowerCase() !== "no clear signal") return resolved;
   const explanation = human(decisionExplanation, "");
   if (explanation && explanation.toLowerCase() !== "no clear signal") return explanation;
-  if (supportTransition || resistanceTransition) return "Transition phase - waiting for structural clarity";
-  if (trapRisk >= 60) return "Trap risk elevated - waiting for clean confirmation";
-  if (action.toUpperCase().includes("BREAKOUT")) return "Resistance pressure building - waiting for upside acceptance";
-  if (action.toUpperCase().includes("BREAKDOWN")) return "Support under pressure - watching for continuation";
-  if (String(phase || "").toLowerCase().includes("transition")) return "Price inside range - no breakout confirmation";
-  if (String(bias || "").toLowerCase() === "bullish") return "Support holding but no clean confirmation yet";
-  if (String(bias || "").toLowerCase() === "bearish") return "Resistance holding but no clean confirmation yet";
-  return "Inside active band - no clean directional edge";
+  if (supportTransition || resistanceTransition) return "Transition phase — waiting for structural clarity";
+  if (trapRisk >= 60) return "Trap risk elevated — waiting for clean confirmation";
+  if (action.toUpperCase().includes("BREAKOUT")) return "Resistance pressure building — waiting for upside acceptance";
+  if (action.toUpperCase().includes("BREAKDOWN")) return "Support under pressure — watching for continuation";
+  if (String(phase || "").toLowerCase().includes("transition")) return "Price inside range — no breakout confirmation";
+  if (String(bias || "").toLowerCase() === "bullish") return "Support holding — no clean confirmation yet";
+  if (String(bias || "").toLowerCase() === "bearish") return "Resistance holding — no clean confirmation yet";
+  return "Inside active band — no directional edge";
 };
 
 const formatStructuralHeadline = ({
@@ -261,14 +283,13 @@ const formatStructuralHeadline = ({
     distToSupport: summary.distS,
     distToResistance: summary.distR,
   });
-  if (labelState === "ABOVE_RESISTANCE") {
-    return `Above resistance - waiting for acceptance over ${fmt(summary.resistance)}`;
-  }
-  if (labelState === "BELOW_SUPPORT") {
-    return `Below support - watching for continuation under ${fmt(summary.support)}`;
-  }
+  if (labelState === "ABOVE_RESISTANCE")
+    return `Above resistance · waiting for acceptance over ${fmt(summary.resistance)}`;
+  if (labelState === "BELOW_SUPPORT")
+    return `Below support · watching for continuation under ${fmt(summary.support)}`;
   return fallbackReason;
 };
+
 const compactTagLabel = (value?: string | null, fallback = "-") => {
   const raw = String(value || "").trim();
   if (!raw) return fallback;
@@ -276,6 +297,7 @@ const compactTagLabel = (value?: string | null, fallback = "-") => {
   if (normalized === "SUSPECT") return "LOW QUALITY";
   return raw.replace(/_/g, " ").replace(/\s+/g, " ").trim();
 };
+
 const compactTagTone = (kind: "state" | "quality" | "decision", value?: string | null) => {
   const t = String(value || "").trim().toUpperCase();
   if (kind === "quality") {
@@ -294,21 +316,23 @@ const compactTagTone = (kind: "state" | "quality" | "decision", value?: string |
 };
 
 export default function StructuralPriceContextCard(props: Props) {
-
-
-
   const summary = useMemo(() => {
-    if (props.spotPrice == null || props.supportLevel == null || props.resistanceLevel == null) return null;
+    if (props.spotPrice == null || props.supportLevel == null || props.resistanceLevel == null)
+      return null;
     let support = props.supportLevel;
     let resistance = props.resistanceLevel;
 
     if (resistance <= support) {
       const fallbackMajorResistance =
-        typeof props.majorResistance === "number" && Number.isFinite(props.majorResistance) && props.majorResistance > support
+        typeof props.majorResistance === "number" &&
+        Number.isFinite(props.majorResistance) &&
+        props.majorResistance > support
           ? props.majorResistance
           : null;
       const fallbackMajorSupport =
-        typeof props.majorSupport === "number" && Number.isFinite(props.majorSupport) && props.majorSupport < resistance
+        typeof props.majorSupport === "number" &&
+        Number.isFinite(props.majorSupport) &&
+        props.majorSupport < resistance
           ? props.majorSupport
           : null;
 
@@ -321,8 +345,14 @@ export default function StructuralPriceContextCard(props: Props) {
       }
     }
 
-    const prevS = typeof props.previousSupport === "number" && props.previousSupport !== support ? props.previousSupport : null;
-    const prevR = typeof props.previousResistance === "number" && props.previousResistance !== resistance ? props.previousResistance : null;
+    const prevS =
+      typeof props.previousSupport === "number" && props.previousSupport !== support
+        ? props.previousSupport
+        : null;
+    const prevR =
+      typeof props.previousResistance === "number" && props.previousResistance !== resistance
+        ? props.previousResistance
+        : null;
     const band = resistance - support;
     const posRaw = ((props.spotPrice - support) / band) * 100;
     const distS = props.spotPrice - support;
@@ -332,10 +362,23 @@ export default function StructuralPriceContextCard(props: Props) {
     const nearS = distS >= 0 && distS < 30 && !brokenS && !brokenR;
     const nearR = distR >= 0 && distR < 30 && !brokenS && !brokenR;
     return {
-      support, resistance, prevS, prevR, band, spot: props.spotPrice, distS, distR, posRaw, brokenS, brokenR, nearS, nearR,
+      support,
+      resistance,
+      prevS,
+      prevR,
+      band,
+      spot: props.spotPrice,
+      distS,
+      distR,
+      posRaw,
+      brokenS,
+      brokenR,
+      nearS,
+      nearR,
       supportShifted: prevS != null,
       resistanceShifted: prevR != null,
-      upperThird: posRaw >= 67, lowerThird: posRaw <= 33,
+      upperThird: posRaw >= 67,
+      lowerThird: posRaw <= 33,
     };
   }, [
     props.majorResistance,
@@ -354,43 +397,50 @@ export default function StructuralPriceContextCard(props: Props) {
       distToSupport: summary.distS,
       distToResistance: summary.distR,
     });
-    if (labelState === "BELOW_SUPPORT") {
+    if (labelState === "BELOW_SUPPORT")
       return { className: "spc-breach-banner spc-breach-banner-support-break", text: buildAlertMessage({ summary }) };
-    }
-    if (labelState === "ABOVE_RESISTANCE") {
+    if (labelState === "ABOVE_RESISTANCE")
       return { className: "spc-breach-banner spc-breach-banner-resistance-break", text: buildAlertMessage({ summary }) };
-    }
-    if (labelState === "NEAR_SUPPORT") {
+    if (labelState === "NEAR_SUPPORT")
       return { className: "spc-breach-banner spc-breach-banner-near-s", text: buildAlertMessage({ summary }) };
-    }
-    if (labelState === "NEAR_RESISTANCE") {
+    if (labelState === "NEAR_RESISTANCE")
       return { className: "spc-breach-banner spc-breach-banner-near-r", text: buildAlertMessage({ summary }) };
-    }
     return null;
   }, [summary]);
 
   const rangeText = useMemo(() => {
-    const targets = [props.target1, props.target2].filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
-    if (!targets.length) return "Range -";
-    return `${fmt(Math.min(...targets))} to ${fmt(Math.max(...targets))}`;
+    const targets = [props.target1, props.target2].filter(
+      (v): v is number => typeof v === "number" && !Number.isNaN(v),
+    );
+    if (!targets.length) return null;
+    return `${fmt(Math.min(...targets))} – ${fmt(Math.max(...targets))}`;
   }, [props.target1, props.target2]);
 
   if (!summary) {
     return (
       <div className="spc-card">
         <div className="spc-head">
-          <div><div className="spc-title">Structure</div></div>
+          <div className="spc-title">Structure</div>
         </div>
-        <div className="spc-compact-panel"><div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div></div>
+        <div className="spc-compact-panel">
+          <div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div>
+        </div>
       </div>
     );
   }
 
-  const trapRisk = typeof props.trapProbability === "number" && Number.isFinite(props.trapProbability) ? Math.max(0, Math.min(100, props.trapProbability)) : 0;
-  const readiness = typeof props.readinessScore === "number" && Number.isFinite(props.readinessScore) ? Math.max(0, Math.min(100, props.readinessScore)) : null;
+  const trapRisk =
+    typeof props.trapProbability === "number" && Number.isFinite(props.trapProbability)
+      ? Math.max(0, Math.min(100, props.trapProbability))
+      : 0;
+  const readiness =
+    typeof props.readinessScore === "number" && Number.isFinite(props.readinessScore)
+      ? Math.max(0, Math.min(100, props.readinessScore))
+      : null;
   const act = actionLabel(props.tradeAction);
   const supportTransition = Boolean(props.supportTransitionBadge ?? props.supportTransitionActive);
   const resistanceTransition = Boolean(props.resistanceTransitionBadge);
+
   const baseReason = formatReason({
     resolvedReason: props.resolvedReason,
     decisionExplanation: props.decisionExplanation,
@@ -402,206 +452,279 @@ export default function StructuralPriceContextCard(props: Props) {
     trapRisk,
     bias: props.bias,
   });
-  const reason = formatStructuralHeadline({
-    summary,
-    fallbackReason: baseReason,
-  });
+  const reason = formatStructuralHeadline({ summary, fallbackReason: baseReason });
   const blockingReasonCode = String(props.blockingReason || "").trim().toUpperCase();
   const dominantMessage =
     blockingReasonCode && blockingReasonCode !== "NONE"
       ? `${baseReason} · Decision Engine`
       : reason;
-  const phaseBadge = formatPhaseBadge({
-    phase: props.sessionPhase,
-    supportTransition,
-    resistanceTransition,
-  });
+
+  const phaseBadge = formatPhaseBadge({ phase: props.sessionPhase, supportTransition, resistanceTransition });
   const readinessGlow = readinessGlowOpacity(readiness, props.readinessState);
   const readinessExplainability = sanitizeReadinessExplainability(props.readinessExplainability);
-  const positionTextFriendly = positionSummary({
+
+  const distToS =
+    Number.isFinite(summary.spot) && Number.isFinite(summary.support)
+      ? Math.round(summary.spot - summary.support)
+      : null;
+  const distToR =
+    Number.isFinite(summary.spot) && Number.isFinite(summary.resistance)
+      ? Math.round(summary.resistance - summary.spot)
+      : null;
+
+  const proximitySummary = positionSummary({
     position: summary.posRaw,
     distToSupport: summary.distS,
     distToResistance: summary.distR,
   });
-  const watchZoneLabel = "Resistance Watch";
-  const watchZoneToneClass =
-    summary.upperThird || summary.nearR
-      ? "spc-range-label-watch"
-      : summary.lowerThird || summary.nearS
-        ? "spc-range-label-watch-support"
-        : "";
-  const distToS = Number.isFinite(summary.spot) && Number.isFinite(summary.support)
-    ? Math.round(summary.spot - summary.support)
-    : null;
-  const distToR = Number.isFinite(summary.spot) && Number.isFinite(summary.resistance)
-    ? Math.round(summary.resistance - summary.spot)
-    : null;
-  const nearS = distToS !== null && distToS < 100;
-  const nearR = distToR !== null && distToR < 100;
-  const proximitySummary =
-    nearS && distToS !== null ? `Near support (${distToS} pts)`
-      : nearR && distToR !== null ? `Near resistance (${distToR} pts)`
-        : positionTextFriendly;
-  const situationLabel =
-    nearS && nearR ? `COMPRESSED · S${distToS}pts  R${distToR}pts`
-      : nearS ? `NEAR SUPPORT · ${distToS}pts to ${summary.support.toLocaleString("en-IN")}`
-        : nearR ? `NEAR RESISTANCE · ${distToR}pts to ${summary.resistance.toLocaleString("en-IN")}`
-          : `IN RANGE · S${distToS}pts  R${distToR}pts`;
+
+  /* ── Determine proximity tone for center spot display ── */
+  const spotToneClass = summary.brokenR
+    ? "spc-spot-tone-above"
+    : summary.brokenS
+      ? "spc-spot-tone-below"
+      : distToR !== null && distToR < 50
+        ? "spc-spot-tone-near-r"
+        : distToS !== null && distToS < 50
+          ? "spc-spot-tone-near-s"
+          : "";
 
   return (
     <div className="spc-card">
-      <div className="spc-head">
-        <div>
-          <div className="spc-title">Structure</div>
-        </div>
-      </div>
-      <div className="spc-compact-panel">
-        <div className="spc-hero-row">
-          <div className="spc-hero-copy spc-hero-copy-decision">
-            <div className="spc-hero-state">{dominantMessage}</div>
-          </div>
-        </div>
-        <div className="spc-status-row spc-status-row-decision">
+      {/* ═══════════════════════════════════════════
+          HEADER — title + all status chips in one row
+      ═══════════════════════════════════════════ */}
+      <div className="spc-header-row">
+        <span className="spc-title">Structure</span>
+        <div className="spc-header-chips">
           <span className="spc-chip spc-chip-neutral">{phaseBadge}</span>
-          <span className={`spc-chip ${trapRisk >= 60 ? "spc-chip-danger" : trapRisk >= 25 ? "spc-chip-warning" : "spc-chip-success"}`}>
-            {trapRisk <= 10 ? "No Trap - clean structure" : trapBadge(props.trapProbability)}
+          <span
+            className={`spc-chip ${
+              trapRisk >= 60
+                ? "spc-chip-danger"
+                : trapRisk >= 25
+                  ? "spc-chip-warning"
+                  : "spc-chip-success"
+            }`}
+          >
+            {trapRisk <= 10 ? "Clean" : trapBadge(props.trapProbability)}
           </span>
-        </div>
-        <div className={`spc-situation-badge ${nearS || nearR ? "spc-situation-active" : "spc-situation-neutral"}`}>
-          {situationLabel}
-        </div>
-        {(props.spcState || props.moveQuality) ? (
-          <div className="spc-status-row spc-status-row-compact">
-            <span className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("state", props.spcState)}`}>
-              {compactTagLabel(props.spcState)} · {compactTagLabel(props.moveQuality)}
+          {(props.spcState || props.moveQuality) ? (
+            <span
+              className={`spc-chip spc-chip-compact spc-chip-compact-${compactTagTone("state", props.spcState)}`}
+            >
+              {compactTagLabel(props.spcState)}
+              {props.moveQuality ? ` · ${compactTagLabel(props.moveQuality)}` : ""}
             </span>
-          </div>
-        ) : null}
-        <div className="spc-compact-head">
-          <div className="spc-compact-metric spc-compact-metric-support">
-            <span>Support</span>
-            <div className="spc-compact-value-row">
-              <strong className="spc-compact-token">S</strong>
-              <strong className="spc-compact-level">{fmt(summary.support)}</strong>
-            </div>
-            {typeof props.supportDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.supportDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />PE/CE {props.supportDefenseRatio.toFixed(2)}x ({props.supportDefenseRatio >= 1 ? "Defended" : "Exposed"})</em> : null}
-          </div>
-          <div className="spc-compact-metric spc-compact-metric-spot">
-            <span>Spot</span>
-            <strong>{fmt(summary.spot, 2)}</strong>
-            <em className="spc-compact-center-meta spc-compact-center-meta-strong">{proximitySummary}</em>
-          </div>
-          <div className="spc-compact-metric spc-compact-metric-resistance">
-            <span>Resistance</span>
-            <div className="spc-compact-value-row">
-              <strong className="spc-compact-token">R</strong>
-              <strong className="spc-compact-level">{fmt(summary.resistance)}</strong>
-            </div>
-            {typeof props.resistanceDefenseRatio === "number" ? <em className="spc-compact-defense"><span className={`spc-defense-dot ${props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"}`} />CE/PE {props.resistanceDefenseRatio.toFixed(2)}x ({props.resistanceDefenseRatio >= 1 ? "Defended" : "Exposed"})</em> : null}
-          </div>
+          ) : null}
         </div>
-        {/*
-          <div className="spc-level-shift-notice">
-            {summary.supportShifted && summary.prevS != null ? (
-              <div className="spc-shift-line spc-shift-line-support">Support shifted {fmt(summary.prevS)} → {fmt(summary.support)}</div>
-            ) : null}
-            {summary.resistanceShifted && summary.prevR != null ? (
-              <div className="spc-shift-line spc-shift-line-resistance">Resistance shifted {fmt(summary.prevR)} → {fmt(summary.resistance)}</div>
-            ) : null}
-          </div>
-        */}
-        <div className="spc-range-meta">
-          <span className="spc-range-label">Defended Support</span>
-          <span className="spc-range-label">Active Zone</span>
-          <span className={`spc-range-label ${watchZoneToneClass}`}>{watchZoneLabel}</span>
-        </div>
-        <div className="spc-band-stack">
-          <StructureBand
-            spot={summary.spot}
-            support={summary.support}
-            resistance={summary.resistance}
-            previousSupport={summary.prevS ?? undefined}
-            previousResistance={summary.prevR ?? undefined}
-            supportBroken={summary.brokenS}
-            resistanceBroken={summary.brokenR}
-            isNearSupport={summary.nearS}
-            isNearResistance={summary.nearR}
-            materialBreachConfirmed={props.materialBreachConfirmed}
-            confirmationType={props.confirmationType}
-            trapProbability={props.trapProbability ?? undefined}
-            trapDirection={props.trapDirection}
-            trapAffectedLevel={
-              props.trapDirection === "downside"
-                ? summary.resistance
-                : props.trapDirection === "upside"
-                  ? summary.support
-                  : undefined
-            }
-            embedded
-            className="spc-embedded-band"
-          />
-          <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
-            <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
-          </div>
-        </div>
-        {readinessExplainability ? (
-          <div className="spc-readiness-explain">{readinessExplainability}</div>
-        ) : null}
-        {breachBanner ? <div className={breachBanner.className}><span className="spc-breach-dot" /><span>{breachBanner.text}</span></div> : null}
-        <div className="spc-range-foot spc-range-foot-dense">
-          <div className="spc-foot-col spc-foot-col-left">
-            <span />
-          </div>
-          <div className="spc-foot-col spc-foot-col-center" />
-          <div className="spc-foot-col spc-foot-col-right">
-            <span>Breakout needs +50 pts</span>
-          </div>
-        </div>
-        <div className="spc-range-subfoot">
-          <div className="spc-range-subfoot-side spc-range-subfoot-side-left">
-            {probabilityLabel(props.breakoutProbabilityDown) ? (
-              <span className="spc-range-subfoot-prob">Down Prob {probabilityLabel(props.breakoutProbabilityDown)}</span>
-            ) : null}
-            {props.breakBelowPrimary && props.breakBelowPrimary !== "-" ? (
-              <span>Below S target {props.breakBelowPrimary}</span>
-            ) : null}
-          </div>
-          <div className="spc-range-subfoot-center">
-            <span className="spc-range-foot-range-label">Today's Expected Range</span>
-            <span className="spc-range-foot-range">{rangeText}</span>
-          </div>
-          <div className="spc-range-subfoot-side spc-range-subfoot-side-right">
-            {probabilityLabel(props.breakoutProbabilityUp) ? (
-              <span className="spc-range-subfoot-prob">Up Prob {probabilityLabel(props.breakoutProbabilityUp)}</span>
-            ) : null}
-            {props.breakAbovePrimary && props.breakAbovePrimary !== "-" ? (
-              <span>Above R target {props.breakAbovePrimary}</span>
-            ) : null}
-          </div>
-        </div>
-        {(props.bullishTrigger || props.bearishTrigger || props.invalidation) ? (
-          <div className="spc-trigger-strip">
-            {props.bullishTrigger ? (
-              <div className="spc-trigger-row">
-                <span className="spc-trigger-label">Bullish trigger</span>
-                <span className="spc-trigger-value">{props.bullishTrigger}</span>
-              </div>
-            ) : null}
-            {props.bearishTrigger ? (
-              <div className="spc-trigger-row">
-                <span className="spc-trigger-label">Bearish trigger</span>
-                <span className="spc-trigger-value">{props.bearishTrigger}</span>
-              </div>
-            ) : null}
-            {props.invalidation ? (
-              <div className="spc-trigger-row">
-                <span className="spc-trigger-label">Invalidation</span>
-                <span className="spc-trigger-value">{props.invalidation}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
       </div>
+
+      {/* ═══════════════════════════════════════════
+          HEADLINE — single dominant structural message
+      ═══════════════════════════════════════════ */}
+      <div className="spc-headline">{dominantMessage}</div>
+
+      {/* ═══════════════════════════════════════════
+          LEVELS HERO — Support | Spot | Resistance
+          (defense ratios + distances — shown once)
+      ═══════════════════════════════════════════ */}
+      <div className="spc-levels-hero">
+        {/* Support */}
+        <div className="spc-level-col spc-level-col-support">
+          <span className="spc-level-label">SUPPORT</span>
+          <div className="spc-level-value-row">
+            <span className="spc-level-token spc-level-token-s">S</span>
+            <span className="spc-level-price spc-level-price-s">{fmt(summary.support)}</span>
+          </div>
+          {typeof props.supportDefenseRatio === "number" ? (
+            <span className="spc-level-defense">
+              <span
+                className={`spc-defense-dot ${
+                  props.supportDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"
+                }`}
+              />
+              PE/CE {props.supportDefenseRatio.toFixed(2)}x
+              <em className="spc-defense-status">
+                {props.supportDefenseRatio >= 1 ? "Defended" : "Exposed"}
+              </em>
+            </span>
+          ) : null}
+          {distToS !== null ? (
+            <span className="spc-level-dist spc-level-dist-s">
+              {summary.brokenS ? `−${Math.abs(distToS)} pts` : `+${distToS} pts`}
+            </span>
+          ) : null}
+        </div>
+
+        {/* Spot (center) */}
+        <div className="spc-level-col spc-level-col-spot">
+          <span className="spc-level-label">SPOT</span>
+          <span className={`spc-spot-price ${spotToneClass}`}>
+            {summary.spot.toLocaleString("en-IN", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </span>
+          <span className="spc-spot-proximity">{proximitySummary}</span>
+        </div>
+
+        {/* Resistance */}
+        <div className="spc-level-col spc-level-col-resistance">
+          <span className="spc-level-label">RESISTANCE</span>
+          <div className="spc-level-value-row spc-level-value-row-right">
+            <span className="spc-level-token spc-level-token-r">R</span>
+            <span className="spc-level-price spc-level-price-r">{fmt(summary.resistance)}</span>
+          </div>
+          {typeof props.resistanceDefenseRatio === "number" ? (
+            <span className="spc-level-defense spc-level-defense-right">
+              CE/PE {props.resistanceDefenseRatio.toFixed(2)}x
+              <em className="spc-defense-status">
+                {props.resistanceDefenseRatio >= 1 ? "Defended" : "Exposed"}
+              </em>
+              <span
+                className={`spc-defense-dot ${
+                  props.resistanceDefenseRatio >= 1 ? "spc-defense-dot-green" : "spc-defense-dot-red"
+                }`}
+              />
+            </span>
+          ) : null}
+          {distToR !== null ? (
+            <span className="spc-level-dist spc-level-dist-r">
+              {summary.brokenR ? `+${Math.abs(distToR)} pts` : `−${distToR} pts`}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════
+          VISUAL BAND (StructureBand SVG track)
+      ═══════════════════════════════════════════ */}
+      <div className="spc-band-block">
+        <StructureBand
+          spot={summary.spot}
+          support={summary.support}
+          resistance={summary.resistance}
+          previousSupport={summary.prevS ?? undefined}
+          previousResistance={summary.prevR ?? undefined}
+          supportBroken={summary.brokenS}
+          resistanceBroken={summary.brokenR}
+          isNearSupport={summary.nearS}
+          isNearResistance={summary.nearR}
+          materialBreachConfirmed={props.materialBreachConfirmed}
+          confirmationType={props.confirmationType}
+          trapProbability={props.trapProbability ?? undefined}
+          trapDirection={props.trapDirection}
+          trapAffectedLevel={
+            props.trapDirection === "downside"
+              ? summary.resistance
+              : props.trapDirection === "upside"
+                ? summary.support
+                : undefined
+          }
+          embedded
+          className="spc-embedded-band"
+        />
+        <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
+          <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════
+          OI BAR — embedded mode (no duplicate stats/zones)
+      ═══════════════════════════════════════════ */}
+      <StructureBandBar
+        spot={summary.spot}
+        support={summary.support}
+        resistance={summary.resistance}
+        previousResistance={summary.prevR}
+        peWall={props.peWall}
+        ceWall={props.ceWall}
+        magnet={props.magnet}
+        maxPain={props.maxPain}
+        strikeGap={typeof props.strikeGap === "number" ? props.strikeGap : 50}
+        strikes={props.strikes ?? undefined}
+        embedded
+      />
+
+      {/* ═══════════════════════════════════════════
+          READINESS EXPLAINABILITY
+      ═══════════════════════════════════════════ */}
+      {readinessExplainability ? (
+        <div className="spc-readiness-explain">{readinessExplainability}</div>
+      ) : null}
+
+      {/* ═══════════════════════════════════════════
+          BREACH / PROXIMITY ALERT BANNER
+      ═══════════════════════════════════════════ */}
+      {breachBanner ? (
+        <div className={breachBanner.className}>
+          <span className="spc-breach-dot" />
+          <span>{breachBanner.text}</span>
+        </div>
+      ) : null}
+
+      {/* ═══════════════════════════════════════════
+          FOOTER — probabilities + expected range
+      ═══════════════════════════════════════════ */}
+      <div className="spc-footer-row">
+        <div className="spc-footer-prob spc-footer-prob-down">
+          {probabilityLabel(props.breakoutProbabilityDown) ? (
+            <>
+              <span className="spc-footer-prob-lbl">↓ Down</span>
+              <span className="spc-footer-prob-val">{probabilityLabel(props.breakoutProbabilityDown)}</span>
+            </>
+          ) : null}
+          {props.breakBelowPrimary && props.breakBelowPrimary !== "-" ? (
+            <span className="spc-footer-target">T↓ {props.breakBelowPrimary}</span>
+          ) : null}
+        </div>
+
+        {rangeText ? (
+          <div className="spc-footer-range">
+            <span className="spc-footer-range-lbl">Expected Range</span>
+            <span className="spc-footer-range-val">{rangeText}</span>
+          </div>
+        ) : null}
+
+        <div className="spc-footer-prob spc-footer-prob-up">
+          {probabilityLabel(props.breakoutProbabilityUp) ? (
+            <>
+              <span className="spc-footer-prob-lbl">↑ Up</span>
+              <span className="spc-footer-prob-val">{probabilityLabel(props.breakoutProbabilityUp)}</span>
+            </>
+          ) : null}
+          {props.breakAbovePrimary && props.breakAbovePrimary !== "-" ? (
+            <span className="spc-footer-target">T↑ {props.breakAbovePrimary}</span>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════
+          TRIGGER STRIP
+      ═══════════════════════════════════════════ */}
+      {(props.bullishTrigger || props.bearishTrigger || props.invalidation) ? (
+        <div className="spc-trigger-strip">
+          {props.bullishTrigger ? (
+            <div className="spc-trigger-row">
+              <span className="spc-trigger-label spc-trigger-label-bull">▲ Bullish trigger</span>
+              <span className="spc-trigger-value">{props.bullishTrigger}</span>
+            </div>
+          ) : null}
+          {props.bearishTrigger ? (
+            <div className="spc-trigger-row">
+              <span className="spc-trigger-label spc-trigger-label-bear">▼ Bearish trigger</span>
+              <span className="spc-trigger-value">{props.bearishTrigger}</span>
+            </div>
+          ) : null}
+          {props.invalidation ? (
+            <div className="spc-trigger-row">
+              <span className="spc-trigger-label">✕ Invalidation</span>
+              <span className="spc-trigger-value">{props.invalidation}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

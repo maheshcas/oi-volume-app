@@ -176,12 +176,18 @@ def build_oi_volume_summary(nse_json, expiry: str | None = None):
     records = nse_json.get("records", {})
     data = records.get("data", [])
     spot = records.get("underlyingValue")
-    expiry_filter = str(expiry or "").strip().lower()
+    expiry_filter = _normalize_expiry_text(expiry)
     if expiry_filter:
         data = [
             item
             for item in data
-            if str(item.get("expiryDate", "")).strip().lower() == expiry_filter
+            if (
+                _normalize_expiry_text(item.get("expiryDate"))
+                or _normalize_expiry_text(item.get("expiryDates"))
+                or _normalize_expiry_text((item.get("CE", {}) or {}).get("expiryDate"))
+                or _normalize_expiry_text((item.get("PE", {}) or {}).get("expiryDate"))
+            )
+            == expiry_filter
         ]
 
     # Average volume + top 20% thresholds (per option type)
@@ -489,3 +495,17 @@ def build_target_projection(
             "resistanceFrom": "Highest CE OI strike",
         },
     }
+from datetime import datetime
+
+
+def _normalize_expiry_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %b %Y"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            return dt.strftime("%d-%b-%Y").lower()
+        except ValueError:
+            continue
+    return text.lower()

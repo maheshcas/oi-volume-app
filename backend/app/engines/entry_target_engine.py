@@ -53,6 +53,12 @@ def _empty_result() -> dict[str, Any]:
         "put_wall_used": None,
         "straddle_entry_premium": None,
         "straddle_target_premium": None,
+        "price_magnet_strike": None,
+        "magnet_pull_direction": "unknown",
+        "magnet_distance_pts": None,
+        "secondary_magnet": None,
+        "magnet_character": "unknown",
+        "compression_zone": False,
     }
 
 
@@ -173,7 +179,8 @@ def compute_entry_target(context: dict) -> dict:
       spot, support, resistance, strike_gap, put_wall, call_wall, max_pain_strike,
       defense_ratio_ce, defense_ratio_pe, liquidity_map, chain_greeks, trap_probability,
       bias, oi_scenario, session_phase, days_to_expiry, iv_rank, atm_straddle_premium,
-      entry_signal.
+      entry_signal, price_magnet_strike, magnet_pull_direction, magnet_distance_pts,
+      secondary_magnet, magnet_character, compression_zone.
 
     Output keys:
       trade_type, entry_underlying, entry_option_strike, entry_option_type,
@@ -192,6 +199,16 @@ def compute_entry_target(context: dict) -> dict:
         call_wall = _safe_float(context.get("call_wall"), 0.0) or resistance
         max_pain_strike = context.get("max_pain_strike")
         max_pain = _safe_float(max_pain_strike, 0.0) if max_pain_strike is not None else None
+        price_magnet_strike_ctx = context.get("price_magnet_strike")
+        price_magnet_strike = (
+            _safe_float(price_magnet_strike_ctx, 0.0) if price_magnet_strike_ctx is not None else None
+        )
+        magnet_pull_direction = str(context.get("magnet_pull_direction") or "unknown")
+        magnet_distance_pts = _safe_float(context.get("magnet_distance_pts"), 0.0)
+        secondary_magnet_ctx = context.get("secondary_magnet")
+        secondary_magnet = _safe_float(secondary_magnet_ctx, 0.0) if secondary_magnet_ctx is not None else None
+        magnet_character = str(context.get("magnet_character") or "unknown")
+        compression_zone = bool(context.get("compression_zone", False))
         entry_signal = str(context.get("entry_signal") or "")
         chain_greeks = context.get("chain_greeks")
         chain_greeks = chain_greeks if isinstance(chain_greeks, list) else []
@@ -205,6 +222,12 @@ def compute_entry_target(context: dict) -> dict:
         out["pe_clusters"] = pe_clusters
         out["call_wall_used"] = _round_to_gap(call_wall, strike_gap)
         out["put_wall_used"] = _round_to_gap(put_wall, strike_gap)
+        out["price_magnet_strike"] = _round_to_gap(price_magnet_strike, strike_gap)
+        out["magnet_pull_direction"] = magnet_pull_direction
+        out["magnet_distance_pts"] = round(float(magnet_distance_pts), 1) if magnet_distance_pts is not None else None
+        out["secondary_magnet"] = _round_to_gap(secondary_magnet, strike_gap)
+        out["magnet_character"] = magnet_character
+        out["compression_zone"] = compression_zone
 
         trade_type = _trade_type_from_signal(entry_signal)
         out["trade_type"] = trade_type
@@ -241,8 +264,8 @@ def compute_entry_target(context: dict) -> dict:
             ) or atm_strike
             stop_underlying = call_wall + round(strike_gap * 1.5, -1)
             stop_pct_premium = 0.50
-            target_1 = max(put_wall, support + round(band * 0.3, -1))
-            target_2 = put_wall
+            target_1 = price_magnet_strike if price_magnet_strike is not None and price_magnet_strike > 0 else put_wall
+            target_2 = max_pain if max_pain is not None and max_pain > 0 else support
         elif trade_type == "RANGE_SELL_PE":
             entry_underlying = put_wall + strike_gap
             entry_option_type, entry_option_action = "PE", "SELL"
@@ -266,7 +289,10 @@ def compute_entry_target(context: dict) -> dict:
             stop_pct_premium = None
             target_1 = None
             target_2 = None
-            target_description = "80% of straddle premium decay"
+            target_description = (
+                f"80% decay · Price magnet {int(price_magnet_strike) if price_magnet_strike else '-'} "
+                f"pins spot · Max pain {int(max_pain) if max_pain else '-'}"
+            )
             out["straddle_entry_premium"] = atm_straddle_premium_f
             out["straddle_target_premium"] = round((atm_straddle_premium_f or 0.0) * 0.2, 1) if atm_straddle_premium_f is not None else None
         elif trade_type == "TRAP_FADE_PE":
@@ -358,14 +384,29 @@ def compute_entry_target(context: dict) -> dict:
                 if stop_underlying is not None
                 else "Stop: premium or structure invalidation."
             )
-            t1_txt = f"{format(_safe_float(target_1), '.0f')}" if target_1 is not None else "-"
-            t2_txt = f"{format(_safe_float(target_2), '.0f')}" if target_2 is not None else "-"
-            t1_pts = (
-                f"{abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts"
-                if target_1 is not None and entry_underlying is not None
-                else "-"
-            )
-            target_brief = f"T1: {t1_txt} ({t1_pts}) - T2: {t2_txt}"
+            if trade_type == "RANGE_SELL_CE":
+                t1_val = _safe_float(target_1) if target_1 is not None else None
+                t2_val = _safe_float(target_2) if target_2 is not None else None
+                e_val = _safe_float(entry_underlying) if entry_underlying is not None else None
+                t1_pts = abs(e_val - t1_val) if e_val is not None and t1_val is not None else None
+                t2_pts = abs(e_val - t2_val) if e_val is not None and t2_val is not None else None
+                target_brief = (
+                    f"T1: {format(t1_val, '.0f') if t1_val is not None else '-'} "
+                    f"(price magnet — {t1_pts:.0f}pts) · "
+                    f"T2: {format(t2_val, '.0f') if t2_val is not None else '-'} "
+                    f"(max pain — {t2_pts:.0f}pts)"
+                    if t1_pts is not None and t2_pts is not None
+                    else "Targets mapped to magnet and max pain."
+                )
+            else:
+                t1_txt = f"{format(_safe_float(target_1), '.0f')}" if target_1 is not None else "-"
+                t2_txt = f"{format(_safe_float(target_2), '.0f')}" if target_2 is not None else "-"
+                t1_pts = (
+                    f"{abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts"
+                    if target_1 is not None and entry_underlying is not None
+                    else "-"
+                )
+                target_brief = f"T1: {t1_txt} ({t1_pts}) - T2: {t2_txt}"
 
         rr_brief = (
             f"RR T1: {rr_t1:.1f}x - T2: {rr_t2:.1f}x"

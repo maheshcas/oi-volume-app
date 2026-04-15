@@ -108,6 +108,17 @@ type DashboardLayoutProps = {
     bullishTrigger?: string | null;
     bearishTrigger?: string | null;
     invalidation?: string | null;
+    peWall?: number | null;
+    ceWall?: number | null;
+    magnet?: number | null;
+    maxPain?: number | null;
+    strikeGap?: number | null;
+    strikes?: Array<{
+      strike: number;
+      oi_ce: number;
+      oi_pe: number;
+      tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
+    }> | null;
   };
   tradePlan: {
     bias: string;
@@ -341,6 +352,12 @@ export default function DashboardLayout({
             bullishTrigger={structure.bullishTrigger}
             bearishTrigger={structure.bearishTrigger}
             invalidation={structure.invalidation}
+            peWall={structure.peWall}
+            ceWall={structure.ceWall}
+            magnet={structure.magnet}
+            maxPain={structure.maxPain}
+            strikeGap={structure.strikeGap}
+            strikes={structure.strikes}
           />
         </div>
       </div>

@@ -697,6 +697,14 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "stop_description",
         "target_description",
         "max_pain_strike",
+        "price_magnet_strike",
+        "price_magnet_combined",
+        "magnet_pull_direction",
+        "magnet_distance_pts",
+        "secondary_magnet",
+        "between_magnets",
+        "magnet_character",
+        "compression_zone",
         "max_pain_pull",
         "iv_skew",
         "atm_straddle_premium",
@@ -1287,6 +1295,8 @@ def _compute_directional_pressure_score(
     pe_rvr: float | None = None,
     oi_buildup_type: str | None = None,
     trap_probability: float,
+    day_high: float | None = None,
+    day_low: float | None = None,
     previous_alignment_score: float | None = None,
     previous_directional_dominance: str | None = None,
 ) -> dict[str, Any]:
@@ -1337,9 +1347,19 @@ def _compute_directional_pressure_score(
     oi_unwinding = oi_velocity < 0.25
     price_up = dps > 0.1
     price_down = dps < -0.1
+    session_high = _safe_float(day_high)
+    session_low = _safe_float(day_low)
+    session_range_pct = 0.0
+    if session_high is not None and session_low not in (None, 0) and session_high > session_low:
+        session_range_pct = ((float(session_high) - float(session_low)) / float(session_low)) * 100.0
     if buildup_text == "two-sided writing":
         scenario = "PINNING"
-        scenario_multiplier = PINNING_SCENARIO_MULTIPLIER
+        if session_range_pct > 1.5:
+            scenario_multiplier = 0.75
+        elif session_range_pct > 1.0:
+            scenario_multiplier = 0.65
+        else:
+            scenario_multiplier = PINNING_SCENARIO_MULTIPLIER
     elif price_up and oi_building:
         scenario = "LONG_BUILDUP"
         scenario_multiplier = 1.0
@@ -1378,6 +1398,7 @@ def _compute_directional_pressure_score(
         "dps_scenario_adjusted": round(dps_scenario_adjusted, 4),
         "dps_adjusted": round(dps_adjusted, 4),
         "oi_scenario": scenario,
+        "session_range_pct": round(float(session_range_pct), 4),
         "oi_scenario_multiplier": round(float(scenario_multiplier), 4),
         "pinning_active": scenario == "PINNING",
         "pressure_state": pressure_state,
@@ -1902,6 +1923,8 @@ def _compute_readiness_v2(
     winning_engine: str,
     conflict_market_state: str,
     absorption_wins: bool,
+    oi_scenario: str = "",
+    session_range_pct: float = 0.0,
 ) -> dict[str, Any]:
     prev_support = _safe_float((previous_state or {}).get("current_support"))
     prev_resistance = _safe_float((previous_state or {}).get("current_resistance"))
@@ -2112,8 +2135,15 @@ def _compute_readiness_v2(
         readiness_smoothing_applied = readiness_smoothing_applied or final_smoothed
 
     readiness_state_v2 = _readiness_v2_state(final_score)
+    effective_threshold = READINESS_ACTIVE_ON_THRESHOLD
+    oi_scenario_text = str(oi_scenario or "").strip().upper()
+    session_range_value = float(session_range_pct or 0.0)
+    if oi_scenario_text == "PINNING" and session_range_value > 1.5:
+        effective_threshold = 58.0
+    elif oi_scenario_text == "PINNING" and session_range_value > 1.0:
+        effective_threshold = 60.0
     prev_active_v2 = bool((previous_state or {}).get("readiness_active_v2", False))
-    if not prev_active_v2 and final_score >= READINESS_ACTIVE_ON_THRESHOLD:
+    if not prev_active_v2 and final_score >= effective_threshold:
         readiness_active_v2 = True
     elif prev_active_v2 and final_score < READINESS_ACTIVE_OFF_THRESHOLD:
         readiness_active_v2 = False
@@ -2140,6 +2170,7 @@ def _compute_readiness_v2(
         "readiness_invalid_sr_geometry": bool(invalid_sr_geometry),
         "readiness_smoothing_applied": bool(readiness_smoothing_applied),
         "readiness_transition_guard_applied": bool(readiness_transition_guard_applied),
+        "readiness_active_on_threshold_effective": round(float(effective_threshold), 2),
     }
 
 
@@ -4088,6 +4119,8 @@ def _build_v2_intelligence(
         pe_rvr=float((volume.get("rvr", {}) or {}).get("pe", 0.0) or 0.0),
         oi_buildup_type=oi_buildup_type,
         trap_probability=trap_probability,
+        day_high=day_high,
+        day_low=day_low,
         previous_alignment_score=previous_alignment,
         previous_directional_dominance=(previous_state or {}).get("directional_force_dominance"),
     )
@@ -4929,6 +4962,8 @@ def _build_v2_intelligence(
         winning_engine=winning_engine,
         conflict_market_state=str(decision.get("conflict_market_state", "") or ""),
         absorption_wins=absorption_wins,
+        oi_scenario=str(dps.get("oi_scenario") or ""),
+        session_range_pct=float(dps.get("session_range_pct", 0.0) or 0.0),
     )
     # Readiness V2 is now the active readiness contract. Keep the explicit V2
     # fields for diagnostics, but promote them into the primary readiness keys
@@ -4954,6 +4989,10 @@ def _build_v2_intelligence(
     decision["readiness_smoothing_applied"] = bool(readiness_v2["readiness_smoothing_applied"])
     decision["readiness_transition_guard_applied"] = bool(
         readiness_v2.get("readiness_transition_guard_applied", False)
+    )
+    decision["readiness_active_on_threshold_effective"] = readiness_v2.get(
+        "readiness_active_on_threshold_effective",
+        READINESS_ACTIVE_ON_THRESHOLD,
     )
 
     # Re-evaluate range-lock/no-edge with the active readiness contract (V2).
@@ -5360,6 +5399,12 @@ def _build_v2_intelligence(
             "iv_rank": float(iv_rank_result.get("iv_rank") or 0.0),
             "atm_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
             "entry_signal": strike_intelligence.get("entry_signal", "WAIT_NO_SETUP"),
+            "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
+            "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),
+            "magnet_distance_pts": strike_intelligence.get("magnet_distance_pts"),
+            "secondary_magnet": strike_intelligence.get("secondary_magnet"),
+            "magnet_character": strike_intelligence.get("magnet_character"),
+            "compression_zone": strike_intelligence.get("compression_zone"),
         }
     )
     strike_guidance = generate_strike_guidance(
@@ -5640,6 +5685,14 @@ def _build_v2_intelligence(
             "stop_description": strike_intelligence.get("stop_description"),
             "target_description": strike_intelligence.get("target_description"),
             "max_pain_strike": strike_intelligence.get("max_pain_strike"),
+            "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
+            "price_magnet_combined": strike_intelligence.get("price_magnet_combined"),
+            "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),
+            "magnet_distance_pts": strike_intelligence.get("magnet_distance_pts"),
+            "secondary_magnet": strike_intelligence.get("secondary_magnet"),
+            "between_magnets": strike_intelligence.get("between_magnets"),
+            "magnet_character": strike_intelligence.get("magnet_character"),
+            "compression_zone": strike_intelligence.get("compression_zone"),
             "max_pain_pull": strike_intelligence.get("max_pain_pull"),
             "iv_skew": strike_intelligence.get("iv_skew"),
             "atm_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
