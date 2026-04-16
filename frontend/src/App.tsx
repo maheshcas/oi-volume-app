@@ -255,6 +255,12 @@ type IntelligenceResponse = {
       entry_signal?: string;
       entry_signal_reason?: string;
       entry_signal_strength?: string;
+      directional_signal?: string;
+      directional_reason?: string;
+      directional_bias?: string;
+      directional_size?: string | null;
+      directional_strike?: number | null;
+      directional_rr?: number | null;
       recommended_action?: string;
       recommended_option?: string;
       recommended_strike?: number | null;
@@ -3704,35 +3710,58 @@ export default function App() {
           entryTarget={(() => {
             const et = intelligence?.market_state?.entry_target ?? null;
             const si = intelligence?.market_state?.strike_intelligence ?? null;
+            const directionalSignal = String(si?.directional_signal || "WAIT").toUpperCase();
+            const entrySignal = String(si?.entry_signal || "WAIT_NO_SETUP").toUpperCase();
+            const effectiveSignal = directionalSignal !== "WAIT" ? directionalSignal : entrySignal;
+            const directionalOption =
+              effectiveSignal === "BUY_CE" ? "CE" :
+              effectiveSignal === "BUY_PE" ? "PE" :
+              effectiveSignal === "SELL_STRADDLE" ? "STRADDLE" :
+              null;
+            const directionalAction =
+              effectiveSignal === "BUY_CE" || effectiveSignal === "BUY_PE" ? "BUY" :
+              effectiveSignal === "SELL_STRADDLE" ? "SELL" :
+              null;
             const fallback =
               !et && si
                 ? {
                     trade_type:
-                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                      effectiveSignal === "WAIT_NO_SETUP" || effectiveSignal === "WAIT"
                         ? "NONE"
-                        : String(si.entry_signal || "NONE"),
+                        : effectiveSignal,
                     entry_underlying: typeof spotValue === "number" ? spotValue : null,
-                    entry_option_strike: si.recommended_strike ?? null,
-                    entry_option_type: si.recommended_option ?? null,
-                    entry_option_action: si.recommended_action ?? null,
+                    entry_option_strike:
+                      directionalSignal !== "WAIT"
+                        ? si.directional_strike ?? si.recommended_strike ?? null
+                        : si.recommended_strike ?? null,
+                    entry_option_type:
+                      directionalSignal !== "WAIT"
+                        ? directionalOption
+                        : si.recommended_option ?? null,
+                    entry_option_action:
+                      directionalSignal !== "WAIT"
+                        ? directionalAction
+                        : si.recommended_action ?? null,
                     entry_premium: null,
                     entry_brief:
-                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                      effectiveSignal === "WAIT_NO_SETUP" || effectiveSignal === "WAIT"
                         ? "No clean setup currently. Wait for edge test or trap easing."
-                        : si.entry_signal_reason || "Signal-derived setup.",
+                        : directionalSignal !== "WAIT"
+                          ? si.directional_reason || "Directional setup derived from magnet and wall confirmation."
+                          : si.entry_signal_reason || "Signal-derived setup.",
                     stop_underlying: null,
                     stop_premium_value: null,
                     stop_brief:
-                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                      effectiveSignal === "WAIT_NO_SETUP" || effectiveSignal === "WAIT"
                         ? "Unlock: wait for spot to approach support/resistance with confirmation."
                         : si.stop_description || "Use signal invalidation.",
                     target_1: null,
                     target_2: null,
                     target_brief:
-                      String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase() === "WAIT_NO_SETUP"
+                      effectiveSignal === "WAIT_NO_SETUP" || effectiveSignal === "WAIT"
                         ? "No targets while waiting."
                         : si.target_description || "Use signal target guidance.",
-                    rr_t1: null,
+                    rr_t1: directionalSignal !== "WAIT" ? si.directional_rr ?? null : null,
                     rr_t2: null,
                     rr_brief: "RR pending entry-target engine payload.",
                     call_wall_used:

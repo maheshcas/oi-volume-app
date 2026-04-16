@@ -190,6 +190,12 @@ type DashboardLayoutProps = {
       entry_signal?: string;
       entry_signal_reason?: string;
       entry_signal_strength?: string;
+      directional_signal?: string;
+      directional_reason?: string;
+      directional_bias?: string;
+      directional_size?: string | null;
+      directional_strike?: number | null;
+      directional_rr?: number | null;
       recommended_action?: string;
       recommended_option?: string;
       recommended_strike?: number | null;

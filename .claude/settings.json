@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from app.services.spot_feed import fetch_index_data; print\\('spot_feed OK'\\)\")"
+    ]
+  }
+}

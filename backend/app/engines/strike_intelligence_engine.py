@@ -252,6 +252,205 @@ def _compute_wall_holding(level_row: dict[str, Any] | None, side: str) -> bool:
     return -0.03 <= chg < 0.05
 
 
+def _compute_defense_ratio(level_row: dict[str, Any] | None, side: str) -> float:
+    if not level_row:
+        return 0.0
+    oi_ce = _safe_float(level_row.get("oi_ce"), 0.0)
+    oi_pe = _safe_float(level_row.get("oi_pe"), 0.0)
+    if side == "resistance":
+        return oi_ce / max(oi_pe, 1.0)
+    return oi_pe / max(oi_ce, 1.0)
+
+
+def _find_wall_strike(
+    liquidity_map: list[dict[str, Any]],
+    side: str,
+    spot: float = 0.0,
+) -> int | None:
+    if not liquidity_map:
+        return None
+    best_row: dict[str, Any] | None = None
+    best_oi = -1.0
+    for row in liquidity_map:
+        strike = _safe_int(row.get("strike"), 0)
+        if strike <= 0:
+            continue
+        if spot > 0:
+            if side == "PE" and strike > spot + 25:
+                continue
+            if side == "CE" and strike < spot - 25:
+                continue
+        oi_key = "oi_pe" if side == "PE" else "oi_ce"
+        oi_value = _safe_float(row.get(oi_key), 0.0)
+        if oi_value > best_oi:
+            best_oi = oi_value
+            best_row = row
+    return _safe_int((best_row or {}).get("strike"), 0) or None
+
+
+def _compute_directional_signal(
+    spot: float,
+    support: float,
+    resistance: float,
+    magnet: float,
+    magnet_pull_direction: str,
+    max_pain_strike: float | None,
+    pe_wall: float,
+    ce_wall: float,
+    defense_ratio_pe: float,
+    defense_ratio_ce: float,
+    pe_wall_defense: float,
+    ce_wall_defense: float,
+    trap_probability: float,
+    strike_gap: int,
+    chain_greeks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    defended_threshold = 1.2
+    exposed_threshold = 1.0
+    min_rr = 0.5
+    level_proximity = 4 * strike_gap
+
+    dist_to_r = resistance - spot
+    dist_to_s = spot - support
+    if dist_to_r > level_proximity and dist_to_s > level_proximity:
+        return {
+            "signal": "WAIT",
+            "bias": "NEUTRAL",
+            "wall_status": "NEUTRAL",
+            "stop_valid": False,
+            "rr": 0.0,
+            "size": None,
+            "entry_strike": None,
+            "entry_premium": None,
+            "entry_option": None,
+            "stop_anchor": (support + resistance) / 2.0 if resistance > support else None,
+            "target_1": magnet if magnet > 0 else None,
+            "reason": "Spot not near any level",
+        }
+
+    if magnet_pull_direction == "up":
+        bias = "BULLISH"
+    elif magnet_pull_direction == "down":
+        bias = "BEARISH"
+    else:
+        bias = "NEUTRAL"
+
+    wall_ratio = 0.0
+    if bias == "BULLISH":
+        wall_ratio = defense_ratio_ce
+        if wall_ratio >= defended_threshold:
+            wall_status = "BLOCKED"
+        elif wall_ratio < exposed_threshold:
+            wall_status = "CONFIRMED"
+        else:
+            wall_status = "WEAK"
+        stop_anchor = pe_wall if pe_wall > 0 else support
+        effective_pe_defense = max(pe_wall_defense, defense_ratio_pe)
+        stop_valid = effective_pe_defense >= defended_threshold
+        risk = abs(spot - (stop_anchor - strike_gap))
+    elif bias == "BEARISH":
+        wall_ratio = defense_ratio_pe
+        if wall_ratio >= defended_threshold:
+            wall_status = "BLOCKED"
+        elif wall_ratio < exposed_threshold:
+            wall_status = "CONFIRMED"
+        else:
+            wall_status = "WEAK"
+        stop_anchor = ce_wall if ce_wall > 0 else resistance
+        effective_ce_defense = max(ce_wall_defense, defense_ratio_ce)
+        stop_valid = effective_ce_defense >= defended_threshold
+        risk = abs(spot - (stop_anchor + strike_gap))
+    else:
+        wall_status = "NEUTRAL"
+        stop_anchor = (support + resistance) / 2.0 if resistance > support else spot
+        stop_valid = True
+        risk = abs(spot - stop_anchor)
+
+    reward = abs(spot - magnet) if magnet > 0 else 0.0
+    rr = round(reward / risk, 2) if risk > 0 else 0.0
+    trap_ok = trap_probability < 55
+
+    signal = "WAIT"
+    size: str | None = None
+    reason = "Conditions not fully aligned"
+    if bias == "BULLISH" and wall_status == "CONFIRMED" and stop_valid and rr >= min_rr and trap_ok:
+        signal = "BUY_CE"
+        size = "standard"
+    elif bias == "BEARISH" and wall_status == "CONFIRMED" and stop_valid and rr >= min_rr and trap_ok:
+        signal = "BUY_PE"
+        size = "standard"
+    elif bias == "NEUTRAL" and defense_ratio_ce >= defended_threshold and defense_ratio_pe >= defended_threshold:
+        signal = "SELL_STRADDLE"
+        size = "standard"
+        reason = "Both walls defended with neutral magnet; premium-selling pin setup."
+    elif bias == "BULLISH" and wall_status == "BLOCKED":
+        reason = f"Magnet pulling up but resistance defended ({wall_ratio:.2f}x) - ceiling will block"
+    elif bias == "BULLISH" and wall_status == "WEAK":
+        reason = f"Magnet pulling up but resistance is only weakly exposed ({wall_ratio:.2f}x) - wait for clean breakout"
+    elif bias == "BEARISH" and wall_status == "BLOCKED":
+        reason = f"Magnet pulling down but support defended ({wall_ratio:.2f}x) - floor will hold"
+    elif bias == "BEARISH" and wall_status == "WEAK":
+        reason = f"Magnet pulling down but support is only weakly exposed ({wall_ratio:.2f}x) - wait for clean breakdown"
+    elif bias == "BULLISH" and not stop_valid:
+        reason = f"Magnet up and resistance exposed, but PE floor is not defended enough ({pe_wall_defense:.2f}x)"
+    elif bias == "BEARISH" and not stop_valid:
+        reason = f"Magnet down and support exposed, but CE ceiling is not defended enough ({ce_wall_defense:.2f}x)"
+    elif bias in {"BULLISH", "BEARISH"} and rr < min_rr:
+        reason = f"Directional setup found but RR too low ({rr:.2f}x) - need at least {min_rr:.2f}x"
+    elif not trap_ok:
+        reason = f"Trap risk too high ({trap_probability:.0f}%) - wait for it to ease below 55"
+
+    entry_strike: int | None = None
+    entry_premium: float | None = None
+    entry_option: str | None = None
+    max_pain_ref = _safe_float(max_pain_strike, spot)
+    if signal == "BUY_CE":
+        entry_option = "CE"
+        for row in chain_greeks:
+            ce_leg = row.get("ce") or {}
+            delta = _safe_float(ce_leg.get("delta"), 0.0)
+            ltp = _safe_float(ce_leg.get("ltp"), 0.0)
+            strike = _safe_int(row.get("strike"), 0)
+            if strike >= max_pain_ref and 0.30 <= delta <= 0.50 and ltp >= 5.0:
+                entry_strike = strike
+                entry_premium = ltp
+                break
+    elif signal == "BUY_PE":
+        entry_option = "PE"
+        for row in sorted(chain_greeks, key=lambda r: -_safe_int(r.get("strike"), 0)):
+            pe_leg = row.get("pe") or {}
+            delta = abs(_safe_float(pe_leg.get("delta"), 0.0))
+            ltp = _safe_float(pe_leg.get("ltp"), 0.0)
+            strike = _safe_int(row.get("strike"), 0)
+            if strike <= max_pain_ref and 0.30 <= delta <= 0.50 and ltp >= 5.0:
+                entry_strike = strike
+                entry_premium = ltp
+                break
+
+    if signal != "WAIT":
+        defended_text = "exposed" if wall_status == "CONFIRMED" else wall_status.lower()
+        reason = (
+            f"Magnet {magnet_pull_direction} + "
+            f"{'resistance' if bias == 'BULLISH' else 'support' if bias == 'BEARISH' else 'walls'} "
+            f"{defended_text} ({wall_ratio:.2f}x) + PE floor {pe_wall_defense:.2f}x"
+        )
+
+    return {
+        "signal": signal,
+        "bias": bias,
+        "wall_status": wall_status,
+        "stop_valid": stop_valid,
+        "rr": rr,
+        "size": size,
+        "entry_strike": entry_strike,
+        "entry_premium": entry_premium,
+        "entry_option": entry_option,
+        "stop_anchor": stop_anchor,
+        "target_1": magnet if magnet > 0 else None,
+        "reason": reason,
+    }
+
+
 def _compute_volume_spike_strikes(liquidity_map: list[dict[str, Any]]) -> list[int]:
     if not liquidity_map:
         return []
@@ -483,9 +682,13 @@ def compute_strike_intelligence(context: dict) -> dict:
             spot=spot,
             strike_gap=strike_gap,
         )
+        pe_wall = _find_wall_strike(liquidity_map, "PE", spot=spot)
+        ce_wall = _find_wall_strike(liquidity_map, "CE", spot=spot)
 
         resistance_row = _closest_row_by_strike(liquidity_map, resistance)
         support_row = _closest_row_by_strike(liquidity_map, support)
+        pe_wall_row = _closest_row_by_strike(liquidity_map, float(pe_wall)) if pe_wall else None
+        ce_wall_row = _closest_row_by_strike(liquidity_map, float(ce_wall)) if ce_wall else None
         resistance_row_strike = _safe_int((resistance_row or {}).get("strike"), 0)
         support_row_strike = _safe_int((support_row or {}).get("strike"), 0)
 
@@ -493,6 +696,8 @@ def compute_strike_intelligence(context: dict) -> dict:
         support_pcr = _compute_level_pcr(support_row)
         ce_wall_holding = _compute_wall_holding(resistance_row, "resistance")
         pe_wall_holding = _compute_wall_holding(support_row, "support")
+        pe_wall_defense = _compute_defense_ratio(pe_wall_row, "support")
+        ce_wall_defense = _compute_defense_ratio(ce_wall_row, "resistance")
         volume_spike_strikes = _compute_volume_spike_strikes(liquidity_map)
 
         trade_side_routing = _compute_trade_side_routing(
@@ -934,6 +1139,24 @@ def compute_strike_intelligence(context: dict) -> dict:
             else:
                 side_reason = f"Signal override: {chosen['entry_signal']} has higher priority than routing"
 
+        directional = _compute_directional_signal(
+            spot=spot,
+            support=support,
+            resistance=resistance,
+            magnet=_safe_float(magnet_result.get("price_magnet_strike"), 0.0),
+            magnet_pull_direction=_non_empty_text(magnet_result.get("magnet_pull_direction"), "unknown"),
+            max_pain_strike=float(max_pain_strike) if max_pain_strike is not None else None,
+            pe_wall=float(pe_wall or 0.0),
+            ce_wall=float(ce_wall or 0.0),
+            defense_ratio_pe=defense_ratio_pe,
+            defense_ratio_ce=defense_ratio_ce,
+            pe_wall_defense=pe_wall_defense,
+            ce_wall_defense=ce_wall_defense,
+            trap_probability=trap_probability,
+            strike_gap=strike_gap,
+            chain_greeks=chain_greeks,
+        )
+
         return {
             "trade_side": trade_side,
             "trade_side_reason": side_reason,
@@ -973,6 +1196,12 @@ def compute_strike_intelligence(context: dict) -> dict:
             "trade_side_routing": trade_side_routing,
             "iv_percentile": iv_percentile,
             "atm_strike": atm_strike if atm_strike > 0 else None,
+            "directional_signal": directional.get("signal"),
+            "directional_reason": directional.get("reason"),
+            "directional_bias": directional.get("bias"),
+            "directional_size": directional.get("size"),
+            "directional_strike": directional.get("entry_strike"),
+            "directional_rr": directional.get("rr"),
         }
     except Exception:
         return {
@@ -1012,4 +1241,10 @@ def compute_strike_intelligence(context: dict) -> dict:
             "support_pcr": None,
             "volume_spike_strikes": [],
             "trade_side_routing": "UNKNOWN",
+            "directional_signal": "WAIT",
+            "directional_reason": "Engine fallback: invalid or incomplete context",
+            "directional_bias": "NEUTRAL",
+            "directional_size": None,
+            "directional_strike": None,
+            "directional_rr": 0.0,
         }
