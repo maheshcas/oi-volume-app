@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.auth import SupabaseAuthMiddleware
 from app.core.cache import cache
 from app.dependencies import get_current_user
-from app.routers import option_chain
+from app.presentation.routers import option_chain
 from app.services.background_updater import background_update_loop
 from app.services.stability_logger import StabilityLoggerService
 

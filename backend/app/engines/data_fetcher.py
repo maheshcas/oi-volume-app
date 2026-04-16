@@ -1,7 +1,7 @@
 from typing import Optional
 
-from app.services.nse_client import fetch_index_data as _fetch_index_data
-from app.services.nse_client import fetch_option_chain as _fetch_option_chain
+from app.infrastructure.feeds.nse_client import fetch_index_data as _fetch_index_data
+from app.infrastructure.feeds.nse_client import fetch_option_chain as _fetch_option_chain
 
 
 def fetch_option_chain_data(symbol: str, expiry: Optional[str], instrument_type: str) -> dict:
