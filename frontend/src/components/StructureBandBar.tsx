@@ -53,11 +53,11 @@ export default function StructureBandBar({
   const nearR = distToR < nearThreshold;
 
   const pct = (value: number) =>
-    clamp(((value - support) / bandWidth) * 100, 0, 100);
+    clamp(((value - support) / bandWidth) * 100, 2, 98);
 
   const supportPct = pct(support);
   const resistancePct = pct(resistance);
-  const spotPct = clamp(((spot - support) / bandWidth) * 100, -8, 108);
+  const spotPct = clamp(((spot - support) / bandWidth) * 100, 2, 98);
   const prevResistancePct =
     typeof previousResistance === "number" ? pct(previousResistance) : null;
   const peWallPct = typeof peWall === "number" ? pct(peWall) : null;
@@ -127,7 +127,7 @@ export default function StructureBandBar({
     color: string,
     stackIndex = 0,
   ): Record<string, string | number> => {
-    const baseBottom = -14 - stackIndex * 12;
+    const baseBottom = -16 - stackIndex * 13;
     if (markerPct >= 94) {
       return {
         right: "0px",
@@ -183,8 +183,9 @@ export default function StructureBandBar({
       )}
 
       {/* ── Track ── */}
-      <div className="sbb-track-wrap">
-        <div className="sbb-track" />
+      <div className="band-section">
+        <div className="band-outer sbb-track-wrap">
+          <div className="band-track sbb-track" />
         {typeof peWall === "number" && peWall >= support ? (
           <div
             className="sbb-fill sbb-fill-support"
@@ -291,6 +292,7 @@ export default function StructureBandBar({
             max pain
           </div>
         ) : null}
+        </div>
       </div>
 
       {/* ── Metrics strip ── */}

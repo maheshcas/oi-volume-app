@@ -139,6 +139,9 @@ type DashboardLayoutProps = {
     trap_level: "Low" | "Moderate" | "High";
     trap_type: string;
     trap_zone: number;
+    trap_message?: string | null;
+    spot?: number | null;
+    resistance?: number | null;
     trap_direction?: "upside" | "downside" | "";
     suggested_action: string;
     trap_reason?: string | null;
@@ -412,6 +415,9 @@ export default function DashboardLayout({
             trap_level={trap.trap_level}
             trap_type={trap.trap_type}
             trap_zone={trap.trap_zone}
+            trap_message={trap.trap_message}
+            spot={trap.spot}
+            resistance={trap.resistance}
             trap_direction={trap.trap_direction}
             suggested_action={trap.suggested_action}
             trap_reason={trap.trap_reason}

@@ -321,6 +321,7 @@ export default function StructuralPriceContextCard(props: Props) {
       return null;
     let support = props.supportLevel;
     let resistance = props.resistanceLevel;
+    const originalResistance = resistance;
 
     if (resistance <= support) {
       const fallbackMajorResistance =
@@ -345,6 +346,15 @@ export default function StructuralPriceContextCard(props: Props) {
       }
     }
 
+    const effectiveResistance =
+      props.spotPrice > resistance &&
+      typeof props.ceWall === "number" &&
+      Number.isFinite(props.ceWall) &&
+      props.ceWall > resistance
+        ? props.ceWall
+        : resistance;
+    resistance = effectiveResistance;
+
     const prevS =
       typeof props.previousSupport === "number" && props.previousSupport !== support
         ? props.previousSupport
@@ -364,6 +374,7 @@ export default function StructuralPriceContextCard(props: Props) {
     return {
       support,
       resistance,
+      originalResistance,
       prevS,
       prevR,
       band,
@@ -383,6 +394,7 @@ export default function StructuralPriceContextCard(props: Props) {
   }, [
     props.majorResistance,
     props.majorSupport,
+    props.ceWall,
     props.previousResistance,
     props.previousSupport,
     props.resistanceLevel,
@@ -576,6 +588,11 @@ export default function StructuralPriceContextCard(props: Props) {
             <span className="spc-level-token spc-level-token-r">R</span>
             <span className="spc-level-price spc-level-price-r">{fmt(summary.resistance)}</span>
           </div>
+          {summary.originalResistance !== summary.resistance ? (
+            <span className="spc-level-defense spc-level-defense-right">
+              CE Wall active ceiling
+            </span>
+          ) : null}
           {typeof props.resistanceDefenseRatio === "number" ? (
             <span className="spc-level-defense spc-level-defense-right">
               CE/PE {props.resistanceDefenseRatio.toFixed(2)}x

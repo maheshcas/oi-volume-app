@@ -3227,6 +3227,14 @@ def _run_ordered_pipeline(
     # Stage 1: Feature engines
     oi = run_oi_analysis(features, previous_state=previous_state)
     sr = run_sr_engine(features, previous_state=previous_state)
+    liquidity_map_for_trap = build_liquidity_map(rows=features.get("rows") or [], spot=features.get("spot"))
+    sr = _promote_exposed_resistance(
+        sr=sr,
+        spot=features.get("spot"),
+        rows=features.get("rows") or [],
+        liquidity_map=liquidity_map_for_trap,
+        strike_gap=float(features.get("strike_gap", 50.0) or 50.0),
+    )
 
     sr_guard = _apply_first_cycle_sr_buffer_guard(
         sr=sr,
@@ -3238,7 +3246,6 @@ def _run_ordered_pipeline(
 
     base_volume = run_volume_analysis(features, previous_state=previous_state)
     base_breakout = run_breakout_engine(features, sr)
-    liquidity_map_for_trap = build_liquidity_map(rows=features.get("rows") or [], spot=features.get("spot"))
     base_trap = run_trap_engine(
         features,
         base_breakout,
@@ -3364,6 +3371,61 @@ def _build_per_strike_liquidity_rows(rows: list[dict[str, Any]]) -> list[dict[st
             }
         )
     return normalized
+
+
+def _find_row_by_strike(
+    rows: list[dict[str, Any]],
+    strike_value: float | None,
+) -> dict[str, Any] | None:
+    if strike_value is None:
+        return None
+    for row in rows:
+        strike = _safe_float(row.get("strike"))
+        if strike is None:
+            continue
+        if abs(strike - float(strike_value)) < 1e-6:
+            return row
+    return None
+
+
+def _promote_exposed_resistance(
+    *,
+    sr: dict[str, Any],
+    spot: float | None,
+    rows: list[dict[str, Any]],
+    liquidity_map: dict[str, Any] | None,
+    strike_gap: float,
+) -> dict[str, Any]:
+    result = dict(sr or {})
+    resistance_obj = dict((result.get("resistance") or {}))
+    spot_value = _safe_float(spot)
+    resistance_value = _safe_float(resistance_obj.get("strike"))
+    resistance_defense = _safe_float(resistance_obj.get("defense_score")) or 0.0
+    call_wall = _safe_float((liquidity_map or {}).get("call_wall"))
+    gap = max(1.0, float(strike_gap or 50.0))
+
+    if (
+        spot_value is not None
+        and resistance_value is not None
+        and call_wall is not None
+        and call_wall > resistance_value
+        and (call_wall - resistance_value) >= gap
+        and spot_value > resistance_value
+        and resistance_defense < 1.0
+    ):
+        promoted_row = _find_row_by_strike(rows, call_wall)
+        if promoted_row is not None:
+            ce_oi = _safe_float(promoted_row.get("CE_OI")) or 0.0
+            pe_oi = _safe_float(promoted_row.get("PE_OI")) or 0.0
+            resistance_obj["defense_score"] = round(ce_oi / max(pe_oi, 1.0), 2)
+        resistance_obj["previous_immediate"] = resistance_value
+        resistance_obj["strike"] = call_wall
+        resistance_obj["immediate"] = call_wall
+        resistance_obj["promoted_from_exposed_level"] = resistance_value
+        resistance_obj["promotion_reason"] = "call_wall_promoted_after_exposed_resistance"
+
+    result["resistance"] = resistance_obj
+    return result
 
 
 def detect_data_anomalies(
@@ -4027,6 +4089,20 @@ def _build_v2_intelligence(
         target["expansion_score"] = 0.0
     support_level = sr.get("support", {}).get("strike")
     resistance_level = sr.get("resistance", {}).get("strike")
+    if (
+        _safe_float(spot) is not None
+        and _safe_float(resistance_level) is not None
+        and float(spot or 0.0) > float(resistance_level or 0.0)
+        and float(trap.get("trap_probability_pct", 0) or 0.0) < 45.0
+        and not str(trap.get("trap_type") or "").strip()
+    ):
+        trap["trap_type"] = "Breakout In Progress"
+        trap["trap_direction"] = ""
+        trap["trap_message"] = (
+            f"Breakout in progress - watch for acceptance above {int(float(resistance_level))}."
+        )
+        trap["trap_affected_level"] = resistance_level
+        trap["show_affected_level"] = True
     support_reference_state = _resolve_absorption_reference_level(
         spot=spot,
         current_support=support_level,

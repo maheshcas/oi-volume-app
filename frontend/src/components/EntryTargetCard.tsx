@@ -36,6 +36,39 @@ function fmt(v: number | null | undefined) {
   return Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 }
 
+function formatMagnetPull(direction?: string | null, distance?: number | null) {
+  const d = typeof distance === "number" && Number.isFinite(distance) ? distance.toFixed(1) : "-";
+  if (direction === "up") return `▲ ${d}pts above spot`;
+  if (direction === "down") return `▼ ${d}pts below spot`;
+  if (direction === "at") return "◉ At spot";
+  return "unknown pull";
+}
+
+function formatMagnetCharacter(character?: string | null) {
+  const c = String(character || "").trim().toLowerCase();
+  if (!c) return "-";
+  if (c === "resistance" || c === "support" || c === "balanced") return c;
+  return c.replace(/[_-]+/g, " ");
+}
+
+function getMagnetConflictWarning(
+  action?: string | null,
+  optionType?: string | null,
+  magnetPullDirection?: string | null,
+) {
+  const act = String(action || "").toUpperCase();
+  const opt = String(optionType || "").toUpperCase();
+  const pull = String(magnetPullDirection || "").toLowerCase();
+
+  if (act === "SELL" && opt === "CE" && pull === "up") {
+    return "Magnet pulling up - trade against magnet, use smaller size";
+  }
+  if (act === "BUY" && opt === "CE" && pull === "down") {
+    return "Magnet pulling down - trade against magnet, use smaller size";
+  }
+  return null;
+}
+
 const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
   const tradeType = String(entryTarget?.trade_type || "NONE").toUpperCase();
   if (!entryTarget) return null;
@@ -48,32 +81,33 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
           <span className="et-action-badge et-badge-neutral">WAIT</span>
         </div>
         <div className="et-entry-brief">
-          {entryTarget.entry_brief || "No clean setup currently. Wait for support/resistance edge test."}
+          {entryTarget.entry_brief || "No trade setup currently."}
         </div>
-      <div className="et-notes">{entryTarget.stop_brief || "Unlock: wait for trap to ease or breach confirmation."}</div>
-      <div className="et-notes">{entryTarget.target_brief || "No targets while waiting."}</div>
-      {entryTarget.price_magnet_strike ? (
-        <div className="et-magnet-row">
-          <span className="et-label">MAGNET</span>
-          <span className={`et-magnet-value et-magnet-${String(entryTarget.magnet_pull_direction || "unknown")}`}>
-            {fmt(entryTarget.price_magnet_strike)}
-          </span>
-          <span className="et-magnet-pull">
-            {entryTarget.magnet_pull_direction === "up" && `↑ ${entryTarget.magnet_distance_pts ?? "-"}pts above`}
-            {entryTarget.magnet_pull_direction === "down" && `↓ ${entryTarget.magnet_distance_pts ?? "-"}pts below`}
-            {entryTarget.magnet_pull_direction === "at" && "◉ At magnet"}
-          </span>
-          <span className="et-magnet-char">{entryTarget.magnet_character || "-"}</span>
+        <div className="et-notes">{entryTarget.stop_brief || "Wait for a clean setup."}</div>
+        <div className="et-notes">{entryTarget.target_brief || "No targets while waiting."}</div>
+
+        {entryTarget.price_magnet_strike ? (
+          <div className="et-magnet-row">
+            <span className="et-label">MAGNET</span>
+            <span className={`et-magnet-value et-magnet-${String(entryTarget.magnet_pull_direction || "unknown")}`}>
+              {fmt(entryTarget.price_magnet_strike)}
+            </span>
+            <span className="et-magnet-pull">
+              {formatMagnetPull(entryTarget.magnet_pull_direction, entryTarget.magnet_distance_pts)}
+            </span>
+            <span className="et-magnet-char">{formatMagnetCharacter(entryTarget.magnet_character)}</span>
+          </div>
+        ) : null}
+
+        {entryTarget.compression_zone && entryTarget.price_magnet_strike && entryTarget.secondary_magnet ? (
+          <div className="et-compression-note">
+            Compressed between {fmt(entryTarget.price_magnet_strike)} and {fmt(entryTarget.secondary_magnet)}. Price pinned.
+          </div>
+        ) : null}
+
+        <div className="et-walls">
+          CE Wall {fmt(entryTarget.call_wall_used)} | PE Wall {fmt(entryTarget.put_wall_used)}
         </div>
-      ) : null}
-      {entryTarget.compression_zone && entryTarget.price_magnet_strike && entryTarget.secondary_magnet ? (
-        <div className="et-compression-note">
-          Compressed between {fmt(entryTarget.price_magnet_strike)} ↔ {fmt(entryTarget.secondary_magnet)} · Price pinned
-        </div>
-      ) : null}
-      <div className="et-walls">
-        CE Wall {fmt(entryTarget.call_wall_used)} | PE Wall {fmt(entryTarget.put_wall_used)}
-      </div>
       </div>
     );
   }
@@ -94,6 +128,11 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
           : action === "SELL"
             ? "et-badge-sell"
             : "et-badge-neutral";
+  const magnetConflictWarning = getMagnetConflictWarning(
+    entryTarget.entry_option_action,
+    entryTarget.entry_option_type,
+    entryTarget.magnet_pull_direction,
+  );
 
   return (
     <div className="ia-card entry-target-card">
@@ -113,7 +152,7 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
           <span className="et-label">Stop</span>
           <span className="et-value">
             {fmt(entryTarget.stop_underlying)}
-            {entryTarget.stop_premium_value != null ? `  ₹${entryTarget.stop_premium_value.toFixed(1)}` : ""}
+            {entryTarget.stop_premium_value != null ? `  Rs ${entryTarget.stop_premium_value.toFixed(1)}` : ""}
           </span>
         </div>
         <div className="et-item">
@@ -134,6 +173,7 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
 
       <div className="et-notes">{entryTarget.stop_brief || "-"}</div>
       <div className="et-notes">{entryTarget.target_brief || entryTarget.rr_brief || "-"}</div>
+
       {entryTarget.price_magnet_strike ? (
         <div className="et-magnet-row">
           <span className="et-label">MAGNET</span>
@@ -141,16 +181,19 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
             {fmt(entryTarget.price_magnet_strike)}
           </span>
           <span className="et-magnet-pull">
-            {entryTarget.magnet_pull_direction === "up" && `↑ ${entryTarget.magnet_distance_pts ?? "-"}pts above`}
-            {entryTarget.magnet_pull_direction === "down" && `↓ ${entryTarget.magnet_distance_pts ?? "-"}pts below`}
-            {entryTarget.magnet_pull_direction === "at" && "◉ At magnet"}
+            {formatMagnetPull(entryTarget.magnet_pull_direction, entryTarget.magnet_distance_pts)}
           </span>
-          <span className="et-magnet-char">{entryTarget.magnet_character || "-"}</span>
+          <span className="et-magnet-char">{formatMagnetCharacter(entryTarget.magnet_character)}</span>
         </div>
       ) : null}
+
+      {magnetConflictWarning ? (
+        <div className="et-magnet-warning">{magnetConflictWarning}</div>
+      ) : null}
+
       {entryTarget.compression_zone && entryTarget.price_magnet_strike && entryTarget.secondary_magnet ? (
         <div className="et-compression-note">
-          Compressed between {fmt(entryTarget.price_magnet_strike)} ↔ {fmt(entryTarget.secondary_magnet)} · Price pinned
+          Compressed between {fmt(entryTarget.price_magnet_strike)} and {fmt(entryTarget.secondary_magnet)}. Price pinned.
         </div>
       ) : null}
 

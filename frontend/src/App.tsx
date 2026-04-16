@@ -384,6 +384,7 @@ type IntelligenceResponse = {
       show_affected_level?: boolean;
       validity_score?: number;
       trap_raw?: number;
+      trap_message?: string | null;
       trap_reason?: string | null;
       support_reason?: string | null;
       oi_trap_signal?: string | null;
@@ -693,6 +694,16 @@ function formatNumber(value: number | string | null | undefined) {
   const num = Number(value);
   if (Number.isNaN(num)) return String(value);
   return num.toLocaleString("en-IN");
+}
+
+function toSafeNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/,/g, "").trim();
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function formatSigned(value: number | null | undefined, digits = 0) {
@@ -1227,7 +1238,25 @@ export default function App() {
     const syncActiveExpiry = () => {
       const active = getActiveExpiry(expiries, getIstNow());
       if (!active) return;
-      setExpiry((current) => (current && current === active ? current : active));
+      setExpiry((current) => {
+        if (current && expiries.includes(current)) {
+          const currentDate = parseExpiryDate(current);
+          const now = getIstNow();
+          const afterClose = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 30);
+          const currentIsToday =
+            currentDate &&
+            currentDate.getFullYear() === now.getFullYear() &&
+            currentDate.getMonth() === now.getMonth() &&
+            currentDate.getDate() === now.getDate();
+
+          // Respect the user's manual expiry selection unless that exact contract has
+          // rolled past today's close and we need to advance to the next active expiry.
+          if (!(currentIsToday && afterClose && active !== current)) {
+            return current;
+          }
+        }
+        return active;
+      });
     };
     syncActiveExpiry();
     const timer = setInterval(syncActiveExpiry, REFRESH_MS);
@@ -3588,9 +3617,9 @@ export default function App() {
                   : null),
             strikeGap: 50,
             strikes: displayRows
-              .filter((row) => Number.isFinite(Number(row?.strike)))
               .map((row) => {
-                const strike = Number(row.strike);
+                const strike = toSafeNumber(row?.strike);
+                if (!Number.isFinite(strike) || strike <= 0) return null;
                 const putWall = typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
                 const callWall = typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
                 const magnetStrike = typeof intelligence?.market_state?.price_magnet_strike === "number"
@@ -3608,11 +3637,12 @@ export default function App() {
                 else if (maxPainStrike !== null && strike === maxPainStrike) tag = "maxpain";
                 return {
                   strike,
-                  oi_ce: Number(row.CE_OI ?? 0) || 0,
-                  oi_pe: Number(row.PE_OI ?? 0) || 0,
+                  oi_ce: toSafeNumber((row as Record<string, unknown>).CE_OI ?? (row as Record<string, unknown>).oi_ce ?? 0),
+                  oi_pe: toSafeNumber((row as Record<string, unknown>).PE_OI ?? (row as Record<string, unknown>).oi_pe ?? 0),
                   tag,
                 };
-              }),
+              })
+              .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
           }}
           tradePlan={{
             bias: String(playbook?.bias ?? displayPrimaryBias),
@@ -3637,6 +3667,9 @@ export default function App() {
             trap_level: displayTrapLevel,
             trap_type: displayTrapType ?? "-",
             trap_zone: Number(trapAffectedLevel ?? displayResistance ?? displaySupport ?? nearestSpotStrike ?? 0),
+            trap_message: intelligence?.signals?.trap?.trap_message ?? null,
+            spot: typeof spotValue === "number" ? spotValue : null,
+            resistance: typeof displayResistance === "number" ? displayResistance : null,
             trap_direction: trapDirection,
             suggested_action: trapSuggestedAction,
             trap_reason: intelligence?.signals?.trap?.trap_reason ?? null,

@@ -5,6 +5,9 @@ export type TrapCardProps = {
   trap_level: TrapLevel;
   trap_type: string;
   trap_zone: number;
+  trap_message?: string | null;
+  spot?: number | null;
+  resistance?: number | null;
   trap_direction?: "upside" | "downside" | "";
   suggested_action: string;
   trap_reason?: string | null;
@@ -78,6 +81,9 @@ export default function TrapCard({
   trap_level,
   trap_type,
   trap_zone,
+  trap_message,
+  spot,
+  resistance,
   trap_direction = "",
   suggested_action,
   trap_reason,
@@ -110,7 +116,7 @@ export default function TrapCard({
   const directionLabel = isRejection ? "Resistance rejection" : "Support absorption";
   const mergedTypeLabel = trapTypeLabel !== "-"
     ? trap_direction ? `${trapTypeLabel} → ${directionLabel}` : trapTypeLabel
-    : trap_direction ? directionLabel : "-";
+    : "No active trap";
 
   const affectedLabel = trap_direction === "downside"
     ? `Resistance at risk: ${trap_zone.toLocaleString("en-IN")}`
@@ -121,6 +127,17 @@ export default function TrapCard({
   const showOiRow = Boolean(oiSignal);
   const oiIsTrap = oiSignal === "BULL_TRAP" || oiSignal === "BEAR_TRAP";
   const oiIsConfirm = oiSignal === "BULL_CONFIRM" || oiSignal === "BEAR_CONFIRM";
+  const aboveResistance =
+    typeof spot === "number" &&
+    Number.isFinite(spot) &&
+    typeof resistance === "number" &&
+    Number.isFinite(resistance) &&
+    spot > resistance;
+  const trapMessage = aboveResistance && probability < 50 && typeof resistance === "number"
+    ? `Breakout above ${resistance.toLocaleString("en-IN")} - low trap risk, watch for acceptance`
+    : aboveResistance && probability >= 50 && typeof resistance === "number"
+      ? `False breakout risk above ${resistance.toLocaleString("en-IN")} - trap ${probability}%`
+      : String(trap_message || "").trim();
 
   return (
     <section className={`trap-card ${style.glow}`}>
@@ -193,6 +210,13 @@ export default function TrapCard({
           <div className="trap-row">
             <div className="trap-key">Market Insight</div>
             <div className="trap-value">{market_insight}</div>
+          </div>
+        ) : null}
+
+        {trapMessage ? (
+          <div className="trap-row">
+            <div className="trap-key">Trap Context</div>
+            <div className="trap-value">{trapMessage}</div>
           </div>
         ) : null}
 
