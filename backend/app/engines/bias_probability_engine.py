@@ -94,10 +94,15 @@ def compute_bias_probability(
         baseline_total = total_vol
 
     volume_ratio = total_vol / max(baseline_total, 1e-9)
-    intensity = _clamp((volume_ratio - 1.0) / max(high_volume_ratio - 1.0, 1e-9), 0.0, 1.0)
     direction_hint = _sign(price_change_pct) + _sign(oi_norm)
     direction_hint = 1 if direction_hint > 0 else -1 if direction_hint < 0 else 0
-    volume_participation_score = _clamp(12.5 + (direction_hint * intensity * 12.5), 0.0, 25.0)
+    if volume_ratio >= 1.0:
+        # Above-average volume: boost score in the direction of the bias signal.
+        intensity = _clamp((volume_ratio - 1.0) / max(high_volume_ratio - 1.0, 1e-9), 0.0, 1.0)
+        volume_participation_score = _clamp(12.5 + (direction_hint * intensity * 12.5), 0.0, 25.0)
+    else:
+        # Below-average volume: dampen conviction proportionally toward 0.
+        volume_participation_score = _clamp(12.5 * volume_ratio, 0.0, 25.0)
 
     pcr = pe_oi / max(ce_oi, 1e-9)
     pcr_bias = _clamp((1.0 - pcr) / 0.5, -1.0, 1.0)
