@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.background_updater import _canonicalize_trap_reference
+from app.application.use_cases.background_updater import _canonicalize_trap_reference
 
 
 def test_trap_reference_uses_support_side_when_spot_is_closer_to_support() -> None:
