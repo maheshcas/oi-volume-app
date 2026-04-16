@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from app.services.nse_client import fetch_index_data
+from app.infrastructure.feeds.nse_client import fetch_index_data
 
 logger = logging.getLogger("optionlens.spot_feed")
 

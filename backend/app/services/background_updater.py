@@ -48,14 +48,14 @@ from app.engines.strike_intelligence_engine import compute_strike_intelligence
 from app.engines.entry_target_engine import compute_entry_target
 from app.engines.historical_zone_engine import get_intraday_zones
 from app.services.decision_engine import build_decision_input, master_decision_engine
-from app.services.daily_context import get_daily_context
+from app.infrastructure.persistence.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
-from app.services.bse_fetcher import get_sensex_option_chain
-from app.services.bse_adapter import (
+from app.infrastructure.feeds.bse_fetcher import get_sensex_option_chain
+from app.infrastructure.feeds.bse_adapter import (
     fetch_sensex_option_chain_async,
     fetch_sensex_contract_info_async,
 )
-from app.services.nse_client import fetch_index_data, fetch_option_chain, fetch_option_chain_contract_info
+from app.infrastructure.feeds.nse_client import fetch_index_data, fetch_option_chain, fetch_option_chain_contract_info
 from app.services.parser import build_oi_volume_summary, build_target_projection
 
 logger = logging.getLogger("optionlens.background_updater")
@@ -712,6 +712,12 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "ce_wall_holding",
         "pe_wall_holding",
         "volume_spike_strikes",
+        "directional_signal",
+        "directional_reason",
+        "directional_bias",
+        "directional_size",
+        "directional_strike",
+        "directional_rr",
         "sr_first_cycle_after_reset",
         "sr_cold_start_guard_applied",
         "sr_previous_support_anchor_used",
@@ -6404,7 +6410,7 @@ async def run_update_cycle() -> None:
             # intentionally isolated from live SR/SPC decision flow.
             for symbol in SYMBOLS:
                 try:
-                    from app.services.historical_zone_scheduler import run_historical_zone_daily_if_due
+                    from app.infrastructure.persistence.historical_zone_scheduler import run_historical_zone_daily_if_due
 
                     zone_job = await asyncio.to_thread(run_historical_zone_daily_if_due, symbol)
                     if isinstance(zone_job, dict) and zone_job.get("status") == "written":

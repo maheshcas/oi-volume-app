@@ -13,8 +13,8 @@ from app.core.cache import cache, make_cache_key
 from app.engines.bias_probability_engine import compute_bias_probability
 from app.engines.simulation_engine import simulate_breakout_performance
 from app.services.engine_health import compute_engine_health
-from app.services.historical_zone_context import load_latest_historical_zone_context
-from app.services.historical_zone_scheduler import get_historical_zone_scheduler_status
+from app.infrastructure.persistence.historical_zone_context import load_latest_historical_zone_context
+from app.infrastructure.persistence.historical_zone_scheduler import get_historical_zone_scheduler_status
 from pathlib import Path
 
 router = APIRouter()
