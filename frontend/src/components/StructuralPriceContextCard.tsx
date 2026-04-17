@@ -68,6 +68,11 @@ type Props = {
     oi_pe: number;
     tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
   }> | null;
+  chainGreeks?: Array<{
+    strike: number;
+    ce?: { delta?: number; ltp?: number };
+    pe?: { delta?: number; ltp?: number };
+  }> | null;
 };
 
 const fmt = (v: number | null | undefined, d = 0) =>
@@ -661,6 +666,7 @@ export default function StructuralPriceContextCard(props: Props) {
         maxPain={props.maxPain}
         strikeGap={typeof props.strikeGap === "number" ? props.strikeGap : 50}
         strikes={props.strikes ?? undefined}
+        chainGreeks={props.chainGreeks ?? undefined}
         embedded
       />
 

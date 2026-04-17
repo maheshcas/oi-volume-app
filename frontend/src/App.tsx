@@ -3622,6 +3622,39 @@ export default function App() {
                   ? intelligence.market_state.strike_intelligence.max_pain_strike
                   : null),
             strikeGap: 50,
+            chainGreeks: Array.isArray((intelligence?.signals as Record<string, unknown> | undefined)?.chain_greeks)
+              ? ((((intelligence?.signals as Record<string, unknown> | undefined)?.chain_greeks as unknown[]) ?? [])
+                  .map((row: unknown) => {
+                    const strike = toSafeNumber((row as Record<string, unknown>)?.strike);
+                    if (!Number.isFinite(strike) || strike <= 0) return null;
+                    const ce = (row as Record<string, unknown>)?.ce as Record<string, unknown> | undefined;
+                    const pe = (row as Record<string, unknown>)?.pe as Record<string, unknown> | undefined;
+                    return {
+                      strike,
+                      ce: {
+                        delta: typeof ce?.delta === "number" ? ce.delta : toSafeNumber(ce?.delta),
+                        ltp: typeof ce?.ltp === "number" ? ce.ltp : toSafeNumber(ce?.ltp),
+                      },
+                      pe: {
+                        delta: typeof pe?.delta === "number" ? pe.delta : toSafeNumber(pe?.delta),
+                        ltp: typeof pe?.ltp === "number" ? pe.ltp : toSafeNumber(pe?.ltp),
+                      },
+                    };
+                  })
+                  .filter((row: {
+                    strike: number;
+                    ce?: { delta?: number; ltp?: number };
+                    pe?: { delta?: number; ltp?: number };
+                  } | null): row is {
+                    strike: number;
+                    ce?: { delta?: number; ltp?: number };
+                    pe?: { delta?: number; ltp?: number };
+                  } => row !== null)) as Array<{
+                    strike: number;
+                    ce?: { delta?: number; ltp?: number };
+                    pe?: { delta?: number; ltp?: number };
+                  }>
+              : null,
             strikes: displayRows
               .map((row) => {
                 const strike = toSafeNumber(row?.strike);

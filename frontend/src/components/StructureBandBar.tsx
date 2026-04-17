@@ -1,8 +1,16 @@
+import { useMemo } from "react";
+
 type StrikePoint = {
   strike: number;
   oi_ce: number;
   oi_pe: number;
   tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
+};
+
+type ChainRow = {
+  strike: number;
+  ce?: { delta?: number; ltp?: number };
+  pe?: { delta?: number; ltp?: number };
 };
 
 type StructureBandBarProps = {
@@ -13,9 +21,13 @@ type StructureBandBarProps = {
   peWall?: number | null;
   ceWall?: number | null;
   magnet?: number | null;
+  magnetCharacter?: string | null;
+  magnetPullDirection?: string | null;
+  prevMagnetDirection?: string | null;
   maxPain?: number | null;
   strikeGap?: number;
   strikes?: StrikePoint[] | null;
+  chainGreeks?: ChainRow[] | null;
   /** When true, hides the top stats row and zone-chip row (used when parent already shows them) */
   embedded?: boolean;
 };
@@ -36,9 +48,13 @@ export default function StructureBandBar({
   peWall,
   ceWall,
   magnet,
+  magnetCharacter,
+  magnetPullDirection,
+  prevMagnetDirection,
   maxPain,
   strikeGap = 50,
   strikes,
+  chainGreeks,
   embedded = false,
 }: StructureBandBarProps) {
   const bandWidth = resistance - support;
@@ -68,6 +84,15 @@ export default function StructureBandBar({
     ? clamp(((spot - resistance) / bandWidth) * 100, 2, 10)
     : 0;
 
+  const normalizedMagnetDirection =
+    String(magnetPullDirection || "").trim().toLowerCase();
+  const normalizedPrevMagnetDirection =
+    String(prevMagnetDirection || "").trim().toLowerCase();
+  const magnetFlip =
+    Boolean(normalizedPrevMagnetDirection) &&
+    Boolean(normalizedMagnetDirection) &&
+    normalizedPrevMagnetDirection !== normalizedMagnetDirection;
+
   const magnetArrow =
     typeof magnet !== "number"
       ? ""
@@ -76,6 +101,17 @@ export default function StructureBandBar({
         : magnet < spot
           ? "▼"
           : "◉";
+
+  const magnetArrowDisplay =
+    typeof magnet !== "number"
+      ? ""
+      : normalizedMagnetDirection === "up"
+        ? "â–²"
+        : normalizedMagnetDirection === "down"
+          ? "â–¼"
+          : normalizedMagnetDirection === "at"
+            ? "â—‰"
+            : magnetArrow;
 
   const visibleStrikes = (strikes || [])
     .filter(
@@ -101,6 +137,53 @@ export default function StructureBandBar({
   );
   const barHeight = (value: number) =>
     maxOi > 0 ? Math.max(2, Math.round((Math.max(value, 0) / maxOi) * 16)) : 2;
+
+  const oiRatioMap = useMemo(() => {
+    const map: Record<number, {
+      ratio: number;
+      label: string;
+      side: "ce" | "pe" | "neutral";
+    }> = {};
+    for (const row of visibleStrikes) {
+      if (!row || !Number.isFinite(row.strike)) continue;
+      const ce = Math.max(0, Number(row.oi_ce) || 0);
+      const pe = Math.max(0, Number(row.oi_pe) || 0);
+      if (ce <= 0 || pe <= 0) continue;
+
+      const supportSide = row.strike <= spot;
+      const ratio = supportSide ? pe / ce : ce / pe;
+      const label = supportSide
+        ? `ΔPE/ΔCE ${ratio.toFixed(2)}x`
+        : `ΔCE/ΔPE ${ratio.toFixed(2)}x`;
+      const side = supportSide ? "pe" : "ce";
+      map[row.strike] = { ratio, label, side };
+    }
+    return map;
+  }, [chainGreeks, spot]);
+  void oiRatioMap;
+
+  const strikeOiDefenseMap = useMemo(() => {
+    const map: Record<number, {
+      ratio: number;
+      label: string;
+      side: "ce" | "pe" | "neutral";
+    }> = {};
+    for (const row of visibleStrikes) {
+      if (!row || !Number.isFinite(row.strike)) continue;
+      const ce = Math.max(0, Number(row.oi_ce) || 0);
+      const pe = Math.max(0, Number(row.oi_pe) || 0);
+      if (ce <= 0 || pe <= 0) continue;
+
+      const supportSide = row.strike <= spot;
+      const ratio = supportSide ? pe / ce : ce / pe;
+      const label = supportSide
+        ? `PE/CE ${ratio.toFixed(2)}x`
+        : `CE/PE ${ratio.toFixed(2)}x`;
+      const side = supportSide ? "pe" : "ce";
+      map[row.strike] = { ratio, label, side };
+    }
+    return map;
+  }, [visibleStrikes, spot]);
 
   const metricToSupportTone =
     nearS || belowS ? "sbb-metric-warn-s" : "sbb-metric-neutral";
@@ -298,10 +381,25 @@ export default function StructureBandBar({
       {/* ── Metrics strip ── */}
       <div className="sbb-metrics-strip">
         <div className="sbb-metric-item sbb-metric-magnet">
-          <span className="sbb-metric-lbl">Magnet</span>
-          <span className="sbb-metric-val sbb-stat-magnet">
-            {typeof magnet === "number" ? `${fmt(magnet)} ${magnetArrow}` : "-"}
+          <span className="sbb-metric-lbl">
+            Magnet
+            {magnetFlip ? (
+              <span
+                className="sbb-magnet-flip"
+                title={`Magnet flipped from ${normalizedPrevMagnetDirection} to ${normalizedMagnetDirection}`}
+              >
+                â†• flip
+              </span>
+            ) : null}
           </span>
+          <span className="sbb-metric-val sbb-stat-magnet">
+            {typeof magnet === "number" ? `${fmt(magnet)} ${magnetArrowDisplay}` : "-"}
+          </span>
+          {magnetCharacter ? (
+            <span className="sbb-metric-sub">
+              {String(magnetCharacter).replace(/[_-]+/g, " ")}
+            </span>
+          ) : null}
         </div>
         <div className="sbb-metric-item sbb-metric-maxpain">
           <span className="sbb-metric-lbl">Max pain</span>
@@ -330,21 +428,30 @@ export default function StructureBandBar({
       {/* ── Strike OI mini-bars ── */}
       {visibleStrikes.length > 0 ? (
         <div className="sbb-strikes">
-          {visibleStrikes.map((s) => (
-            <div key={s.strike} className="sbb-strike-cell">
-              <span className={`sbb-strike-num ${nearestStrike === s.strike ? "sbb-strike-num-active" : ""}`}>
-                {fmt(s.strike)}
-              </span>
-              <div className="sbb-minibars">
-                <div className="sbb-bar-pe" style={{ height: `${barHeight(s.oi_pe || 0)}px` }} />
-                <div className="sbb-bar-ce" style={{ height: `${barHeight(s.oi_ce || 0)}px` }} />
+          {visibleStrikes.map((s) => {
+            const d = strikeOiDefenseMap[s.strike];
+            return (
+              <div key={s.strike} className="sbb-strike-cell">
+                <span className={`sbb-strike-num ${nearestStrike === s.strike ? "sbb-strike-num-active" : ""}`}>
+                  {fmt(s.strike)}
+                </span>
+                <div className="sbb-minibars">
+                  <div className="sbb-bar-pe" style={{ height: `${barHeight(s.oi_pe || 0)}px` }} />
+                  <div className="sbb-bar-ce" style={{ height: `${barHeight(s.oi_ce || 0)}px` }} />
+                </div>
+                {d ? (
+                  <div className={`sb-strike-delta sb-strike-delta-${d.side}`}>
+                    <span className="sb-strike-delta-dot" />
+                    <span className="sb-strike-delta-label">{d.label}</span>
+                  </div>
+                ) : null}
+                {s.tag === "pe_wall" ? <span className="sbb-tag sbb-tag-pe">PE wall</span> : null}
+                {s.tag === "ce_wall" ? <span className="sbb-tag sbb-tag-ce">CE wall</span> : null}
+                {s.tag === "magnet" ? <span className="sbb-tag sbb-tag-magnet">magnet</span> : null}
+                {s.tag === "maxpain" ? <span className="sbb-tag sbb-tag-maxpain">max pain</span> : null}
               </div>
-              {s.tag === "pe_wall" ? <span className="sbb-tag sbb-tag-pe">PE wall</span> : null}
-              {s.tag === "ce_wall" ? <span className="sbb-tag sbb-tag-ce">CE wall</span> : null}
-              {s.tag === "magnet" ? <span className="sbb-tag sbb-tag-magnet">magnet</span> : null}
-              {s.tag === "maxpain" ? <span className="sbb-tag sbb-tag-maxpain">max pain</span> : null}
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
 

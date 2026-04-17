@@ -119,6 +119,11 @@ type DashboardLayoutProps = {
       oi_pe: number;
       tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
     }> | null;
+    chainGreeks?: Array<{
+      strike: number;
+      ce?: { delta?: number; ltp?: number };
+      pe?: { delta?: number; ltp?: number };
+    }> | null;
   };
   tradePlan: {
     bias: string;
@@ -364,6 +369,7 @@ export default function DashboardLayout({
             maxPain={structure.maxPain}
             strikeGap={structure.strikeGap}
             strikes={structure.strikes}
+            chainGreeks={structure.chainGreeks}
           />
         </div>
       </div>

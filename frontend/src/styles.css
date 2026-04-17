@@ -7244,6 +7244,28 @@ input[type="number"] {
 .sbb-minibars { display: flex; gap: 2px; align-items: flex-end; height: 16px; margin-top: 2px; }
 .sbb-bar-pe { width: 5px; background: #26a69a; border-radius: 1px 1px 0 0; opacity: 0.85; }
 .sbb-bar-ce { width: 5px; background: #f43f5e; border-radius: 1px 1px 0 0; opacity: 0.85; }
+/* Strike delta ratio - mirrors .spc-compact-defense */
+.sb-strike-delta {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+  font-size: 9px;
+  font-family: monospace;
+  white-space: nowrap;
+}
+.sb-strike-delta-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sb-strike-delta-ce .sb-strike-delta-dot { background: #2dd4bf; }
+.sb-strike-delta-ce .sb-strike-delta-label { color: #2dd4bf; }
+.sb-strike-delta-pe .sb-strike-delta-dot { background: #fb7185; }
+.sb-strike-delta-pe .sb-strike-delta-label { color: #fb7185; }
+.sb-strike-delta-neutral .sb-strike-delta-dot { background: #94a3b8; }
+.sb-strike-delta-neutral .sb-strike-delta-label { color: #94a3b8; }
 .sbb-tag { font-size: 7px; margin-top: 2px; padding: 1px 3px; border-radius: 2px; }
 .sbb-tag-pe { background: rgba(38, 166, 154, 0.15); color: #26a69a; }
 .sbb-tag-ce { background: rgba(239, 83, 80, 0.15); color: #ef5350; }
@@ -7274,11 +7296,29 @@ input[type="number"] {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.sbb-magnet-flip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #f59e0b;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
 .sbb-metric-val {
   font-size: 13px;
   color: var(--ia-text-primary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+.sbb-metric-sub {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  text-transform: capitalize;
 }
 .sbb-metric-magnet .sbb-metric-lbl,
 .sbb-metric-magnet .sbb-metric-val {
