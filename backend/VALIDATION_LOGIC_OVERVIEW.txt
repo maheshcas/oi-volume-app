@@ -10,6 +10,17 @@ Current Backend Runtime State
   - `OPTIONLENS_ENABLE_STABILITY_LOGGER=false`
 - If a validation session requires cycle, event, or stability evidence, re-enable the relevant logger before collecting logs.
 
+Architecture
+- Backend follows Clean Architecture (strangler-fig migration, completed):
+  - domain/         — Pydantic models (market.py, option_chain.py, signals.py) + Protocol ports (market_feed.py, state_store.py)
+  - infrastructure/ — External adapters: feeds/ (nse_client, bse_fetcher, bse_adapter), persistence/ (daily_context, historical_zone_*)
+  - application/    — Use cases: use_cases/background_updater.py (orchestration loop)
+  - presentation/   — HTTP layer: routers/option_chain.py
+  - engines/        — Pure computation engines (no I/O; called by background_updater)
+  - services/       — Remaining services not yet promoted (engine_health, stability_logger, intraday_performance_tracker, spot_feed, parser)
+  - core/           — cache.py (shared cache + make_cache_key)
+- All `app/services/` stubs for moved files have been deleted; callers import from canonical paths.
+
 Core Validation Priorities
 
 1. SR stability
@@ -71,7 +82,7 @@ backend/app/engines/trap_engine.py
   - `trap_trend_adjustment_applied`
 
 Range lock / no-edge stabilizer
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - Range lock and no-edge shaping are active before final regime stabilization.
 - Validation/debug fields:
   - `range_locked`
@@ -81,7 +92,7 @@ backend/app/services/background_updater.py
   - `stabilized_regime_family`
 
 Regime stabilizer
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - Regime families are stabilized before the public payload is written.
 - Same-family chatter should not cause visible regime flips.
 - Non-committable regimes:
@@ -93,7 +104,7 @@ backend/app/services/background_updater.py
   - they must not become `committed_regime`
 
 Readiness V2
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - Active readiness contract:
   - `trade_readiness`
   - `readiness_state`
@@ -124,7 +135,7 @@ backend/app/services/background_updater.py
   - transition flap guard in range-like sessions
 
 Market pressure (DPS) validation
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - DPS now includes directional volume confirmation:
   - bullish side uses PE RVR
   - bearish side uses CE RVR
@@ -150,7 +161,7 @@ backend/app/engines/sr_engine.py
 - Prior support / resistance anchors are hydrated from persisted state on restart.
 
 Updater-level SR cold-start guard
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - A post-SR guard is applied immediately after `run_sr_engine(...)`.
 - Purpose:
   - protect downstream breakout / trap / material breach logic even if the first SR read after reset is missing nested immediate state
@@ -165,7 +176,7 @@ backend/app/services/background_updater.py
   - `sr_resistance_buffer_blocked`
 
 Previous level persistence
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - Session reset and absorption/reference handling must preserve:
   - `previous_support`
   - `previous_resistance`
@@ -178,10 +189,38 @@ backend/app/engines/material_breach_engine.py
 - Validation target:
   - large single-cycle moves should either confirm or emit useful unconfirmed traces
 
+Entry / Target Engine
+backend/app/engines/entry_target_engine.py
+- Computes per-cycle trade setup: entry underlying, option strike, option type/action, entry premium, stop, targets, RR.
+- Consumes: entry_signal, spot, support, resistance, chain_greeks, liquidity_map, strike_gap, straddle_premium, wall fields.
+- Trade types: RANGE_SELL_CE, RANGE_SELL_PE, EXPIRY_PIN, TRAP_FADE_PE, BOUNCE_CE, BREAKDOWN_PE, BREAKOUT_CE, NONE.
+- Additional output fields:
+  - `ce_clusters` / `pe_clusters` — top-3 OI clusters above/below spot from liquidity map
+  - `call_wall_used` / `put_wall_used` — wall strikes used in stop/target calculation
+  - `price_magnet_strike` — highest-liquidity strike nearest spot
+  - `magnet_pull_direction` / `magnet_distance_pts` — pull direction and distance
+  - `secondary_magnet` — second-ranked magnet strike
+  - `magnet_character` — resistance / support / balanced
+  - `compression_zone` — true when CE and PE walls are within 2 × strike_gap of each other
+  - `straddle_entry_premium` / `straddle_target_premium` — for EXPIRY_PIN trade type
+
+Bias Probability Engine
+backend/app/engines/bias_probability_engine.py
+- Four-component model (max 100 pts):
+  - oiDirectionalScore (0..30): PE dOI − CE dOI normalized
+  - volumeParticipationScore (0..25): two-branch logic
+    - volume_ratio >= 1.0: boost in bias direction, intensity = (ratio-1) / (high_volume_ratio-1)
+    - volume_ratio < 1.0: proportional dampening = 12.5 × volume_ratio  ← bug fix
+  - priceMomentumScore (0..25): price change % normalized
+  - putCallImbalanceScore (0..20): PCR bias
+- Thresholds: bullish >= 52.5, bearish <= 47.5, neutral in between.
+- Bug fixed: below-average volume previously froze volumeParticipationScore at 12.5 (intensity clamped to 0).
+  Now correctly scales toward 0 proportional to volume_ratio.
+
 Session / SPC Reset
 
 SPC session reset
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - SPC reset is wall-clock gated by IST trading day, not stale feed timestamps.
 - Trigger condition:
   - Monday-Friday
@@ -196,7 +235,7 @@ backend/app/services/background_updater.py
   - The `timestamp` parameter that previously existed was never used and has been removed.
 
 Session phase persistence
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 backend/app/engines/session_phase_engine.py
 - Session phase persists in `_state` and does not move backward within the same session.
 - Validation target:
@@ -232,13 +271,15 @@ backend/app/services/stability_logger.py
 Cycle / event logs
 - Cycle and event logs are environment-controlled and currently disabled in local runtime.
 - When enabled, they should expose the same active readiness / SR guard / regime stabilization fields used by the API payload.
+- Log file paths resolved via `Path(__file__).resolve().parents[3]` from background_updater.py
+  (use_cases/ → application/ → app/ → backend root → logs/).
 
 SENSEX / BSE Integration
 
 SENSEX symbol support
-backend/app/services/bse_fetcher.py
-backend/app/services/bse_adapter.py
-backend/app/services/background_updater.py
+backend/app/infrastructure/feeds/bse_fetcher.py
+backend/app/infrastructure/feeds/bse_adapter.py
+backend/app/application/use_cases/background_updater.py
 - `SENSEX` is now part of the live symbol pipeline.
 - Routing:
   - `SENSEX` uses the BSE fetch / adapter path
@@ -250,7 +291,7 @@ backend/app/services/background_updater.py
   - SENSEX summary returns a normal `market_state` payload with numeric support / resistance
 
 Daily context note
-backend/app/services/daily_context.py
+backend/app/infrastructure/persistence/daily_context.py
 - Daily context remains a read-only higher-timeframe input.
 - Known low-priority gap:
   - `daily_context.py` still has no SENSEX mapping
@@ -259,7 +300,7 @@ backend/app/services/daily_context.py
 API Security / Input Validation
 
 Query parameter validation
-backend/app/routers/option_chain.py
+backend/app/presentation/routers/option_chain.py
 - All GET endpoints enforce an allowlist on `symbol`, `instrument_type`, and `expiry`.
 - `symbol` allowlist is built from the `OPTIONLENS_SYMBOLS` env var at startup plus `SENSEX`.
   - Default allowed symbols: `NIFTY`, `BANKNIFTY`, `FINNIFTY`, `SENSEX`
@@ -271,6 +312,13 @@ backend/app/routers/option_chain.py
 - Invalid values return HTTP 400 before cache lookup, preventing cache-key probing.
 - Dead compatibility parameters (`use_sample`, `target_mode`, `confidence_score`) have been
   removed from all endpoint signatures.
+
+Log path resolution in router
+backend/app/presentation/routers/option_chain.py
+- `/engine-health` and `/event-log` endpoints resolve log paths via `Path(__file__).resolve().parents[3]`
+  (routers/ → presentation/ → app/ → backend root → logs/).
+- After the clean architecture migration moved the router from `app/routers/` to
+  `app/presentation/routers/`, the depth was corrected from parents[2] to parents[3].
 
 Cache key canonical implementation
 backend/app/core/cache.py
@@ -313,7 +361,7 @@ backend/app/main.py
 - Shutdown log messages fire only when the respective tasks were actually started.
 
 Single-worker constraint
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - All module-level state dicts (`_atr_history`, `_calibrated_weights`, etc.) are mutated
   exclusively by the asyncio background loop.
 - The application must run as a single Uvicorn worker (`--workers 1`).
@@ -321,11 +369,27 @@ backend/app/services/background_updater.py
 - Validated deployment command: `python -m uvicorn app.main:app --host 0.0.0.0 --port 10000`
 
 Exception logging
-backend/app/services/background_updater.py
+backend/app/application/use_cases/background_updater.py
 - I/O helper failures (state snapshot load/persist, cycle log, event log, event stream)
   now log at `WARNING` level instead of `DEBUG`.
 - Validation implication: disk or permission errors that were previously invisible in
   production logs will now appear as warnings.
+
+Market-Open Verification Script
+backend/scripts/market_open_check.py
+- Standalone stdlib-only script (no pip deps); run at 09:15 IST.
+- Polls three endpoints every 15 s for up to 15 minutes:
+  - `/api/health/nse`
+  - `/api/v2/intelligence/summary?symbol=<SYMBOL>&instrument_type=<TYPE>`
+  - `/api/v2/performance/daily?symbol=<SYMBOL>&instrument_type=<TYPE>`
+- Five checks, each latches once passed:
+  1. freshness_state=live AND stale_data=false AND timestamp IST >= 09:15
+  2. oi_shift_score or oi_velocity_score > 0.001 (live OI flowing)
+  3. session_phase contains "opening" or "drive"
+  4. directional_reason contains wall_ratio > 0.05x
+  5. total_signals_logged > 0 in performance endpoint
+- Exits 0 if all five pass, 1 if window expires with failures.
+- ANSI-colored live-updating table; safe to run in CI or as a morning startup check.
 
 Current Deployment Status
 - Confirmed fixed in code:
@@ -352,6 +416,11 @@ Current Deployment Status
   - stability_logger uses make_cache_key (local duplicate static method removed)
   - I/O exception logging upgraded from DEBUG to WARNING
   - _session_phase_session_key signature cleaned (unused timestamp param removed)
+  - Clean Architecture migration: services/ and routers/ moved to domain/, infrastructure/, application/use_cases/, presentation/routers/
+  - All path depth references (parents[N]) corrected after file moves
+  - volumeParticipationScore bug fixed: below-avg volume now scales 0..12.5 instead of freezing at 12.5
+  - entry_target_engine: compression_zone, OI cluster fields, magnet character, straddle fields added
+  - market_open_check.py script added to backend/scripts/
 - Validate live when needed:
   - breach confirmation end to end
   - SR cold-start guard firing on a real restart/reset cycle

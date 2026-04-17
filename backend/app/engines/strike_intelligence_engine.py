@@ -288,6 +288,25 @@ def _find_wall_strike(
     return _safe_int((best_row or {}).get("strike"), 0) or None
 
 
+def _get_oi_change(
+    liquidity_map: list[dict[str, Any]] | None,
+    level: float,
+    side: str,
+) -> float:
+    """
+    Get the OI change at the strike closest to `level`.
+    Returns 0.0 if liquidity_map is None or empty.
+    """
+    if not liquidity_map or level <= 0:
+        return 0.0
+    row = min(
+        liquidity_map,
+        key=lambda r: abs(_safe_float((r or {}).get("strike"), 0.0) - level),
+    )
+    key = f"oi_{side}_change"
+    return _safe_float((row or {}).get(key), 0.0)
+
+
 def _compute_directional_signal(
     spot: float,
     support: float,
@@ -304,6 +323,7 @@ def _compute_directional_signal(
     trap_probability: float,
     strike_gap: int,
     chain_greeks: list[dict[str, Any]],
+    liquidity_map: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     defended_threshold = 1.2
     exposed_threshold = 1.0
@@ -369,11 +389,120 @@ def _compute_directional_signal(
     reward = abs(spot - magnet) if magnet > 0 else 0.0
     rr = round(reward / risk, 2) if risk > 0 else 0.0
     trap_ok = trap_probability < 55
+    ce_oi_chg = _get_oi_change(liquidity_map, resistance, "ce")
+    pe_oi_chg = _get_oi_change(liquidity_map, support, "pe")
+    ce_clusters = sorted(
+        [
+            _safe_int(row.get("strike"), 0)
+            for row in (liquidity_map or [])
+            if _safe_int(row.get("strike"), 0) > spot
+        ]
+    )
+    pe_clusters = sorted(
+        [
+            _safe_int(row.get("strike"), 0)
+            for row in (liquidity_map or [])
+            if 0 < _safe_int(row.get("strike"), 0) < spot
+        ],
+        reverse=True,
+    )
 
     signal = "WAIT"
     size: str | None = None
     reason = "Conditions not fully aligned"
-    if bias == "BULLISH" and wall_status == "CONFIRMED" and stop_valid and rr >= min_rr and trap_ok:
+    entry_option: str | None = None
+    entry_strike: int | None = None
+    entry_premium: float | None = None
+    target_1: float | None = magnet if magnet > 0 else None
+
+    breakout_above_resistance = (
+        spot > resistance
+        and defense_ratio_ce < exposed_threshold
+        and not (magnet < spot - strike_gap)
+        and trap_probability < 55
+        and ce_oi_chg < -0.05
+    )
+    breakdown_below_support = (
+        spot < support
+        and defense_ratio_pe < exposed_threshold
+        and not (magnet > spot + strike_gap)
+        and trap_probability < 50
+        and pe_oi_chg < -0.05
+    )
+    rejection_at_resistance = (
+        spot >= resistance - strike_gap
+        and magnet_pull_direction == "down"
+        and magnet < spot
+        and abs(magnet - spot) <= 5 * strike_gap
+        and (max_pain_strike is None or max_pain_strike <= spot)
+        and trap_probability < 60
+    )
+    bounce_at_support = (
+        spot <= support + strike_gap
+        and magnet_pull_direction == "up"
+        and magnet > spot
+        and abs(magnet - spot) <= 5 * strike_gap
+        and (max_pain_strike is None or max_pain_strike >= spot)
+        and trap_probability < 60
+    )
+
+    if breakout_above_resistance:
+        signal = "BREAKOUT_ABOVE_RESISTANCE"
+        size = "standard"
+        entry_option = "CE"
+        stop_anchor = resistance - strike_gap
+        risk = abs(spot - stop_anchor)
+        target_1 = float(ce_clusters[0]) if ce_clusters else (magnet if magnet > 0 else None)
+        rr = round(abs((target_1 or spot) - spot) / risk, 2) if risk > 0 and target_1 is not None else 0.0
+        reason = (
+            f"Spot above resistance {resistance:.0f} + CE OI dropping ({ce_oi_chg:.2f}) + "
+            f"resistance exposed ({defense_ratio_ce:.2f}x) - breakout continuation CE buy."
+        )
+    elif breakdown_below_support:
+        signal = "BREAKDOWN_BELOW_SUPPORT"
+        size = "standard"
+        entry_option = "PE"
+        stop_anchor = support + strike_gap
+        risk = abs(spot - stop_anchor)
+        target_1 = float(pe_clusters[0]) if pe_clusters else (magnet if magnet > 0 else None)
+        rr = round(abs((target_1 or spot) - spot) / risk, 2) if risk > 0 and target_1 is not None else 0.0
+        reason = (
+            f"Spot below support {support:.0f} + PE OI dropping ({pe_oi_chg:.2f}) + "
+            f"support exposed ({defense_ratio_pe:.2f}x) - breakdown continuation PE buy."
+        )
+    elif rejection_at_resistance:
+        if trap_probability >= 55:
+            reason = (
+                f"Trap too high ({trap_probability:.0f}%) - wait below 60 for REJECTION_AT_RESISTANCE"
+            )
+        else:
+            signal = "REJECTION_AT_RESISTANCE"
+            size = "standard" if trap_probability < 45 else "reduced"
+            entry_option = "PE"
+            stop_anchor = resistance + strike_gap
+            risk = abs(stop_anchor - spot)
+            target_1 = magnet if magnet > 0 else max_pain_strike
+            rr = round(abs((target_1 or spot) - spot) / risk, 2) if risk > 0 and target_1 is not None else 0.0
+            reason = (
+                f"Spot {spot:.0f} testing resistance {resistance:.0f} with magnet {magnet:.0f} pulling "
+                f"down {abs(magnet - spot):.0f}pts - rejection fade PE buy."
+            )
+    elif bounce_at_support:
+        if trap_probability >= 55:
+            reason = f"Trap too high ({trap_probability:.0f}%) - wait below 60 for BOUNCE_AT_SUPPORT"
+        else:
+            signal = "BOUNCE_AT_SUPPORT"
+            size = "standard" if trap_probability < 45 else "reduced"
+            entry_option = "CE"
+            stop_anchor = support - strike_gap
+            risk = abs(spot - stop_anchor)
+            target_1 = magnet if magnet > 0 else max_pain_strike
+            rr = round(abs((target_1 or spot) - spot) / risk, 2) if risk > 0 and target_1 is not None else 0.0
+            reason = (
+                f"Spot {spot:.0f} testing support {support:.0f} with magnet {magnet:.0f} pulling "
+                f"up {abs(magnet - spot):.0f}pts - bounce CE buy."
+            )
+    elif bias == "BULLISH" and wall_status == "CONFIRMED" and stop_valid and rr >= min_rr and trap_ok:
         signal = "BUY_CE"
         size = "standard"
     elif bias == "BEARISH" and wall_status == "CONFIRMED" and stop_valid and rr >= min_rr and trap_ok:
@@ -400,34 +529,49 @@ def _compute_directional_signal(
     elif not trap_ok:
         reason = f"Trap risk too high ({trap_probability:.0f}%) - wait for it to ease below 55"
 
-    entry_strike: int | None = None
-    entry_premium: float | None = None
-    entry_option: str | None = None
     max_pain_ref = _safe_float(max_pain_strike, spot)
-    if signal == "BUY_CE":
+    if signal in {"BUY_CE", "BREAKOUT_ABOVE_RESISTANCE", "BOUNCE_AT_SUPPORT"}:
         entry_option = "CE"
         for row in chain_greeks:
             ce_leg = row.get("ce") or {}
             delta = _safe_float(ce_leg.get("delta"), 0.0)
             ltp = _safe_float(ce_leg.get("ltp"), 0.0)
             strike = _safe_int(row.get("strike"), 0)
-            if strike >= max_pain_ref and 0.30 <= delta <= 0.50 and ltp >= 5.0:
+            if signal == "BREAKOUT_ABOVE_RESISTANCE":
+                strike_ok = strike >= spot
+                delta_ok = 0.35 <= delta <= 0.55
+            elif signal == "BOUNCE_AT_SUPPORT":
+                strike_ok = abs(strike - spot) <= 2 * strike_gap
+                delta_ok = 0.35 <= delta <= 0.55
+            else:
+                strike_ok = strike >= max_pain_ref
+                delta_ok = 0.30 <= delta <= 0.50
+            if strike_ok and delta_ok and ltp >= 5.0:
                 entry_strike = strike
                 entry_premium = ltp
                 break
-    elif signal == "BUY_PE":
+    elif signal in {"BUY_PE", "BREAKDOWN_BELOW_SUPPORT", "REJECTION_AT_RESISTANCE"}:
         entry_option = "PE"
         for row in sorted(chain_greeks, key=lambda r: -_safe_int(r.get("strike"), 0)):
             pe_leg = row.get("pe") or {}
             delta = abs(_safe_float(pe_leg.get("delta"), 0.0))
             ltp = _safe_float(pe_leg.get("ltp"), 0.0)
             strike = _safe_int(row.get("strike"), 0)
-            if strike <= max_pain_ref and 0.30 <= delta <= 0.50 and ltp >= 5.0:
+            if signal == "BREAKDOWN_BELOW_SUPPORT":
+                strike_ok = strike <= spot
+                delta_ok = 0.35 <= delta <= 0.55
+            elif signal == "REJECTION_AT_RESISTANCE":
+                strike_ok = abs(strike - spot) <= 2 * strike_gap
+                delta_ok = 0.35 <= delta <= 0.55
+            else:
+                strike_ok = strike <= max_pain_ref
+                delta_ok = 0.30 <= delta <= 0.50
+            if strike_ok and delta_ok and ltp >= 5.0:
                 entry_strike = strike
                 entry_premium = ltp
                 break
 
-    if signal != "WAIT":
+    if signal in {"BUY_CE", "BUY_PE", "SELL_STRADDLE"}:
         defended_text = "exposed" if wall_status == "CONFIRMED" else wall_status.lower()
         reason = (
             f"Magnet {magnet_pull_direction} + "
@@ -446,7 +590,7 @@ def _compute_directional_signal(
         "entry_premium": entry_premium,
         "entry_option": entry_option,
         "stop_anchor": stop_anchor,
-        "target_1": magnet if magnet > 0 else None,
+        "target_1": target_1,
         "reason": reason,
     }
 
@@ -1155,6 +1299,7 @@ def compute_strike_intelligence(context: dict) -> dict:
             trap_probability=trap_probability,
             strike_gap=strike_gap,
             chain_greeks=chain_greeks,
+            liquidity_map=liquidity_map,
         )
 
         return {
@@ -1188,6 +1333,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "iv_skew_magnitude": iv_skew_magnitude,
             "atm_straddle_premium": atm_straddle_premium,
             "straddle_trend": straddle_trend,
+            "pe_wall_strike": pe_wall,
+            "ce_wall_strike": ce_wall,
             "ce_wall_holding": bool(ce_wall_holding),
             "pe_wall_holding": bool(pe_wall_holding),
             "resistance_pcr": resistance_pcr,
@@ -1235,6 +1382,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "iv_skew_magnitude": 0.0,
             "atm_straddle_premium": None,
             "straddle_trend": "unknown",
+            "pe_wall_strike": None,
+            "ce_wall_strike": None,
             "ce_wall_holding": False,
             "pe_wall_holding": False,
             "resistance_pcr": None,

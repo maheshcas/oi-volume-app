@@ -30,6 +30,8 @@ type StrikeGuidanceProps = {
   entry_zone?: string | null;
   stop_zone?: string | null;
   target_zone?: string | null;
+  blocking_reason?: string | null;
+  trap_probability?: number | null;
   strikeIntelligence?: {
     entry_signal?: string;
     entry_signal_reason?: string;
@@ -78,6 +80,13 @@ function parsePremiumFromRrNote(note?: string | null): number | null {
   return Number(m[1]);
 }
 
+function getUnlockHint(reason: string, trap: number): string {
+  if (trap >= 55) return `Trap risk ${trap}% - wait for it to drop below 55%`;
+  if (reason === "RANGE_CONFLICT") return "Wait for spot to approach S or R edge";
+  if (reason === "HIGH_TRAP_NO_BREACH_CAP") return "Need trap to ease and level breach";
+  return "Conditions not fully aligned - wait for next cycle";
+}
+
 function signalBadgeText(signal?: string, action?: string, option?: string) {
   const code = String(signal || "").trim().toUpperCase();
   if (!code || code === "WAIT_NO_SETUP") return "WAIT - No Clean Setup";
@@ -111,6 +120,8 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
   entry_zone,
   stop_zone,
   target_zone,
+  blocking_reason,
+  trap_probability,
   strikeIntelligence,
 }) => {
   const intelAction = String(strikeIntelligence?.recommended_action || "").toUpperCase();
@@ -149,6 +160,11 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
     hasLivePremiumStrike &&
     (rrPremium === null || rrPremium >= 1);
   const showNoPremiumNote = !showRrNote && suggested_strikes.some((s) => Number(s.ltp || 0) < 1);
+  const waitSignal = intelSignal.toUpperCase() === "WAIT_NO_SETUP";
+  const trapProbabilityValue =
+    typeof trap_probability === "number" && Number.isFinite(trap_probability)
+      ? Math.round(trap_probability)
+      : 0;
   void selling_favoured;
 
   return (
@@ -199,7 +215,16 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
       {avoid_buying_premium ? (
         <div className="sgc-lock-indicator">Premium buy lock active</div>
       ) : null}
-      {(entry_zone || stop_zone || target_zone || delta_guidance || execution_layer || strikeIntelligence?.stop_description || strikeIntelligence?.target_description) ? (
+      {waitSignal ? (
+        <div className="sgc-wait-block">
+          <div className="sgc-wait-reason">{displayReason}</div>
+          {blocking_reason ? (
+            <div className="sgc-wait-unlock">
+              Unlock: {getUnlockHint(String(blocking_reason), trapProbabilityValue)}
+            </div>
+          ) : null}
+        </div>
+      ) : (entry_zone || stop_zone || target_zone || delta_guidance || execution_layer || strikeIntelligence?.stop_description || strikeIntelligence?.target_description) ? (
         <div className="sgc-trade-strip">
           <div className="sgc-trade-strip-title">{executionTitle}</div>
           <div className="sgc-trade-strip-context">{executionContext}</div>
@@ -224,7 +249,9 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
         </div>
       ) : null}
 
-      {filteredSuggestedStrikes.length > 0 && (
+      {!waitSignal &&
+        suggested_strikes.some((s) => Number(s.ltp || 0) >= 1) &&
+        filteredSuggestedStrikes.length > 0 && (
         <div className="sgc-strikes">
           <div className="sgc-strikes-header">
             <span>Strike</span>

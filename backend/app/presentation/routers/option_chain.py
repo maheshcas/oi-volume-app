@@ -10,6 +10,7 @@ from datetime import timezone
 from fastapi import APIRouter, HTTPException
 
 from app.core.cache import cache, make_cache_key
+from app.application.use_cases.background_updater import _seeded_runtime_flush
 from app.engines.bias_probability_engine import compute_bias_probability
 from app.engines.simulation_engine import simulate_breakout_performance
 from app.services.engine_health import compute_engine_health
@@ -60,6 +61,22 @@ def _validate_expiry(expiry: str | None) -> str | None:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _get_next_flush_ist() -> str:
+    from app.application.use_cases.background_updater import (
+        IST as BG_IST,
+        _SCHEDULED_FLUSH_WINDOWS_IST,
+        _flushed_windows,
+    )
+
+    now = datetime.now(BG_IST)
+    now_mins = now.hour * 60 + now.minute
+    for h, m in sorted(_SCHEDULED_FLUSH_WINDOWS_IST):
+        w_mins = h * 60 + m
+        if w_mins > now_mins and (h, m) not in _flushed_windows:
+            return f"{h:02d}:{m:02d} IST"
+    return "09:15 IST (tomorrow)"
 
 def _freshness_payload(last_update: datetime | None) -> dict[str, Any]:
     if not last_update:
@@ -135,10 +152,12 @@ async def debug_flush_cache():
     Dev-only endpoint to clear in-memory summary cache.
     Forces next poll cycle to rebuild from scratch.
     """
-    async with cache._lock:  # noqa: SLF001 - intentional internal maintenance path
-        cache.summary_data = {}
-        cache.stale_data = True
-    return {"status": "flushed", "message": "Cache cleared. Fresh state on next cycle."}
+    preserved_count = await _seeded_runtime_flush()
+    return {
+        "status": "flushed",
+        "seeded": preserved_count,
+        "message": "Seeded cache flush complete. Fresh state on next cycle.",
+    }
 
 
 @router.get("/option-chain/expiries")
@@ -293,14 +312,23 @@ async def index_data(names: Optional[str] = None):
 
 @router.get("/engine-health")
 async def engine_health():
-    log_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_cycle_log.jsonl"
-    return compute_engine_health(log_path=log_path, tail_cycles=200)
+    log_path = Path(__file__).resolve().parents[3] / "logs" / "optionlens_cycle_log.jsonl"
+    payload = compute_engine_health(log_path=log_path, tail_cycles=200)
+    from app.application.use_cases.background_updater import (
+        _SCHEDULED_FLUSH_WINDOWS_IST,
+        _flushed_windows,
+    )
+
+    payload["scheduled_flush_windows"] = [f"{h:02d}:{m:02d} IST" for h, m in _SCHEDULED_FLUSH_WINDOWS_IST]
+    payload["flushed_today"] = [f"{h:02d}:{m:02d} IST" for h, m in sorted(_flushed_windows)]
+    payload["next_flush"] = _get_next_flush_ist()
+    return payload
 
 
 @router.get("/event-log")
 async def event_log(limit: int = 20):
-    log_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.txt"
-    stream_path = Path(__file__).resolve().parents[2] / "logs" / "optionlens_market_events.jsonl"
+    log_path = Path(__file__).resolve().parents[3] / "logs" / "optionlens_market_events.txt"
+    stream_path = Path(__file__).resolve().parents[3] / "logs" / "optionlens_market_events.jsonl"
     if limit < 1:
         limit = 1
     if limit > 200:

@@ -1464,6 +1464,8 @@ button:hover {
   padding: 12px;
   display: grid;
   gap: 10px;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 /* ══════════════════════════════════════════════════════
@@ -2795,9 +2797,9 @@ tbody tr:hover {
   margin-top: 16px;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(320px, 1.35fr) minmax(240px, 0.9fr) minmax(240px, 0.9fr);
+  grid-template-columns: minmax(340px, 1.4fr) minmax(220px, 0.7fr) minmax(300px, 1.02fr);
   grid-template-areas:
-    "structure structure trap"
+    "structure structure setup"
     "strike strike trap"
     "decision levels playbook"
     "decisionlayer levels playbook"
@@ -2807,8 +2809,9 @@ tbody tr:hover {
 .ia-layout-decision { grid-area: decision; }
 .ia-layout-decision-layer { grid-area: decisionlayer; }
 .ia-layout-levels { grid-area: levels; }
-.ia-layout-trap { grid-area: trap; }
-.ia-layout-structure { grid-area: structure; }
+.ia-layout-trap { grid-area: trap; min-width: 0; align-self: start; }
+.ia-layout-structure { grid-area: structure; min-width: 0; }
+.ia-layout-setup { grid-area: setup; min-width: 0; align-self: start; }
 .ia-layout-playbook { grid-area: playbook; }
 .ia-layout-strike-guidance { grid-area: strike; }
 .ia-decision-entry-target { margin-top: 10px; }
@@ -2818,8 +2821,10 @@ tbody tr:hover {
     grid-template-columns: 1.2fr 1fr;
     grid-template-areas:
       "structure structure"
+      "setup setup"
+      "trap trap"
       "strike strike"
-      "decision trap"
+      "decision decision"
       "levels playbook"
       "decisionlayer playbook";
   }
@@ -3064,6 +3069,11 @@ tbody tr:hover {
 .ia-layout-trap .ia-card {
   display: grid;
   gap: 10px;
+}
+
+.ia-layout-setup .ia-card,
+.ia-layout-trap .ia-card {
+  min-height: 248px;
 }
 
 .ia-layout-levels .ia-card-title,
@@ -6962,6 +6972,22 @@ input[type="number"] {
   padding: 5px 8px;
   margin: 6px 0;
 }
+.sgc-wait-block {
+  padding: 10px 0;
+}
+
+.sgc-wait-reason {
+  font-size: 12px;
+  color: var(--ia-text-secondary);
+  margin-bottom: 4px;
+}
+
+.sgc-wait-unlock {
+  font-size: 11px;
+  color: #d97706;
+  font-style: italic;
+}
+
 .sgc-trade-strip {
   margin-top: 8px;
   padding: 10px 12px;
@@ -7069,6 +7095,9 @@ input[type="number"] {
 
 /* Structure Band Bar */
 .sbb-wrap {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -7078,6 +7107,9 @@ input[type="number"] {
   border-top: 0.5px solid var(--ia-border);
 }
 .sbb-panel {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -7153,6 +7185,9 @@ input[type="number"] {
 }
 
 .sbb-track-wrap {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
   position: relative;
   height: 52px;
   margin: 20px 0 34px;   /* top: room for sbb-lbl-above (-16px); bottom: room for 2 stacked sbb-lbl-below (-14px / -26px) */
@@ -7245,6 +7280,26 @@ input[type="number"] {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.sbb-metric-magnet .sbb-metric-lbl,
+.sbb-metric-magnet .sbb-metric-val {
+  color: #f59e0b;
+}
+
+.sbb-metric-maxpain .sbb-metric-lbl,
+.sbb-metric-maxpain .sbb-metric-val {
+  color: #a78bfa;
+}
+
+.sbb-metric-support .sbb-metric-lbl,
+.sbb-metric-support .sbb-metric-val {
+  color: #26a69a;
+}
+
+.sbb-metric-resistance .sbb-metric-lbl,
+.sbb-metric-resistance .sbb-metric-val {
+  color: #ef5350;
+}
+
 .sbb-metric-neutral .sbb-metric-val { color: var(--ia-text-primary, #eef2f8); }
 .sbb-metric-warn-r .sbb-metric-val { color: #ef5350; }
 .sbb-metric-warn-s .sbb-metric-val { color: #26a69a; }
@@ -7304,8 +7359,13 @@ input[type="number"] {
 }
 
 .entry-target-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
   padding: 14px 16px;
   border: 1px solid rgba(148, 163, 184, 0.25);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.68), rgba(9, 15, 28, 0.92));
+  box-shadow: 0 10px 24px rgba(6, 12, 24, 0.22);
 }
 
 .et-action-badge {
@@ -7348,15 +7408,16 @@ input[type="number"] {
 
 .et-entry-brief {
   font-size: 13px;
+  line-height: 1.5;
   color: var(--ia-text-primary);
-  margin: 8px 0 10px;
+  margin: 4px 0 8px;
 }
 
 .et-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .et-item {
@@ -7384,8 +7445,9 @@ input[type="number"] {
 
 .et-notes {
   font-size: 12px;
+  line-height: 1.45;
   color: var(--ia-text-secondary);
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .et-magnet-row {
@@ -7449,7 +7511,7 @@ input[type="number"] {
 }
 
 .et-walls {
-  margin-top: 8px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--ia-text-tertiary);
   border-top: 1px solid rgba(148, 163, 184, 0.2);

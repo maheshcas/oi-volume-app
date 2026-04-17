@@ -100,6 +100,21 @@ LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP
 MAX_STATE_SNAPSHOTS_PER_SERIES = max(1, int(os.getenv("OPTIONLENS_MAX_STATE_SNAPSHOTS_PER_SERIES", "10")))
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# ── Scheduled cache-clear windows (IST) ─────────────────────────────
+# Each entry: (hour, minute) in IST at which the cache is auto-flushed.
+# Market open flush clears stale overnight data.
+# Mid-session flush prevents long-running drift.
+# Close flush triggers EOD calibration and marks session end.
+_SCHEDULED_FLUSH_WINDOWS_IST: list[tuple[int, int]] = [
+    (9, 15),
+    (12, 0),
+    (15, 30),
+]
+
+# Track which windows have already fired today to prevent repeat flushes.
+_flushed_windows: set[tuple[int, int]] = set()
+_flushed_windows_date: datetime | None = None
+
 REGIME_MIN_HOLD_CYCLES = 3
 REGIME_SWITCH_CONFIRM_CYCLES = 2
 RANGE_REGIME_CANONICAL_LABEL = "Range Play"
@@ -177,6 +192,121 @@ def _utc_iso(dt: datetime | None) -> str | None:
     if not dt:
         return None
     return dt.astimezone(timezone.utc).isoformat()
+
+
+async def _clear_runtime_cache() -> None:
+    async with cache._lock:  # noqa: SLF001 - updater maintenance path
+        cache.option_chain_data = {}
+        cache.summary_data = {}
+        cache.stale_data = True
+
+
+def _build_seeded_sr_anchors(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+
+    resistance = _safe_float(
+        state.get("current_resistance")
+        or state.get("resistance_level")
+        or state.get("previous_resistance")
+    )
+    support = _safe_float(
+        state.get("current_support")
+        or state.get("support_level")
+        or state.get("previous_support")
+    )
+    if resistance is None or support is None:
+        return {}
+
+    seeded_levels = dict(state.get("levels") or {})
+    seeded_support = dict(seeded_levels.get("support") or {})
+    seeded_resistance = dict(seeded_levels.get("resistance") or {})
+    seeded_support["immediate"] = support
+    seeded_support["major"] = support
+    seeded_resistance["immediate"] = resistance
+    seeded_resistance["major"] = resistance
+    seeded_levels["support"] = seeded_support
+    seeded_levels["resistance"] = seeded_resistance
+
+    return {
+        "support_level": support,
+        "resistance_level": resistance,
+        "current_support": support,
+        "current_resistance": resistance,
+        "previous_support": support,
+        "previous_resistance": resistance,
+        "levels": seeded_levels,
+    }
+
+
+async def _seeded_runtime_flush() -> int:
+    preserved_states: dict[str, dict[str, Any]] = {}
+    async with cache._lock:  # noqa: SLF001 - updater maintenance path
+        for key, state in (cache.previous_states or {}).items():
+            seeded = _build_seeded_sr_anchors(state)
+            if seeded:
+                merged_state = dict(state or {})
+                merged_state.update(seeded)
+                preserved_states[key] = merged_state
+
+        cache.option_chain_data = {}
+        cache.summary_data = {}
+        cache.stale_data = True
+
+        for key, state in preserved_states.items():
+            cache.previous_states[key] = deepcopy(state)
+
+    for key, state in preserved_states.items():
+        if key.startswith("STATE::"):
+            _persist_state_snapshot("STATE", key.removeprefix("STATE::"), state)
+
+    return len(preserved_states)
+
+
+async def _check_scheduled_flush(now_ist: datetime) -> bool:
+    """
+    Check if current IST time matches a scheduled flush window.
+    Returns True if a flush was triggered.
+    Fires within a ±30 second tolerance window to survive slow cycles.
+    Resets the fired-set at midnight so windows fire again each trading day.
+    """
+    global _flushed_windows, _flushed_windows_date
+
+    today = now_ist.date()
+    if _flushed_windows_date != today:
+        _flushed_windows = set()
+        _flushed_windows_date = now_ist
+
+    hh, mm, ss = now_ist.hour, now_ist.minute, now_ist.second
+    current_total = hh * 3600 + mm * 60 + ss
+
+    for target_h, target_m in _SCHEDULED_FLUSH_WINDOWS_IST:
+        window_key = (target_h, target_m)
+        if window_key in _flushed_windows:
+            continue
+
+        target_total = target_h * 3600 + target_m * 60
+        if abs(current_total - target_total) <= 30:
+            preserved_count = await _seeded_runtime_flush()
+            _flushed_windows.add(window_key)
+            logger.info(
+                "Seeded flush fired at %02d:%02d IST (window %02d:%02d) - preserved %d S/R anchors",
+                hh,
+                mm,
+                target_h,
+                target_m,
+                preserved_count,
+            )
+            if window_key == (15, 30):
+                try:
+                    updated = update_end_of_day_calibration(session_date=today)
+                    _calibrated_weights.update(updated)
+                    logger.info("EOD calibration triggered by scheduled flush at 15:30 IST")
+                except Exception as exc:
+                    logger.warning("EOD calibration failed: %s", exc)
+            return True
+
+    return False
 
 
 _cache_key = make_cache_key
@@ -570,6 +700,28 @@ def _trim_list(value: Any, max_items: int) -> list[Any]:
     return value[:max_items]
 
 
+def _sanitize_liquidity_map(liquidity_map: Any) -> list[dict[str, Any]]:
+    if not isinstance(liquidity_map, list):
+        return []
+    sanitized_rows: list[dict[str, Any]] = []
+    for row in liquidity_map:
+        if not isinstance(row, dict):
+            continue
+        sanitized_rows.append(
+            {
+                "strike": row.get("strike"),
+                "oi_ce": row.get("oi_ce"),
+                "oi_pe": row.get("oi_pe"),
+                "oi_ce_change": row.get("oi_ce_change"),
+                "oi_pe_change": row.get("oi_pe_change"),
+                "vol_ce": row.get("vol_ce"),
+                "vol_pe": row.get("vol_pe"),
+                "liquidity_score": row.get("liquidity_score"),
+            }
+        )
+    return sanitized_rows
+
+
 def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(market_state, dict):
         return {}
@@ -709,6 +861,8 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "iv_skew",
         "atm_straddle_premium",
         "straddle_trend",
+        "pe_wall_strike",
+        "ce_wall_strike",
         "ce_wall_holding",
         "pe_wall_holding",
         "volume_spike_strikes",
@@ -856,6 +1010,7 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "session_range_width": intraday_zones.get("session_range_width"),
     }
     sanitized["chain_greeks"] = _trim_list(signals.get("chain_greeks"), 20)
+    sanitized["liquidity_map"] = _sanitize_liquidity_map(signals.get("liquidity_map"))
 
     sanitized["breakout_candidate"] = signals.get("breakout_candidate")
     sanitized["sr_breach_state"] = signals.get("sr_breach_state")
@@ -1301,6 +1456,9 @@ def _compute_directional_pressure_score(
     pe_rvr: float | None = None,
     oi_buildup_type: str | None = None,
     trap_probability: float,
+    spot: float | None = None,
+    support: float | None = None,
+    resistance: float | None = None,
     day_high: float | None = None,
     day_low: float | None = None,
     previous_alignment_score: float | None = None,
@@ -1358,9 +1516,14 @@ def _compute_directional_pressure_score(
     session_range_pct = 0.0
     if session_high is not None and session_low not in (None, 0) and session_high > session_low:
         session_range_pct = ((float(session_high) - float(session_low)) / float(session_low)) * 100.0
+    above_resistance = float(spot or 0.0) > float(resistance or 0.0) if resistance else False
+    below_support = float(spot or 0.0) < float(support or 0.0) if support else False
+    structural_break = above_resistance or below_support
     if buildup_text == "two-sided writing":
         scenario = "PINNING"
-        if session_range_pct > 1.5:
+        if structural_break:
+            scenario_multiplier = 0.75
+        elif session_range_pct > 1.5:
             scenario_multiplier = 0.75
         elif session_range_pct > 1.0:
             scenario_multiplier = 0.65
@@ -4201,6 +4364,9 @@ def _build_v2_intelligence(
         pe_rvr=float((volume.get("rvr", {}) or {}).get("pe", 0.0) or 0.0),
         oi_buildup_type=oi_buildup_type,
         trap_probability=trap_probability,
+        spot=spot,
+        support=support_level,
+        resistance=resistance_level,
         day_high=day_high,
         day_low=day_low,
         previous_alignment_score=previous_alignment,
@@ -5460,6 +5626,8 @@ def _build_v2_intelligence(
             "defense_ratio_pe": float((sr.get("support", {}) or {}).get("defense_score") or 0.0),
         }
     )
+    directional_entry_signal = strike_intelligence.get("directional_signal", "WAIT")
+    legacy_entry_signal = strike_intelligence.get("entry_signal", "WAIT_NO_SETUP")
     entry_target = compute_entry_target(
         {
             "spot": float(spot or 0.0),
@@ -5480,7 +5648,11 @@ def _build_v2_intelligence(
             "days_to_expiry": int(days_exp or 0),
             "iv_rank": float(iv_rank_result.get("iv_rank") or 0.0),
             "atm_straddle_premium": strike_intelligence.get("atm_straddle_premium"),
-            "entry_signal": strike_intelligence.get("entry_signal", "WAIT_NO_SETUP"),
+            "entry_signal": (
+                directional_entry_signal
+                if directional_entry_signal not in ("WAIT", "WAIT_NO_SETUP", None)
+                else legacy_entry_signal
+            ),
             "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
             "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),
             "magnet_distance_pts": strike_intelligence.get("magnet_distance_pts"),
@@ -5857,6 +6029,9 @@ def _build_v2_intelligence(
             "readiness_state": decision.get("readiness_state"),
             "readiness_active": bool(decision.get("readiness_active", False)),
             "readiness_model": decision.get("readiness_model"),
+            "directional_signal": strike_intelligence.get("directional_signal"),
+            "directional_bias": strike_intelligence.get("directional_bias"),
+            "directional_rr": strike_intelligence.get("directional_rr"),
             "trade_readiness_v2": decision.get("trade_readiness_v2"),
             "readiness_state_v2": decision.get("readiness_state_v2"),
             "readiness_active_v2": bool(decision.get("readiness_active_v2", False)),
@@ -5957,6 +6132,7 @@ def _build_v2_intelligence(
             "prioritized_signals": prioritized.get("prioritized_signals", []),
             "expiry_adaptive": expiry_adaptive,
             "intraday_zones": intraday_zones,
+            "liquidity_map": per_strike_liquidity_rows,
             "chain_greeks": _atm_centered,
             "alerts": typed_alerts,
             "alerts_meta": {
@@ -6435,6 +6611,8 @@ async def background_update_loop(stop_event: asyncio.Event) -> None:
     logger.info("Starting background updater loop: every %s sec", REFRESH_SECONDS)
     while not stop_event.is_set():
         try:
+            now_ist = datetime.now(IST)
+            await _check_scheduled_flush(now_ist)
             await run_update_cycle()
         except Exception as exc:  # belt-and-suspenders: loop must stay alive
             logger.exception("Background loop error: %s", exc)

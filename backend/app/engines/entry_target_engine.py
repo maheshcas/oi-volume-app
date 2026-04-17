@@ -87,6 +87,14 @@ def _find_oi_clusters(
 
 def _trade_type_from_signal(entry_signal: str) -> str:
     signal = str(entry_signal or "").strip().upper()
+    if signal == "REJECTION_AT_RESISTANCE":
+        return "REJECTION_AT_RESISTANCE"
+    if signal == "BREAKOUT_ABOVE_RESISTANCE":
+        return "BREAKOUT_ABOVE_RESISTANCE"
+    if signal == "BOUNCE_AT_SUPPORT":
+        return "BOUNCE_AT_SUPPORT"
+    if signal == "BREAKDOWN_BELOW_SUPPORT":
+        return "BREAKDOWN_BELOW_SUPPORT"
     if signal in {"SELL_CE_RESISTANCE", "SELL_CE_WALL_CONFIRMED"}:
         return "RANGE_SELL_CE"
     if signal in {"SELL_PE_SUPPORT", "SELL_PE_WALL_CONFIRMED"}:
@@ -368,6 +376,67 @@ def compute_entry_target(context: dict) -> dict:
             target_1 = (support + resistance) / 2.0 if support > 0 and resistance > 0 else None
             target_2 = call_wall
 
+        elif trade_type == "REJECTION_AT_RESISTANCE":
+            entry_underlying = spot
+            entry_option_type, entry_option_action = "PE", "BUY"
+            entry_option_strike = _find_sell_strike(
+                chain_greeks,
+                option_type="PE",
+                anchor=spot,
+                spot=spot,
+                delta_min=0.35,
+                delta_max=0.55,
+                min_ltp=5.0,
+            ) or atm_strike
+            stop_underlying = resistance + strike_gap
+            stop_pct_premium = 0.40
+            target_1 = price_magnet_strike if price_magnet_strike is not None and price_magnet_strike > 0 else None
+            if target_1 is not None:
+                target_2 = target_1 - (2 * strike_gap)
+                if support > 0:
+                    target_2 = max(target_2, support + strike_gap)
+
+        elif trade_type == "BREAKOUT_ABOVE_RESISTANCE":
+            entry_underlying = spot
+            entry_option_type, entry_option_action = "CE", "BUY"
+            entry_option_strike = _find_sell_strike(
+                chain_greeks,
+                option_type="CE",
+                anchor=spot,
+                spot=spot,
+                delta_min=0.35,
+                delta_max=0.55,
+                min_ltp=5.0,
+            ) or atm_strike
+            stop_underlying = resistance - strike_gap
+            stop_pct_premium = 0.40
+            target_1 = _safe_float(ce_clusters[0]["strike"], 0.0) if ce_clusters else (
+                price_magnet_strike if price_magnet_strike is not None and price_magnet_strike > 0 else None
+            )
+            target_2 = _safe_float(ce_clusters[1]["strike"], 0.0) if len(ce_clusters) > 1 else (
+                (target_1 + (2 * strike_gap)) if target_1 is not None else resistance + (2 * strike_gap)
+            )
+
+        elif trade_type == "BOUNCE_AT_SUPPORT":
+            entry_underlying = spot
+            entry_option_type, entry_option_action = "CE", "BUY"
+            entry_option_strike = _find_sell_strike(
+                chain_greeks,
+                option_type="CE",
+                anchor=spot,
+                spot=spot,
+                delta_min=0.35,
+                delta_max=0.55,
+                min_ltp=5.0,
+            ) or atm_strike
+            stop_underlying = support - strike_gap
+            stop_pct_premium = 0.40
+            target_1 = price_magnet_strike if price_magnet_strike is not None and price_magnet_strike > 0 else None
+            if max_pain is not None and target_1 is not None and max_pain > target_1:
+                target_2 = max_pain
+            elif target_1 is not None:
+                target_2 = min(resistance - strike_gap, target_1 + (2 * strike_gap)) if resistance > 0 else target_1 + (2 * strike_gap)
+
         elif trade_type == "BREAKDOWN_PE":
             entry_underlying = spot
             entry_option_type, entry_option_action = "PE", "BUY"
@@ -385,6 +454,27 @@ def compute_entry_target(context: dict) -> dict:
             stop_pct_premium = 0.40
             target_1 = _safe_float(ce_clusters[0]["strike"], 0.0) if ce_clusters else resistance + 2 * strike_gap
             target_2 = _safe_float(ce_clusters[1]["strike"], 0.0) if len(ce_clusters) > 1 else resistance + 4 * strike_gap
+
+        elif trade_type == "BREAKDOWN_BELOW_SUPPORT":
+            entry_underlying = spot
+            entry_option_type, entry_option_action = "PE", "BUY"
+            entry_option_strike = _find_sell_strike(
+                chain_greeks,
+                option_type="PE",
+                anchor=spot,
+                spot=spot,
+                delta_min=0.35,
+                delta_max=0.55,
+                min_ltp=5.0,
+            ) or atm_strike
+            stop_underlying = support + strike_gap
+            stop_pct_premium = 0.40
+            target_1 = _safe_float(pe_clusters[0]["strike"], 0.0) if pe_clusters else (
+                price_magnet_strike if price_magnet_strike is not None and price_magnet_strike > 0 else None
+            )
+            target_2 = _safe_float(pe_clusters[1]["strike"], 0.0) if len(pe_clusters) > 1 else (
+                (target_1 - (2 * strike_gap)) if target_1 is not None else support - (2 * strike_gap)
+            )
 
         entry_underlying = _round_to_gap(entry_underlying, strike_gap)
         stop_underlying = _round_to_gap(stop_underlying, strike_gap)
@@ -473,6 +563,64 @@ def compute_entry_target(context: dict) -> dict:
                     else "-"
                 )
                 target_brief = f"T1: {t1_txt} ({t1_pts}) · T2: {t2_txt}"
+            elif trade_type == "REJECTION_AT_RESISTANCE":
+                entry_brief = (
+                    f"Buy PE near {format(_safe_float(spot), '.0f')} as spot tests resistance "
+                    f"{format(_safe_float(resistance), '.0f')}."
+                )
+                stop_brief = (
+                    f"Stop if spot breaks above {format(_safe_float(stop_underlying), '.0f')}."
+                    if stop_underlying is not None
+                    else "Stop: premium or structure invalidation."
+                )
+                target_brief = (
+                    f"T1: {format(_safe_float(target_1), '.0f')} "
+                    f"({abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts) · "
+                    f"T2: {format(_safe_float(target_2), '.0f')}"
+                    if target_1 is not None and entry_underlying is not None
+                    else "Targets mapped to magnet fade."
+                )
+                if target_1 is not None and target_2 is not None:
+                    target_brief = (
+                        f"T1: {format(_safe_float(target_1), '.0f')} (magnet) · "
+                        f"T2: {format(_safe_float(target_2), '.0f')}"
+                    )
+            elif trade_type == "BREAKOUT_ABOVE_RESISTANCE":
+                stop_brief = (
+                    f"Stop if spot slips back below {format(_safe_float(stop_underlying), '.0f')}"
+                    f" or premium hits {stop_prem_txt}."
+                    if stop_underlying is not None
+                    else "Stop: premium or structure invalidation."
+                )
+                target_brief = (
+                    f"T1: {format(_safe_float(target_1), '.0f')} "
+                    f"({abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts) · "
+                    f"T2: {format(_safe_float(target_2), '.0f')}"
+                    if target_1 is not None and entry_underlying is not None
+                    else "Targets mapped to upside CE clusters."
+                )
+            elif trade_type == "BOUNCE_AT_SUPPORT":
+                target_brief = (
+                    f"T1: {format(_safe_float(target_1), '.0f')} "
+                    f"({abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts) · "
+                    f"T2: {format(_safe_float(target_2), '.0f')}"
+                    if target_1 is not None and entry_underlying is not None
+                    else "Targets mapped to bounce recovery."
+                )
+            elif trade_type == "BREAKDOWN_BELOW_SUPPORT":
+                stop_brief = (
+                    f"Stop if spot reclaims {format(_safe_float(stop_underlying), '.0f')}"
+                    f" or premium hits {stop_prem_txt}."
+                    if stop_underlying is not None
+                    else "Stop: premium or structure invalidation."
+                )
+                target_brief = (
+                    f"T1: {format(_safe_float(target_1), '.0f')} "
+                    f"({abs(_safe_float(target_1) - _safe_float(entry_underlying)):.0f}pts) · "
+                    f"T2: {format(_safe_float(target_2), '.0f')}"
+                    if target_1 is not None and entry_underlying is not None
+                    else "Targets mapped to downside PE clusters."
+                )
             else:
                 t1_txt = f"{format(_safe_float(target_1), '.0f')}" if target_1 is not None else "-"
                 t2_txt = f"{format(_safe_float(target_2), '.0f')}" if target_2 is not None else "-"

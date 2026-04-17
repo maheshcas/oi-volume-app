@@ -297,13 +297,13 @@ export default function StructureBandBar({
 
       {/* ── Metrics strip ── */}
       <div className="sbb-metrics-strip">
-        <div className="sbb-metric-item">
+        <div className="sbb-metric-item sbb-metric-magnet">
           <span className="sbb-metric-lbl">Magnet</span>
           <span className="sbb-metric-val sbb-stat-magnet">
             {typeof magnet === "number" ? `${fmt(magnet)} ${magnetArrow}` : "-"}
           </span>
         </div>
-        <div className="sbb-metric-item">
+        <div className="sbb-metric-item sbb-metric-maxpain">
           <span className="sbb-metric-lbl">Max pain</span>
           <span className="sbb-metric-val sbb-stat-maxpain">
             {typeof maxPain === "number" ? fmt(maxPain) : "-"}
@@ -313,13 +313,13 @@ export default function StructureBandBar({
           <span className="sbb-metric-lbl">Band</span>
           <span className="sbb-metric-val">{fmt(bandWidth)} pts</span>
         </div>
-        <div className={`sbb-metric-item ${metricToSupportTone}`}>
+        <div className={`sbb-metric-item sbb-metric-support ${metricToSupportTone}`}>
           <span className="sbb-metric-lbl">To support</span>
           <span className="sbb-metric-val">
             {belowS ? `-${fmt(Math.abs(distToS))} pts` : `${fmt(distToS)} pts`}
           </span>
         </div>
-        <div className={`sbb-metric-item ${metricToResistanceTone}`}>
+        <div className={`sbb-metric-item sbb-metric-resistance ${metricToResistanceTone}`}>
           <span className="sbb-metric-lbl">To resist</span>
           <span className="sbb-metric-val">
             {aboveR ? `+${fmt(Math.abs(distToR))} pts` : `${fmt(distToR)} pts`}

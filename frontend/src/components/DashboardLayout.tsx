@@ -186,6 +186,8 @@ type DashboardLayoutProps = {
     entry_zone?: string | null;
     stop_zone?: string | null;
     target_zone?: string | null;
+    blocking_reason?: string | null;
+    trap_probability?: number | null;
     strikeIntelligence?: {
       entry_signal?: string;
       entry_signal_reason?: string;
@@ -273,11 +275,6 @@ export default function DashboardLayout({
           supportTransitionBadge={decision.supportTransitionBadge}
           resistanceTransitionBadge={decision.resistanceTransitionBadge}
         />
-        {entryTarget ? (
-          <div className="ia-decision-entry-target">
-            <EntryTargetCard entryTarget={entryTarget} />
-          </div>
-        ) : null}
       </div>
 
       <div className="ia-layout-decision-layer">{false && decisionLayer}</div>
@@ -371,6 +368,12 @@ export default function DashboardLayout({
         </div>
       </div>
 
+      {entryTarget ? (
+        <div className="ia-layout-setup">
+          <EntryTargetCard entryTarget={entryTarget} />
+        </div>
+      ) : null}
+
       <div className="ia-layout-playbook">
         {false && <TradePlanCard
           bias={tradePlan.bias}
@@ -408,6 +411,8 @@ export default function DashboardLayout({
             entry_zone={strikeGuidance.entry_zone ?? null}
             stop_zone={strikeGuidance.stop_zone ?? null}
             target_zone={strikeGuidance.target_zone ?? null}
+            blocking_reason={decision.blockingReason ?? null}
+            trap_probability={trap.trap_probability}
             strikeIntelligence={strikeGuidance.strikeIntelligence ?? null}
           />
         </div>
