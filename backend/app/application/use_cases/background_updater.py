@@ -6296,7 +6296,11 @@ def _build_v2_intelligence(
     }
 
 
-async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
+async def _build_symbol_payloads(
+    symbol: str,
+    instrument_type: str,
+    requested_expiries: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     option_chain_section: dict[str, Any] = {}
     summary_section: dict[str, Any] = {}
     daily_context = await asyncio.to_thread(get_daily_context, symbol)
@@ -6317,7 +6321,11 @@ async def _build_symbol_payloads(symbol: str, instrument_type: str) -> tuple[dic
     option_chain_section["daily_context"] = daily_context
 
     active_expiries = _resolve_active_expiries(expiries)
-    expiries_to_fetch = active_expiries[:MAX_EXPIRIES_PER_SYMBOL]
+    if requested_expiries:
+        valid_expiries = {str(item) for item in expiries}
+        expiries_to_fetch = [str(item) for item in requested_expiries if str(item) in valid_expiries]
+    else:
+        expiries_to_fetch = active_expiries[:MAX_EXPIRIES_PER_SYMBOL]
     if not expiries_to_fetch:
         return option_chain_section, summary_section
 

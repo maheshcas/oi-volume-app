@@ -1,9 +1,13 @@
-const CACHE_NAME = "optionlens-shell-v1";
-const APP_SHELL = ["/", "/app", "/manifest.json", "/optionlens-favicon.svg?v=4"];
+const CACHE_NAME = "optionlens-shell-v2";
+const STATIC_ASSETS = ["/manifest.json", "/optionlens-favicon.svg?v=4"];
+const APP_ROUTES = new Set(["/", "/app"]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(STATIC_ASSETS))
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -22,6 +26,29 @@ self.addEventListener("fetch", (event) => {
   // Never cache live API responses; always go to network.
   if (requestUrl.pathname.startsWith("/api/")) {
     event.respondWith(fetch(event.request));
+    return;
+  }
+
+  const isNavigationRequest = event.request.mode === "navigate";
+  const isAppRoute = APP_ROUTES.has(requestUrl.pathname);
+
+  if (isNavigationRequest || isAppRoute) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (!response || response.status !== 200 || response.type !== "basic") {
+            return response;
+          }
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match(event.request);
+          if (cached) return cached;
+          return caches.match("/");
+        })
+    );
     return;
   }
 

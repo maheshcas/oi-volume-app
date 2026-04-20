@@ -47,7 +47,16 @@ export default function OptionLensMobileDashboard({
           sessionPhase={data.sessionPhase}
         />
 
-        <StructuralRangeTrackMobile support={data.support} resistance={data.resistance} spot={data.spot} />
+        <StructuralRangeTrackMobile
+          support={data.support}
+          resistance={data.resistance}
+          spot={data.spot}
+          previousResistance={data.previousResistance}
+          magnet={data.entryTarget?.price_magnet_strike ?? null}
+          magnetPullDirection={data.entryTarget?.magnet_pull_direction ?? null}
+          magnetDistancePts={data.entryTarget?.magnet_distance_pts ?? null}
+          magnetCharacter={data.entryTarget?.magnet_character ?? null}
+        />
 
         <PrimarySignalCard
           tradeAction={data.tradeAction}
@@ -90,6 +99,7 @@ export default function OptionLensMobileDashboard({
           bearishTrigger={data.bearishTrigger}
           support={data.support}
           resistance={data.resistance}
+          entryTarget={data.entryTarget}
         />
 
         <AlertsCardMobile alerts={data.alerts} />

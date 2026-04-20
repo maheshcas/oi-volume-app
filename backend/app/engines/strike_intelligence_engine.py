@@ -88,6 +88,8 @@ def _compute_max_pain_strike(liquidity_map: list[dict[str, Any]], spot: float) -
     best_strike: int | None = None
     best_pain: float | None = None
     for strike in strikes:
+        if spot > 0 and abs(strike - spot) > 15 * strike_gap:
+            continue
         total_loss = 0.0
         for row in liquidity_map:
             row_strike = _safe_int(row.get("strike"), 0)
@@ -151,6 +153,11 @@ def _compute_price_magnet(
     for row in liquidity_map:
         s = _safe_int(row.get("strike"), 0)
         if s <= 0:
+            continue
+        # Exclude far-OTM strikes; they are usually expiry hedges rather than
+        # meaningful intraday magnet levels.
+        intraday_window = 10 * strike_gap
+        if spot > 0 and abs(s - spot) > intraday_window:
             continue
         ce_oi = max(0.0, _safe_float(row.get("oi_ce"), 0.0))
         pe_oi = max(0.0, _safe_float(row.get("oi_pe"), 0.0))

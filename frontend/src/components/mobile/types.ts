@@ -26,6 +26,33 @@ export type MobileAlert = {
   severity?: string;
 };
 
+export type MobileEntryTarget = {
+  trade_type?: string;
+  entry_underlying?: number | null;
+  entry_option_strike?: number | null;
+  entry_option_type?: string | null;
+  entry_option_action?: string | null;
+  entry_premium?: number | null;
+  entry_brief?: string;
+  stop_underlying?: number | null;
+  stop_premium_value?: number | null;
+  stop_brief?: string;
+  target_1?: number | null;
+  target_2?: number | null;
+  target_brief?: string;
+  rr_t1?: number | null;
+  rr_t2?: number | null;
+  rr_brief?: string;
+  call_wall_used?: number | null;
+  put_wall_used?: number | null;
+  price_magnet_strike?: number | null;
+  magnet_pull_direction?: string | null;
+  magnet_distance_pts?: number | null;
+  secondary_magnet?: number | null;
+  magnet_character?: string | null;
+  compression_zone?: boolean;
+};
+
 export type MobileDashboardData = {
   symbol: string;
   instrumentType: string;
@@ -72,8 +99,10 @@ export type MobileDashboardData = {
   breakoutDown: number | null;
   materialBreachConfirmed: boolean;
   confirmationType: string | null;
+  previousResistance: number | null;
   putWall: number | null;
   callWall: number | null;
+  entryTarget: MobileEntryTarget | null;
   topWriters: {
     ce: MobileWriterRow[];
     pe: MobileWriterRow[];

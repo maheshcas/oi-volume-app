@@ -3329,8 +3329,62 @@ export default function App() {
     breakoutDown: intelligence?.market_state?.breakout_probability?.downside ?? null,
     materialBreachConfirmed: Boolean(intelligence?.signals?.material_breach?.material_breach_confirmed),
     confirmationType: intelligence?.signals?.material_breach?.confirmation_type ?? null,
+    previousResistance: typeof intelligence?.market_state?.previous_resistance === "number"
+      ? intelligence.market_state.previous_resistance
+      : null,
     putWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
     callWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+    entryTarget: (() => {
+      const et = intelligence?.market_state?.entry_target ?? null;
+      const si = intelligence?.market_state?.strike_intelligence ?? null;
+      if (et) return et;
+      if (!si) return null;
+      const directionalSignal = String(si.directional_signal || "WAIT").toUpperCase();
+      const entrySignal = String(si.entry_signal || "WAIT_NO_SETUP").toUpperCase();
+      const effectiveSignal = directionalSignal !== "WAIT" ? directionalSignal : entrySignal;
+      const isWait = effectiveSignal === "WAIT_NO_SETUP" || effectiveSignal === "WAIT";
+      const directionalOption =
+        effectiveSignal === "BUY_CE" ? "CE" :
+        effectiveSignal === "BUY_PE" ? "PE" :
+        effectiveSignal === "SELL_STRADDLE" ? "STRADDLE" : null;
+      const directionalAction =
+        effectiveSignal === "BUY_CE" || effectiveSignal === "BUY_PE" ? "BUY" :
+        effectiveSignal === "SELL_STRADDLE" ? "SELL" : null;
+      return {
+        trade_type: isWait ? "NONE" : effectiveSignal,
+        entry_underlying: typeof spotValue === "number" ? spotValue : null,
+        entry_option_strike: directionalSignal !== "WAIT"
+          ? si.directional_strike ?? si.recommended_strike ?? null
+          : si.recommended_strike ?? null,
+        entry_option_type: directionalSignal !== "WAIT" ? directionalOption : si.recommended_option ?? null,
+        entry_option_action: directionalSignal !== "WAIT" ? directionalAction : si.recommended_action ?? null,
+        entry_premium: null,
+        entry_brief: isWait
+          ? "No clean setup currently. Wait for edge test or trap easing."
+          : directionalSignal !== "WAIT"
+            ? si.directional_reason || "Directional setup derived from magnet and wall confirmation."
+            : si.entry_signal_reason || "Signal-derived setup.",
+        stop_underlying: null,
+        stop_premium_value: null,
+        stop_brief: isWait
+          ? "Unlock: wait for spot to approach support/resistance with confirmation."
+          : si.stop_description || "Use signal invalidation.",
+        target_1: null,
+        target_2: null,
+        target_brief: isWait ? "No targets while waiting." : si.target_description || "Use signal target guidance.",
+        rr_t1: directionalSignal !== "WAIT" ? si.directional_rr ?? null : null,
+        rr_t2: null,
+        rr_brief: "RR pending entry-target engine payload.",
+        call_wall_used: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+        put_wall_used: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
+        price_magnet_strike: typeof intelligence?.market_state?.price_magnet_strike === "number"
+          ? intelligence.market_state.price_magnet_strike : null,
+        magnet_pull_direction: null,
+        magnet_distance_pts: null,
+        magnet_character: null,
+        compression_zone: false,
+      };
+    })(),
     topWriters: {
       ce: topWriters.ce.map((item) => ({ strike: item.strike, doi: item.doi, volume: item.volume })),
       pe: topWriters.pe.map((item) => ({ strike: item.strike, doi: item.doi, volume: item.volume })),

@@ -10,7 +10,7 @@ from datetime import timezone
 from fastapi import APIRouter, HTTPException
 
 from app.core.cache import cache, make_cache_key
-from app.application.use_cases.background_updater import _seeded_runtime_flush
+from app.application.use_cases.background_updater import _build_symbol_payloads, _seeded_runtime_flush
 from app.engines.bias_probability_engine import compute_bias_probability
 from app.engines.simulation_engine import simulate_breakout_performance
 from app.services.engine_health import compute_engine_health
@@ -133,6 +133,46 @@ def _resolve_cached_v2_payload(
     return None, None
 
 
+async def _warm_explicit_expiry_cache(
+    symbol: str,
+    instrument_type: str,
+    expiry: str | None,
+) -> bool:
+    if not expiry:
+        return False
+
+    key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
+    symbol_option_chain, symbol_summaries = await _build_symbol_payloads(
+        symbol=symbol,
+        instrument_type=instrument_type,
+        requested_expiries=[expiry],
+    )
+    payload = symbol_summaries.get(key)
+    if not payload:
+        return False
+
+    cached = await cache.get_cached_data()
+    option_chain_data = deepcopy(cached.get("option_chain_data") or {})
+    summary_data = deepcopy(cached.get("summary_data") or {})
+
+    option_chain_data.setdefault("symbols", {})
+    option_chain_data["symbols"][symbol.upper()] = symbol_option_chain
+    option_chain_data["generated_at"] = datetime.now(timezone.utc).isoformat()
+    option_chain_data["instrument_type"] = instrument_type
+
+    summary_data.setdefault("summaries", {})
+    summary_data.setdefault("target_projections", {})
+    summary_data.setdefault("interpretations", {})
+    summary_data.setdefault("v2", {})
+    summary_data["summaries"][key] = payload["summary"]
+    summary_data["target_projections"][key] = payload["target_projection"]
+    summary_data["interpretations"][key] = payload["interpretations"]
+    summary_data["v2"][key] = payload["v2"]
+
+    await cache.update_cache(option_chain_data, summary_data)
+    return True
+
+
 async def _require_cache_ready() -> dict[str, Any]:
     data = await cache.get_cached_data()
     if not data["summary_data"]:
@@ -203,6 +243,12 @@ async def option_chain_summary(
     key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
     summaries = data["summary_data"].get("summaries", {}) or {}
     payload = summaries.get(key)
+    if not payload and expiry:
+        warmed = await _warm_explicit_expiry_cache(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
+        if warmed:
+            data = await _require_cache_ready()
+            summaries = data["summary_data"].get("summaries", {}) or {}
+            payload = summaries.get(key)
     if not payload and expiry is None:
         prefix = f"{instrument_type.upper()}::{symbol.upper()}::"
         for k, v in summaries.items():
