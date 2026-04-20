@@ -301,6 +301,11 @@ type IntelligenceResponse = {
       straddle_target_premium?: number | null;
     };
     price_magnet_strike?: number | null;
+    magnet_pull_direction?: string | null;
+    magnet_distance_pts?: number | null;
+    secondary_magnet?: number | null;
+    magnet_character?: string | null;
+    compression_zone?: boolean;
     max_pain_strike?: number | null;
     session_phase_confidence?: number;
     breakout_probability?: {
@@ -3379,10 +3384,19 @@ export default function App() {
         put_wall_used: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
         price_magnet_strike: typeof intelligence?.market_state?.price_magnet_strike === "number"
           ? intelligence.market_state.price_magnet_strike : null,
-        magnet_pull_direction: null,
-        magnet_distance_pts: null,
-        magnet_character: null,
-        compression_zone: false,
+        magnet_pull_direction: typeof intelligence?.market_state?.magnet_pull_direction === "string"
+          ? intelligence.market_state.magnet_pull_direction
+          : null,
+        magnet_distance_pts: typeof intelligence?.market_state?.magnet_distance_pts === "number"
+          ? intelligence.market_state.magnet_distance_pts
+          : null,
+        secondary_magnet: typeof intelligence?.market_state?.secondary_magnet === "number"
+          ? intelligence.market_state.secondary_magnet
+          : null,
+        magnet_character: typeof intelligence?.market_state?.magnet_character === "string"
+          ? intelligence.market_state.magnet_character
+          : null,
+        compression_zone: Boolean(intelligence?.market_state?.compression_zone),
       };
     })(),
     topWriters: {
