@@ -25,42 +25,28 @@ createRoot(container).render(
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    if (import.meta.env.DEV) {
-      navigator.serviceWorker
-        .getRegistrations()
-        .then((registrations) =>
-          Promise.all(registrations.map((registration) => registration.unregister()))
+    navigator.serviceWorker
+      .getRegistrations()
+      .then((registrations) =>
+        Promise.all(registrations.map((registration) => registration.unregister()))
+      )
+      .catch((error) => {
+        console.error("Service worker cleanup failed", error);
+      });
+
+    if ("caches" in window) {
+      caches
+        .keys()
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((key) => key.startsWith("optionlens-shell"))
+              .map((key) => caches.delete(key))
+          )
         )
         .catch((error) => {
-          console.error("Service worker cleanup failed", error);
+          console.error("Cache cleanup failed", error);
         });
-
-      if ("caches" in window) {
-        caches
-          .keys()
-          .then((keys) =>
-            Promise.all(
-              keys
-                .filter((key) => key.startsWith("optionlens-shell"))
-                .map((key) => caches.delete(key))
-            )
-          )
-          .catch((error) => {
-            console.error("Cache cleanup failed", error);
-          });
-      }
-      return;
     }
-
-    navigator.serviceWorker
-      .register("/sw.js")
-      .then((registration) => {
-        registration.update().catch(() => {
-          // Best-effort update check; safe to ignore.
-        });
-      })
-      .catch((error) => {
-        console.error("Service worker registration failed", error);
-      });
   });
 }

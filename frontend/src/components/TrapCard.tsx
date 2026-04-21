@@ -29,52 +29,108 @@ export type TrapCardProps = {
   oi_scenario?: string;
 };
 
-const oiScenarioLabel = (scenario: string): string =>
-  ({
-    LONG_BUILDUP: "Fresh longs building — buyers in control",
-    SHORT_BUILDUP: "Fresh shorts building — sellers in control",
-    SHORT_COVERING: "Shorts covering — move may be exhausted",
-    LONG_UNWINDING: "Longs exiting — weakness, watch for reversal",
-    PINNING: "Both sides writing — market pinned to range",
-    NEUTRAL: "",
-  })[scenario] ?? scenario;
+type LevelTone = { tone: "low" | "moderate" | "high"; label: TrapLevel };
 
-const levelStyles: Record<
-  TrapLevel,
-  {
-    chip: string;
-    bar: string;
-    glow: string;
-    accent: string;
-    surface: string;
-    border: string;
+const toneFor = (level: TrapLevel): LevelTone =>
+  level === "High"
+    ? { tone: "high", label: "High" }
+    : level === "Low"
+      ? { tone: "low", label: "Low" }
+      : { tone: "moderate", label: "Moderate" };
+
+function resolveDirectionalContext(
+  direction: "upside" | "downside" | "",
+  spot: number | null | undefined,
+  resistance: number | null | undefined,
+  trapZone: number,
+  probability: number,
+  trapMessage: string | null | undefined,
+): { title: string; sub: string; arrow: "up" | "down" | "flat" } | null {
+  const hasSpot = typeof spot === "number" && Number.isFinite(spot);
+  const hasR = typeof resistance === "number" && Number.isFinite(resistance);
+  const aboveR = hasSpot && hasR && (spot as number) > (resistance as number);
+  const level = trapZone.toLocaleString("en-IN");
+
+  if (aboveR && probability < 50 && hasR) {
+    return {
+      title: `Breakout above ${(resistance as number).toLocaleString("en-IN")}`,
+      sub: "Low trap risk · watch for acceptance",
+      arrow: "up",
+    };
   }
-> = {
-  Low: {
-    chip: "trap-chip-low",
-    bar: "trap-bar-low",
-    glow: "trap-glow-low",
-    accent: "#9ca3af",
-    surface: "rgba(148, 163, 184, 0.10)",
-    border: "rgba(148, 163, 184, 0.24)",
-  },
-  Moderate: {
-    chip: "trap-chip-moderate",
-    bar: "trap-bar-moderate",
-    glow: "trap-glow-moderate",
-    accent: "#f59e0b",
-    surface: "rgba(245, 158, 11, 0.10)",
-    border: "rgba(245, 158, 11, 0.24)",
-  },
-  High: {
-    chip: "trap-chip-high",
-    bar: "trap-bar-high",
-    glow: "trap-glow-high",
-    accent: "#ff4444",
-    surface: "rgba(255, 68, 68, 0.15)",
-    border: "rgba(255, 68, 68, 0.24)",
-  },
-};
+  if (aboveR && probability >= 50 && hasR) {
+    return {
+      title: `False breakout risk above ${(resistance as number).toLocaleString("en-IN")}`,
+      sub: `Trap ${probability}% · watch for reversal`,
+      arrow: "up",
+    };
+  }
+  if (direction === "downside") {
+    return {
+      title: `Resistance rejection at ${level}`,
+      sub: "Watch for reversal back into range",
+      arrow: "down",
+    };
+  }
+  if (direction === "upside") {
+    return {
+      title: `Support absorption at ${level}`,
+      sub: "Watch for bounce or breakdown follow-through",
+      arrow: "up",
+    };
+  }
+  const msg = String(trapMessage || "").trim();
+  if (msg) {
+    return { title: msg, sub: "", arrow: "flat" };
+  }
+  return null;
+}
+
+function resolveOiMatrixRow(
+  signal: string | null | undefined,
+  reason: string | null | undefined,
+  confidence: string | null | undefined,
+  breachLevel: number | null | undefined,
+  breachOiConfirming: boolean | undefined,
+  oiPriceDivergence: boolean | undefined,
+): { label: string; text: string; tone: "trap" | "confirm" | "neutral" } | null {
+  const code = String(signal || "").toUpperCase();
+  const isTrap = code === "BULL_TRAP" || code === "BEAR_TRAP";
+  const isConfirm = code === "BULL_CONFIRM" || code === "BEAR_CONFIRM";
+
+  if (!isTrap && !isConfirm) return null;
+
+  const label = isTrap ? "OI Trap Confirmed" : "OI Confirms Move";
+  const baseText =
+    reason || "OI and price are aligned with the detected pattern.";
+
+  const tail: string[] = [];
+  if (confidence) tail.push(`confidence ${confidence.toLowerCase()}`);
+  if (breachLevel != null) {
+    tail.push(
+      `level ${Number(breachLevel).toLocaleString("en-IN")} · OI ${
+        breachOiConfirming ? "confirming" : "diverging"
+      }${oiPriceDivergence ? " · divergence" : ""}`,
+    );
+  }
+
+  const text = tail.length > 0 ? `${baseText} (${tail.join(" · ")})` : baseText;
+  return { label, text, tone: isTrap ? "trap" : "confirm" };
+}
+
+function resolveSupportReason(reason: string | null | undefined): {
+  tone: "positive" | "negative" | "neutral";
+  text: string;
+} | null {
+  const t = String(reason || "").trim();
+  if (!t) return null;
+  const lower = t.toLowerCase();
+  if (/strengthen|defending|strong|building|holding/i.test(lower))
+    return { tone: "positive", text: t };
+  if (/weaken|exposed|break|fail|thin|vulnerable/i.test(lower))
+    return { tone: "negative", text: t };
+  return { tone: "neutral", text: t };
+}
 
 export default function TrapCard({
   trap_probability,
@@ -96,182 +152,122 @@ export default function TrapCard({
   oi_price_divergence,
   absorption_detected,
   absorption_message,
-  show_affected_level = true,
   key_range,
-  institutional_levels,
-  market_insight,
-  putWall,
-  callWall,
-  oi_scenario,
 }: TrapCardProps) {
+  void trap_type;
+  void institutional_levels_noop;
   const probability = Math.max(0, Math.min(100, Math.round(trap_probability)));
-  const resolvedTrapLevel = levelStyles[trap_level] ? trap_level : "Moderate";
-  const style = levelStyles[resolvedTrapLevel];
-  const isRejection = trap_direction === "downside";
-  const trapTypeLabel =
-    trap_direction === "downside" && trap_type.toLowerCase().includes("breakout failure")
-      ? "Breakdown Failure"
-      : trap_type || "-";
+  const resolvedLevel = (["Low", "Moderate", "High"] as TrapLevel[]).includes(trap_level)
+    ? trap_level
+    : "Moderate";
+  const levelTone = toneFor(resolvedLevel);
 
-  const directionLabel = isRejection ? "Resistance rejection" : "Support absorption";
-  const mergedTypeLabel = trapTypeLabel !== "-"
-    ? trap_direction ? `${trapTypeLabel} → ${directionLabel}` : trapTypeLabel
-    : "No active trap";
+  const directional = resolveDirectionalContext(
+    trap_direction,
+    spot,
+    resistance,
+    trap_zone,
+    probability,
+    trap_message,
+  );
 
-  const affectedLabel = trap_direction === "downside"
-    ? `Resistance at risk: ${trap_zone.toLocaleString("en-IN")}`
-    : trap_direction === "upside"
-      ? `Support at risk: ${trap_zone.toLocaleString("en-IN")}`
-      : `Level: ${trap_zone.toLocaleString("en-IN")}`;
-  const oiSignal = String(oi_trap_signal || "NEUTRAL").toUpperCase();
-  const showOiRow = Boolean(oiSignal);
-  const oiIsTrap = oiSignal === "BULL_TRAP" || oiSignal === "BEAR_TRAP";
-  const oiIsConfirm = oiSignal === "BULL_CONFIRM" || oiSignal === "BEAR_CONFIRM";
-  const aboveResistance =
-    typeof spot === "number" &&
-    Number.isFinite(spot) &&
-    typeof resistance === "number" &&
-    Number.isFinite(resistance) &&
-    spot > resistance;
-  const trapMessage = aboveResistance && probability < 50 && typeof resistance === "number"
-    ? `Breakout above ${resistance.toLocaleString("en-IN")} - low trap risk, watch for acceptance`
-    : aboveResistance && probability >= 50 && typeof resistance === "number"
-      ? `False breakout risk above ${resistance.toLocaleString("en-IN")} - trap ${probability}%`
-      : String(trap_message || "").trim();
+  const oiMatrix = resolveOiMatrixRow(
+    oi_trap_signal,
+    oi_trap_reason,
+    oi_trap_confidence,
+    breach_level,
+    breach_oi_confirming,
+    oi_price_divergence,
+  );
+
+  const supportContext = resolveSupportReason(support_reason);
+  const hasAbsorption = Boolean(absorption_detected) && Boolean(absorption_message);
+  const hasContextRows =
+    Boolean(key_range) || hasAbsorption || Boolean(supportContext) || Boolean(oiMatrix) || Boolean(trap_reason);
 
   return (
-    <section className={`trap-card ${style.glow}`}>
-      {(putWall || callWall || oi_scenario) ? (
-        <div className="ia-oi-brief">
-          {putWall ? (
-            <div className="ia-oi-brief-row ia-oi-brief-bull">
-              <span className="ia-oi-brief-icon">↑</span>
-              <span>Put Wall {putWall.toLocaleString("en-IN")} — floor defended</span>
+    <section className={`trap-card trap-card-v2 trap-card-v2-${levelTone.tone}`}>
+      <div className="trap-v2-header">
+        <div className="trap-v2-eyebrow">Trap</div>
+        <div className="trap-v2-state">
+          <span className="trap-v2-state-dot" />
+          <span className="trap-v2-state-label">{levelTone.label}</span>
+        </div>
+      </div>
+
+      <div className="trap-v2-hero">
+        <span className="trap-v2-pct">{probability}%</span>
+        <span className="trap-v2-pct-sub">false-break risk</span>
+      </div>
+
+      <div className="trap-v2-bar" aria-hidden="true">
+        <div className="trap-v2-bar-fill" style={{ width: `${probability}%` }} />
+        <div className="trap-v2-bar-gate" title="55% blocking threshold" />
+      </div>
+
+      {directional ? (
+        <div className={`trap-v2-directional trap-v2-directional-${directional.arrow}`}>
+          <span className="trap-v2-directional-arrow">
+            {directional.arrow === "up" ? "↑" : directional.arrow === "down" ? "↓" : "◈"}
+          </span>
+          <div className="trap-v2-directional-body">
+            <div className="trap-v2-directional-title">{directional.title}</div>
+            {directional.sub ? (
+              <div className="trap-v2-directional-sub">{directional.sub}</div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {suggested_action ? (
+        <div className="trap-v2-recommended">
+          <div className="trap-v2-recommended-label">Recommended</div>
+          <div className="trap-v2-recommended-body">{suggested_action}</div>
+        </div>
+      ) : null}
+
+      {hasContextRows ? (
+        <div className="trap-v2-context">
+          {key_range ? (
+            <div className="trap-v2-ctx-row">
+              <span className="trap-v2-ctx-key">Key range</span>
+              <span className="trap-v2-ctx-val">{key_range}</span>
             </div>
           ) : null}
-          {callWall ? (
-            <div className="ia-oi-brief-row ia-oi-brief-bear">
-              <span className="ia-oi-brief-icon">↓</span>
-              <span>Call Wall {callWall.toLocaleString("en-IN")} — ceiling active</span>
+
+          {supportContext ? (
+            <div className="trap-v2-ctx-row">
+              <span className="trap-v2-ctx-key">Support</span>
+              <span className={`trap-v2-ctx-val trap-v2-ctx-val-${supportContext.tone}`}>
+                {supportContext.text}
+              </span>
             </div>
           ) : null}
-          {oi_scenario && oi_scenario !== "NEUTRAL" ? (
-            <div className="ia-oi-brief-row ia-oi-brief-neutral">
-              <span className="ia-oi-brief-icon">◈</span>
-              <span>{oiScenarioLabel(oi_scenario)}</span>
+
+          {trap_reason ? (
+            <div className="trap-v2-ctx-row">
+              <span className="trap-v2-ctx-key">OI imbalance</span>
+              <span className="trap-v2-ctx-val">{trap_reason}</span>
+            </div>
+          ) : null}
+
+          {oiMatrix ? (
+            <div className={`trap-v2-ctx-row trap-v2-ctx-row-${oiMatrix.tone}`}>
+              <span className="trap-v2-ctx-key">{oiMatrix.label}</span>
+              <span className="trap-v2-ctx-val">{oiMatrix.text}</span>
+            </div>
+          ) : null}
+
+          {hasAbsorption ? (
+            <div className="trap-v2-ctx-row trap-v2-ctx-row-accent">
+              <span className="trap-v2-ctx-key">Absorption</span>
+              <span className="trap-v2-ctx-val">{absorption_message}</span>
             </div>
           ) : null}
         </div>
       ) : null}
-
-      <div className="trap-header">
-        <div className="trap-title-row">
-          <span className="trap-lbl">Trap Risk</span>
-        </div>
-
-        <div className="trap-pct-row">
-          <span className="trap-pct">{probability}%</span>
-          <span className={`trap-badge lvl-${resolvedTrapLevel.toLowerCase()}`}>
-            {resolvedTrapLevel}
-          </span>
-        </div>
-
-        <div className="trap-bar-outer">
-          <div
-            className={`trap-bar-fill ${style.bar}`}
-            style={{ width: `${probability}%` }}
-          />
-        </div>
-
-        <div className="trap-meta-row">
-          <span className="trap-type">{mergedTypeLabel}</span>
-          {show_affected_level ? (
-            <span className="trap-affected">{affectedLabel}</span>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="trap-details">
-        {key_range ? (
-          <div className="trap-row">
-            <div className="trap-key">Key Range</div>
-            <div className="trap-value">{key_range}</div>
-          </div>
-        ) : null}
-
-        {institutional_levels ? (
-          <div className="trap-row">
-            <div className="trap-key">Institutional Levels</div>
-            <div className="trap-value">{institutional_levels}</div>
-          </div>
-        ) : null}
-
-        {market_insight ? (
-          <div className="trap-row">
-            <div className="trap-key">Market Insight</div>
-            <div className="trap-value">{market_insight}</div>
-          </div>
-        ) : null}
-
-        {trapMessage ? (
-          <div className="trap-row">
-            <div className="trap-key">Trap Context</div>
-            <div className="trap-value">{trapMessage}</div>
-          </div>
-        ) : null}
-
-        {absorption_detected && absorption_message ? (
-          <div
-            className="trap-row trap-row-accent"
-            style={{ background: style.surface, borderColor: style.border }}
-          >
-            <div className="trap-key" style={{ color: style.accent }}>Absorption Alert</div>
-            <div className="trap-value">{absorption_message}</div>
-          </div>
-        ) : null}
-
-        {trap_reason ? (
-          <div className="trap-row">
-            <div className="trap-key">OI Imbalance Trap</div>
-            <div className="trap-value">{trap_reason}</div>
-          </div>
-        ) : null}
-
-        {support_reason ? (
-          <div className="trap-row">
-            <div className="trap-key">Support Strength</div>
-            <div className="trap-value">{support_reason}</div>
-          </div>
-        ) : null}
-
-        {showOiRow ? (
-          <div className="trap-row trap-row-accent">
-            <div className="trap-key">
-              <span className={`trap-oi-pill ${oiIsTrap ? "trap-oi-pill-trap" : oiIsConfirm ? "trap-oi-pill-confirm" : ""}`}>
-                {oiIsTrap ? "OI Trap Confirmed" : oiIsConfirm ? "OI Confirms Move" : "OI Matrix"}
-              </span>
-            </div>
-            <div className="trap-value">
-              {oi_trap_reason || "OI and price are not in a clear trap/confirm pattern."}
-              {oi_trap_confidence ? <div className="trap-oi-confidence">Confidence: {oi_trap_confidence}</div> : null}
-              {breach_level ? (
-                <div className="trap-oi-extra">
-                  Level {Number(breach_level).toLocaleString("en-IN")} · OI {breach_oi_confirming ? "confirming" : "diverging"}
-                  {oi_price_divergence ? " · divergence" : ""}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        <div
-          className="trap-action-box"
-          style={{ borderColor: style.border }}
-        >
-          <div className="trap-action-key">Suggested Action</div>
-          <div className="trap-action-value">{suggested_action}</div>
-        </div>
-      </div>
     </section>
   );
 }
+
+const institutional_levels_noop = undefined;

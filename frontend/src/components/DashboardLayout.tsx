@@ -374,25 +374,59 @@ export default function DashboardLayout({
             oi_scenario={trap.oi_scenario}
           />
           {alerts.length ? (
-            <div className="ia-trap-alerts">
-              <div className="ia-kpi-label">Alerts</div>
-              <div className="ia-trap-alert-list">
-                {alerts.slice(0, 4).map((item, idx) => (
-                  <span
-                    key={idx}
-                    className={`alert-item alert-item-${item.severity} ${item.type === "counter" ? "alert-item-counter" : ""}`}
-                  >
-                    {item.message}
-                    {item.type === "counter" ? " (Counter-trend)" : ""}
-                  </span>
-                ))}
-                {alerts.length > 4 ? (
-                  <span className="alert-item alert-item-info ia-alert-more">
-                    +{alerts.length - 4} more alerts
-                  </span>
-                ) : null}
-              </div>
-            </div>
+            (() => {
+              const sorted = [...alerts].sort((a, b) => {
+                const order = { high: 0, watch: 1, info: 2 } as const;
+                return order[a.severity] - order[b.severity];
+              });
+              const primary = sorted.filter((a) => a.type === "primary");
+              const counter = sorted.filter((a) => a.type === "counter");
+              const topPrimary = primary.slice(0, 3);
+              const topCounter = counter.slice(0, 2);
+              const remaining =
+                alerts.length - topPrimary.length - topCounter.length;
+              return (
+                <div className="trap-alerts-v2">
+                  <div className="trap-alerts-v2-header">
+                    <span className="trap-alerts-v2-label">Alerts</span>
+                    <span className="trap-alerts-v2-count">{alerts.length}</span>
+                  </div>
+
+                  {topPrimary.length > 0 ? (
+                    <div className="trap-alerts-v2-group">
+                      {topPrimary.map((item, idx) => (
+                        <div
+                          key={`p-${idx}`}
+                          className={`trap-alerts-v2-row trap-alerts-v2-row-${item.severity}`}
+                        >
+                          <span className="trap-alerts-v2-dot" />
+                          <span className="trap-alerts-v2-text">{item.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {topCounter.length > 0 ? (
+                    <div className="trap-alerts-v2-group">
+                      <div className="trap-alerts-v2-subhead">Counter-trend</div>
+                      {topCounter.map((item, idx) => (
+                        <div
+                          key={`c-${idx}`}
+                          className={`trap-alerts-v2-row trap-alerts-v2-row-counter trap-alerts-v2-row-${item.severity}`}
+                        >
+                          <span className="trap-alerts-v2-dot" />
+                          <span className="trap-alerts-v2-text">{item.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {remaining > 0 ? (
+                    <div className="trap-alerts-v2-more">+{remaining} more</div>
+                  ) : null}
+                </div>
+              );
+            })()
           ) : null}
         </div>
       </div>
