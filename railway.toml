@@ -1,8 +1,8 @@
 [build]
-buildCommand = "cd backend && pip install -r requirements.txt"
+buildCommand = "python -m pip install --upgrade pip && python -m pip install -r backend/requirements.txt"
 
 [deploy]
-startCommand = "cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1"
+startCommand = "python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --app-dir backend"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"
