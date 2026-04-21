@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import StructureBand from "./StructureBand";
+// StructureBand removed in band-consolidation patch.
 import StructureBandBar from "./StructureBandBar";
 
 type Props = {
@@ -159,11 +159,12 @@ const sanitizeReadinessExplainability = (value?: string | null) => {
   return text;
 };
 
-const probabilityLabel = (v?: number | null) => {
-  if (typeof v !== "number" || !Number.isFinite(v)) return null;
-  const pct = Math.max(0, Math.min(100, v));
-  const tone = pct >= 60 ? "High" : pct >= 35 ? "Mid" : "Low";
-  return `${Math.round(pct)}% ${tone}`;
+const roundTargetString = (v?: string | null): string | null => {
+  if (!v || v === "-") return null;
+  const cleaned = String(v).replace(/,/g, "");
+  const num = Number(cleaned);
+  if (!Number.isFinite(num)) return v;
+  return Math.round(num).toLocaleString("en-IN");
 };
 
 const formatPhaseBadge = ({
@@ -494,6 +495,11 @@ export default function StructuralPriceContextCard(props: Props) {
     distToSupport: summary.distS,
     distToResistance: summary.distR,
   });
+  const labelState = resolveSPCLabelState({
+    position: summary.posRaw,
+    distToSupport: summary.distS,
+    distToResistance: summary.distR,
+  });
 
   /* ── Determine proximity tone for center spot display ── */
   const spotToneClass = summary.brokenR
@@ -583,7 +589,25 @@ export default function StructuralPriceContextCard(props: Props) {
               maximumFractionDigits: 2,
             })}
           </span>
-          <span className="spc-spot-proximity">{proximitySummary}</span>
+          <span
+            className={`spc-spot-proximity spc-spot-proximity-${
+              labelState === "NEAR_RESISTANCE" || labelState === "ABOVE_RESISTANCE"
+                ? "resistance"
+                : labelState === "NEAR_SUPPORT" || labelState === "BELOW_SUPPORT"
+                  ? "support"
+                  : "neutral"
+            } ${
+              labelState === "ABOVE_RESISTANCE" || labelState === "BELOW_SUPPORT"
+                ? "spc-spot-proximity-breached"
+                : ""
+            }`}
+          >
+            {distToR !== null && (labelState === "NEAR_RESISTANCE" || labelState === "ABOVE_RESISTANCE")
+              ? `${Math.abs(distToR)} pts from resistance`
+              : distToS !== null && (labelState === "NEAR_SUPPORT" || labelState === "BELOW_SUPPORT")
+                ? `${Math.abs(distToS)} pts from support`
+                : proximitySummary}
+          </span>
         </div>
 
         {/* Resistance */}
@@ -622,34 +646,8 @@ export default function StructuralPriceContextCard(props: Props) {
       {/* ═══════════════════════════════════════════
           VISUAL BAND (StructureBand SVG track)
       ═══════════════════════════════════════════ */}
-      <div className="spc-band-block">
-        <StructureBand
-          spot={summary.spot}
-          support={summary.support}
-          resistance={summary.resistance}
-          previousSupport={summary.prevS ?? undefined}
-          previousResistance={summary.prevR ?? undefined}
-          supportBroken={summary.brokenS}
-          resistanceBroken={summary.brokenR}
-          isNearSupport={summary.nearS}
-          isNearResistance={summary.nearR}
-          materialBreachConfirmed={props.materialBreachConfirmed}
-          confirmationType={props.confirmationType}
-          trapProbability={props.trapProbability ?? undefined}
-          trapDirection={props.trapDirection}
-          trapAffectedLevel={
-            props.trapDirection === "downside"
-              ? summary.resistance
-              : props.trapDirection === "upside"
-                ? summary.support
-                : undefined
-          }
-          embedded
-          className="spc-embedded-band"
-        />
-        <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
-          <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
-        </div>
+      <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
+        <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
       </div>
 
       {/* ═══════════════════════════════════════════
@@ -667,6 +665,8 @@ export default function StructuralPriceContextCard(props: Props) {
         strikeGap={typeof props.strikeGap === "number" ? props.strikeGap : 50}
         strikes={props.strikes ?? undefined}
         chainGreeks={props.chainGreeks ?? undefined}
+        trapProbability={props.trapProbability ?? null}
+        materialBreachConfirmed={props.materialBreachConfirmed}
         embedded
       />
 
@@ -690,64 +690,118 @@ export default function StructuralPriceContextCard(props: Props) {
       {/* ═══════════════════════════════════════════
           FOOTER — probabilities + expected range
       ═══════════════════════════════════════════ */}
-      <div className="spc-footer-row">
-        <div className="spc-footer-prob spc-footer-prob-down">
-          {probabilityLabel(props.breakoutProbabilityDown) ? (
-            <>
-              <span className="spc-footer-prob-lbl">↓ Down</span>
-              <span className="spc-footer-prob-val">{probabilityLabel(props.breakoutProbabilityDown)}</span>
-            </>
-          ) : null}
-          {props.breakBelowPrimary && props.breakBelowPrimary !== "-" ? (
-            <span className="spc-footer-target">T↓ {props.breakBelowPrimary}</span>
-          ) : null}
-        </div>
+      {(() => {
+        const pDown = typeof props.breakoutProbabilityDown === "number" && Number.isFinite(props.breakoutProbabilityDown)
+          ? Math.max(0, Math.min(100, props.breakoutProbabilityDown))
+          : null;
+        const pUp = typeof props.breakoutProbabilityUp === "number" && Number.isFinite(props.breakoutProbabilityUp)
+          ? Math.max(0, Math.min(100, props.breakoutProbabilityUp))
+          : null;
+        const tUp = roundTargetString(props.breakAbovePrimary);
+        const tDown = roundTargetString(props.breakBelowPrimary);
+        const totalProb = (pDown ?? 0) + (pUp ?? 0);
+        const downShare = totalProb > 0 ? ((pDown ?? 0) / totalProb) * 100 : 50;
+        const upShare = 100 - downShare;
 
-        {rangeText ? (
-          <div className="spc-footer-range">
-            <span className="spc-footer-range-lbl">Expected Range</span>
-            <span className="spc-footer-range-val">{rangeText}</span>
+        let rangeStale = false;
+        let rangeStaleDirection: "above" | "below" | null = null;
+        if (typeof props.target1 === "number" && typeof props.target2 === "number" && summary) {
+          const lo = Math.min(props.target1, props.target2);
+          const hi = Math.max(props.target1, props.target2);
+          if (summary.spot > hi) {
+            rangeStale = true;
+            rangeStaleDirection = "above";
+          } else if (summary.spot < lo) {
+            rangeStale = true;
+            rangeStaleDirection = "below";
+          }
+        }
+
+        return (
+          <div className="spc-footer-v2">
+            {totalProb > 0 ? (
+              <div className="spc-footer-asym" aria-hidden="true">
+                <div className="spc-footer-asym-down" style={{ flexBasis: `${downShare}%` }} />
+                <div className="spc-footer-asym-up" style={{ flexBasis: `${upShare}%` }} />
+              </div>
+            ) : null}
+
+            <div className="spc-footer-row spc-footer-row-v2">
+              <div className="spc-footer-prob spc-footer-prob-down">
+                {pDown !== null ? (
+                  <>
+                    <span className="spc-footer-prob-lbl">Down</span>
+                    <span className="spc-footer-prob-val">{`${Math.round(pDown)}%`}</span>
+                  </>
+                ) : null}
+                {tDown ? <span className="spc-footer-target">T {tDown}</span> : null}
+              </div>
+
+              {rangeText ? (
+                <div className={`spc-footer-range${rangeStale ? " spc-footer-range-stale" : ""}`}>
+                  <span className="spc-footer-range-lbl">Expected Range</span>
+                  <span className="spc-footer-range-val">{rangeText}</span>
+                  {rangeStale ? (
+                    <span className="spc-footer-range-warn">
+                      spot {rangeStaleDirection === "above" ? "above" : "below"} range
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="spc-footer-prob spc-footer-prob-up">
+                {pUp !== null ? (
+                  <>
+                    <span className="spc-footer-prob-lbl">Up</span>
+                    <span className="spc-footer-prob-val">{`${Math.round(pUp)}%`}</span>
+                  </>
+                ) : null}
+                {tUp ? <span className="spc-footer-target">T {tUp}</span> : null}
+              </div>
+            </div>
           </div>
-        ) : null}
-
-        <div className="spc-footer-prob spc-footer-prob-up">
-          {probabilityLabel(props.breakoutProbabilityUp) ? (
-            <>
-              <span className="spc-footer-prob-lbl">↑ Up</span>
-              <span className="spc-footer-prob-val">{probabilityLabel(props.breakoutProbabilityUp)}</span>
-            </>
-          ) : null}
-          {props.breakAbovePrimary && props.breakAbovePrimary !== "-" ? (
-            <span className="spc-footer-target">T↑ {props.breakAbovePrimary}</span>
-          ) : null}
-        </div>
-      </div>
+        );
+      })()}
 
       {/* ═══════════════════════════════════════════
           TRIGGER STRIP
       ═══════════════════════════════════════════ */}
-      {(props.bullishTrigger || props.bearishTrigger || props.invalidation) ? (
-        <div className="spc-trigger-strip">
-          {props.bullishTrigger ? (
-            <div className="spc-trigger-row">
-              <span className="spc-trigger-label spc-trigger-label-bull">▲ Bullish trigger</span>
-              <span className="spc-trigger-value">{props.bullishTrigger}</span>
+      {(props.bullishTrigger || props.bearishTrigger || props.invalidation)
+        ? (() => {
+          const distToRAbs = distToR !== null ? Math.abs(distToR) : Infinity;
+          const distToSAbs = distToS !== null ? Math.abs(distToS) : Infinity;
+          const bullActive = distToRAbs <= 60 && !summary.brokenS;
+          const bearActive = distToSAbs <= 60 && !summary.brokenR;
+          return (
+            <div className="spc-trigger-strip spc-trigger-strip-v2">
+              {props.bullishTrigger ? (
+                <div className={`spc-trigger-row spc-trigger-row-v2${bullActive ? " spc-trigger-row-active" : ""}`}>
+                  <span className="spc-trigger-label spc-trigger-label-bull">Bullish</span>
+                  <span className="spc-trigger-value">
+                    {props.bullishTrigger}
+                    {bullActive ? <span className="spc-trigger-proximity"> {Math.round(distToRAbs)} pts</span> : null}
+                  </span>
+                </div>
+              ) : null}
+              {props.bearishTrigger ? (
+                <div className={`spc-trigger-row spc-trigger-row-v2${bearActive ? " spc-trigger-row-active" : ""}`}>
+                  <span className="spc-trigger-label spc-trigger-label-bear">Bearish</span>
+                  <span className="spc-trigger-value">
+                    {props.bearishTrigger}
+                    {bearActive ? <span className="spc-trigger-proximity"> {Math.round(distToSAbs)} pts</span> : null}
+                  </span>
+                </div>
+              ) : null}
+              {props.invalidation ? (
+                <div className="spc-trigger-row spc-trigger-row-v2">
+                  <span className="spc-trigger-label spc-trigger-label-inv">Invalidation</span>
+                  <span className="spc-trigger-value">{props.invalidation}</span>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-          {props.bearishTrigger ? (
-            <div className="spc-trigger-row">
-              <span className="spc-trigger-label spc-trigger-label-bear">▼ Bearish trigger</span>
-              <span className="spc-trigger-value">{props.bearishTrigger}</span>
-            </div>
-          ) : null}
-          {props.invalidation ? (
-            <div className="spc-trigger-row">
-              <span className="spc-trigger-label">✕ Invalidation</span>
-              <span className="spc-trigger-value">{props.invalidation}</span>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+          );
+        })()
+        : null}
     </div>
   );
 }

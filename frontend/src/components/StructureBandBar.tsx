@@ -28,8 +28,9 @@ type StructureBandBarProps = {
   strikeGap?: number;
   strikes?: StrikePoint[] | null;
   chainGreeks?: ChainRow[] | null;
-  /** When true, hides the top stats row and zone-chip row (used when parent already shows them) */
   embedded?: boolean;
+  trapProbability?: number | null;
+  materialBreachConfirmed?: boolean;
 };
 
 const fmt = (value?: number | null) =>
@@ -39,6 +40,40 @@ const fmt = (value?: number | null) =>
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
+
+const resolveMagnetSub = (
+  magnet: number | null | undefined,
+  spot: number,
+  strikeGap: number,
+  magnetCharacter: string | null | undefined,
+): string | null => {
+  if (typeof magnet !== "number" || !Number.isFinite(magnet)) return null;
+  const delta = Math.round(magnet - spot);
+  if (delta === 0) return "at spot";
+  const arrow = delta < 0 ? "down" : "up";
+  const pts = Math.abs(delta);
+  const where = delta < 0 ? "below" : "above";
+  const gapMultiple = strikeGap > 0 ? pts / strikeGap : 0;
+  const characterText = magnetCharacter
+    ? ` · ${String(magnetCharacter).replace(/[_-]+/g, " ").toLowerCase()}`
+    : "";
+  if (gapMultiple < 0.75) return `${arrow} ${pts} pts ${where}${characterText}`;
+  return `${arrow} ${pts} pts ${where}${characterText}`;
+};
+
+const resolveMaxPainSub = (
+  maxPain: number | null | undefined,
+  magnet: number | null | undefined,
+  spot: number,
+): string | null => {
+  if (typeof maxPain !== "number" || !Number.isFinite(maxPain)) return null;
+  if (typeof magnet === "number" && Math.round(magnet) === Math.round(maxPain))
+    return "= magnet";
+  const delta = Math.round(maxPain - spot);
+  if (delta === 0) return "at spot";
+  const arrow = delta < 0 ? "down" : "up";
+  return `${arrow} ${Math.abs(delta)} pts`;
+};
 
 export default function StructureBandBar({
   spot,
@@ -56,7 +91,11 @@ export default function StructureBandBar({
   strikes,
   chainGreeks,
   embedded = false,
+  trapProbability = null,
+  materialBreachConfirmed = false,
 }: StructureBandBarProps) {
+  void chainGreeks;
+
   const bandWidth = resistance - support;
   if (!Number.isFinite(bandWidth) || bandWidth <= 0) return null;
 
@@ -84,6 +123,33 @@ export default function StructureBandBar({
     ? clamp(((spot - resistance) / bandWidth) * 100, 2, 10)
     : 0;
 
+  const rubberBandActive = aboveR || belowS;
+  const brokenLevel = aboveR ? resistance : belowS ? support : null;
+  const tensionPx =
+    rubberBandActive && brokenLevel !== null ? Math.abs(spot - brokenLevel) : 0;
+  const tensionScale = Math.max(50, strikeGap * 2);
+  const tension = clamp(tensionPx / tensionScale, 0, 1);
+
+  const rubberSnapAnchorPct = rubberBandActive
+    ? aboveR
+      ? 72
+      : 28
+    : null;
+
+  const rubberSpotPct = rubberBandActive
+    ? aboveR
+      ? 72 + tension * 26
+      : 28 - tension * 26
+    : spotPct;
+
+  const rejectionRisk =
+    rubberBandActive &&
+    tension >= 0.65 &&
+    (typeof trapProbability === "number" && trapProbability >= 55);
+
+  const haloOpacity = rubberBandActive ? 0.4 + tension * 0.5 : 0.25;
+  const markerWidthPx = rubberBandActive ? 1 + Math.round(tension * 2) : 1;
+
   const normalizedMagnetDirection =
     String(magnetPullDirection || "").trim().toLowerCase();
   const normalizedPrevMagnetDirection =
@@ -92,26 +158,6 @@ export default function StructureBandBar({
     Boolean(normalizedPrevMagnetDirection) &&
     Boolean(normalizedMagnetDirection) &&
     normalizedPrevMagnetDirection !== normalizedMagnetDirection;
-
-  const magnetArrow =
-    typeof magnet !== "number"
-      ? ""
-      : magnet > spot
-        ? "▲"
-        : magnet < spot
-          ? "▼"
-          : "◉";
-
-  const magnetArrowDisplay =
-    typeof magnet !== "number"
-      ? ""
-      : normalizedMagnetDirection === "up"
-        ? "â–²"
-        : normalizedMagnetDirection === "down"
-          ? "â–¼"
-          : normalizedMagnetDirection === "at"
-            ? "â—‰"
-            : magnetArrow;
 
   const visibleStrikes = (strikes || [])
     .filter(
@@ -137,30 +183,6 @@ export default function StructureBandBar({
   );
   const barHeight = (value: number) =>
     maxOi > 0 ? Math.max(2, Math.round((Math.max(value, 0) / maxOi) * 16)) : 2;
-
-  const oiRatioMap = useMemo(() => {
-    const map: Record<number, {
-      ratio: number;
-      label: string;
-      side: "ce" | "pe" | "neutral";
-    }> = {};
-    for (const row of visibleStrikes) {
-      if (!row || !Number.isFinite(row.strike)) continue;
-      const ce = Math.max(0, Number(row.oi_ce) || 0);
-      const pe = Math.max(0, Number(row.oi_pe) || 0);
-      if (ce <= 0 || pe <= 0) continue;
-
-      const supportSide = row.strike <= spot;
-      const ratio = supportSide ? pe / ce : ce / pe;
-      const label = supportSide
-        ? `ΔPE/ΔCE ${ratio.toFixed(2)}x`
-        : `ΔCE/ΔPE ${ratio.toFixed(2)}x`;
-      const side = supportSide ? "pe" : "ce";
-      map[row.strike] = { ratio, label, side };
-    }
-    return map;
-  }, [chainGreeks, spot]);
-  void oiRatioMap;
 
   const strikeOiDefenseMap = useMemo(() => {
     const map: Record<number, {
@@ -233,7 +255,6 @@ export default function StructureBandBar({
 
   return (
     <div className={`sbb-wrap${embedded ? " sbb-wrap-embedded" : " sbb-panel"}`}>
-      {/* ── Stats row: shown only in standalone mode ── */}
       {!embedded && (
         <div className="sbb-stats">
           <div className="sbb-stat sbb-stat-left">
@@ -256,7 +277,6 @@ export default function StructureBandBar({
         </div>
       )}
 
-      {/* ── Zone chips: shown only in standalone mode ── */}
       {!embedded && (
         <div className="sbb-zone-row">
           <span className="sbb-zone-chip sbb-zone-chip-support">Defended support</span>
@@ -265,120 +285,167 @@ export default function StructureBandBar({
         </div>
       )}
 
-      {/* ── Track ── */}
-      <div className="band-section">
+      <div className={`band-section${rubberBandActive ? " band-section-rubber" : ""}${rejectionRisk ? " band-section-rejection" : ""}`}>
         <div className="band-outer sbb-track-wrap">
           <div className="band-track sbb-track" />
-        {typeof peWall === "number" && peWall >= support ? (
+          {rubberBandActive && brokenLevel !== null && rubberSnapAnchorPct !== null ? (
+            <>
+              <div
+                className={`sbb-tether sbb-tether-${aboveR ? "right" : "left"}`}
+                style={{
+                  left: aboveR ? `${rubberSnapAnchorPct}%` : `${rubberSpotPct}%`,
+                  right: aboveR ? `${100 - rubberSpotPct}%` : undefined,
+                  width: aboveR ? undefined : `${rubberSnapAnchorPct - rubberSpotPct}%`,
+                  opacity: 0.3 + tension * 0.55,
+                }}
+                aria-hidden="true"
+              />
+              <div
+                className={`sbb-snap-marker sbb-snap-marker-${aboveR ? "right" : "left"}`}
+                style={{
+                  left: `${rubberSnapAnchorPct}%`,
+                  width: `${markerWidthPx}px`,
+                  boxShadow: tension >= 0.6 ? "0 0 8px rgba(239,83,80,0.6)" : undefined,
+                }}
+                aria-hidden="true"
+              />
+              <div
+                className={`sbb-snap-label sbb-snap-label-${aboveR ? "right" : "left"}`}
+                style={{ left: `${rubberSnapAnchorPct}%` }}
+              >
+                SNAP
+              </div>
+            </>
+          ) : null}
+          {typeof peWall === "number" && peWall >= support ? (
+            <div
+              className="sbb-fill sbb-fill-support"
+              style={{
+                left: `${supportPct}%`,
+                width: `${Math.max(0, (peWallPct ?? supportPct) - supportPct)}%`,
+              }}
+            />
+          ) : null}
+          {typeof ceWall === "number" && ceWall <= resistance ? (
+            <div
+              className="sbb-fill sbb-fill-resistance"
+              style={{
+                left: `${ceWallPct ?? resistancePct}%`,
+                width: `${Math.max(0, resistancePct - (ceWallPct ?? resistancePct))}%`,
+              }}
+            />
+          ) : null}
+          {aboveR ? (
+            <div
+              className="sbb-overext-right"
+              style={{ left: `${resistancePct}%`, width: `${overRFillWidthPct}%` }}
+            />
+          ) : null}
           <div
-            className="sbb-fill sbb-fill-support"
+            className="sbb-marker"
+            style={{ left: `${supportPct}%`, top: "10px", height: "24px", background: "#26a69a" }}
+          />
+          <div
+            className="sbb-marker"
+            style={{ left: `${resistancePct}%`, top: "10px", height: "24px", background: "#ef5350" }}
+          />
+          {prevResistancePct !== null ? (
+            <div
+              className="sbb-marker"
+              style={{ left: `${prevResistancePct}%`, top: "11px", height: "22px", background: "rgba(156,163,175,0.8)" }}
+            />
+          ) : null}
+          {peWallPct !== null ? (
+            <div
+              className="sbb-marker"
+              style={{ left: `${peWallPct}%`, top: "13px", height: "18px", background: "rgba(38,166,154,0.65)" }}
+            />
+          ) : null}
+          {ceWallPct !== null ? (
+            <div
+              className="sbb-marker"
+              style={{ left: `${ceWallPct}%`, top: "13px", height: "18px", background: "rgba(239,83,80,0.65)" }}
+            />
+          ) : null}
+          {magnetPct !== null ? (
+            <div
+              className="sbb-marker"
+              style={{ left: `${magnetPct}%`, top: "8px", height: "28px", background: "#f59e0b" }}
+            />
+          ) : null}
+          {maxPainPct !== null ? (
+            <div
+              className="sbb-marker"
+              style={{ left: `${maxPainPct}%`, top: "12px", height: "20px", borderLeft: "2px dashed #a78bfa" }}
+            />
+          ) : null}
+          <div
+            className="sbb-marker"
+            style={{ left: `${spotPct}%`, top: "8px", height: "28px", background: "rgba(226,232,240,0.95)" }}
+          />
+          <div
+            className={`sbb-dot ${nearR || aboveR ? "sbb-dot-near-r" : nearS || belowS ? "sbb-dot-near-s" : ""}`}
             style={{
-              left: `${supportPct}%`,
-              width: `${Math.max(0, (peWallPct ?? supportPct) - supportPct)}%`,
+              left: `${rubberBandActive ? rubberSpotPct : spotPct}%`,
+              boxShadow: rubberBandActive
+                ? `0 0 ${10 + tension * 14}px rgba(${aboveR ? "239,83,80" : "38,166,154"},${haloOpacity})${rejectionRisk ? ", 0 0 0 4px rgba(239,83,80,0.25), 0 0 0 8px rgba(239,83,80,0.12)" : ""}`
+                : undefined,
             }}
           />
-        ) : null}
-        {typeof ceWall === "number" && ceWall <= resistance ? (
-          <div
-            className="sbb-fill sbb-fill-resistance"
-            style={{
-              left: `${ceWallPct ?? resistancePct}%`,
-              width: `${Math.max(0, resistancePct - (ceWallPct ?? resistancePct))}%`,
-            }}
-          />
-        ) : null}
-        {aboveR ? (
-          <div
-            className="sbb-overext-right"
-            style={{ left: `${resistancePct}%`, width: `${overRFillWidthPct}%` }}
-          />
-        ) : null}
-        <div
-          className="sbb-marker"
-          style={{ left: `${supportPct}%`, top: "10px", height: "24px", background: "#26a69a" }}
-        />
-        <div
-          className="sbb-marker"
-          style={{ left: `${resistancePct}%`, top: "10px", height: "24px", background: "#ef5350" }}
-        />
-        {prevResistancePct !== null ? (
-          <div
-            className="sbb-marker"
-            style={{ left: `${prevResistancePct}%`, top: "11px", height: "22px", background: "rgba(156,163,175,0.8)" }}
-          />
-        ) : null}
-        {peWallPct !== null ? (
-          <div
-            className="sbb-marker"
-            style={{ left: `${peWallPct}%`, top: "13px", height: "18px", background: "rgba(38,166,154,0.65)" }}
-          />
-        ) : null}
-        {ceWallPct !== null ? (
-          <div
-            className="sbb-marker"
-            style={{ left: `${ceWallPct}%`, top: "13px", height: "18px", background: "rgba(239,83,80,0.65)" }}
-          />
-        ) : null}
-        {magnetPct !== null ? (
-          <div
-            className="sbb-marker"
-            style={{ left: `${magnetPct}%`, top: "8px", height: "28px", background: "#f59e0b" }}
-          />
-        ) : null}
-        {maxPainPct !== null ? (
-          <div
-            className="sbb-marker"
-            style={{ left: `${maxPainPct}%`, top: "12px", height: "20px", borderLeft: "2px dashed #a78bfa" }}
-          />
-        ) : null}
-        <div
-          className="sbb-marker"
-          style={{ left: `${spotPct}%`, top: "8px", height: "28px", background: "rgba(226,232,240,0.95)" }}
-        />
-        <div
-          className={`sbb-dot ${nearR || aboveR ? "sbb-dot-near-r" : nearS || belowS ? "sbb-dot-near-s" : ""}`}
-          style={{ left: `${spotPct}%` }}
-        />
+          {rubberBandActive ? (
+            <div className={`sbb-rubber-status${rejectionRisk ? " sbb-rubber-status-risk" : ""}`}>
+              <span className="sbb-rubber-state">
+                {aboveR ? "Above R" : "Below S"}
+              </span>
+              <span className="sbb-rubber-tension">
+                tension {tension.toFixed(2)}
+              </span>
+              {materialBreachConfirmed ? (
+                <span className="sbb-rubber-badge sbb-rubber-badge-accept">Acceptance</span>
+              ) : rejectionRisk ? (
+                <span className="sbb-rubber-badge sbb-rubber-badge-reject">Rejection risk</span>
+              ) : null}
+            </div>
+          ) : null}
 
-        <div className="sbb-lbl-above" style={topLabelStyle(supportPct, "#26a69a")}>
-          S {fmt(support)}
-        </div>
-        <div className="sbb-lbl-above" style={topLabelStyle(resistancePct, "#ef5350")}>
-          R {fmt(resistance)}
-        </div>
-        {prevResistancePct !== null ? (
-          <div className="sbb-lbl-above" style={topLabelStyle(prevResistancePct, "#9ca3af")}>
-            Prev R {fmt(previousResistance)}
+          <div className="sbb-lbl-above" style={topLabelStyle(supportPct, "#26a69a")}>
+            S {fmt(support)}
           </div>
-        ) : null}
-        {magnetPct !== null ? (
-          <div
-            className="sbb-lbl-below"
-            style={belowLabelStyle(
-              magnetPct,
-              "#f59e0b",
-              magnetMaxPainClose && maxPainPct !== null && magnetPct >= maxPainPct ? 1 : 0,
-            )}
-          >
-            magnet
+          <div className="sbb-lbl-above" style={topLabelStyle(resistancePct, "#ef5350")}>
+            R {fmt(resistance)}
           </div>
-        ) : null}
-        {maxPainPct !== null ? (
-          <div
-            className="sbb-lbl-below"
-            style={belowLabelStyle(
-              maxPainPct,
-              "#a78bfa",
-              magnetMaxPainClose && magnetPct !== null && maxPainPct > magnetPct ? 1 : 0,
-            )}
-          >
-            max pain
-          </div>
-        ) : null}
+          {prevResistancePct !== null ? (
+            <div className="sbb-lbl-above" style={topLabelStyle(prevResistancePct, "#9ca3af")}>
+              Prev R {fmt(previousResistance)}
+            </div>
+          ) : null}
+          {magnetPct !== null ? (
+            <div
+              className="sbb-lbl-below"
+              style={belowLabelStyle(
+                magnetPct,
+                "#f59e0b",
+                magnetMaxPainClose && maxPainPct !== null && magnetPct >= maxPainPct ? 1 : 0,
+              )}
+            >
+              magnet
+            </div>
+          ) : null}
+          {maxPainPct !== null ? (
+            <div
+              className="sbb-lbl-below"
+              style={belowLabelStyle(
+                maxPainPct,
+                "#a78bfa",
+                magnetMaxPainClose && magnetPct !== null && maxPainPct > magnetPct ? 1 : 0,
+              )}
+            >
+              max pain
+            </div>
+          ) : null}
         </div>
       </div>
 
-      {/* ── Metrics strip ── */}
       <div className="sbb-metrics-strip">
         <div className="sbb-metric-item sbb-metric-magnet">
           <span className="sbb-metric-lbl">
@@ -388,51 +455,78 @@ export default function StructureBandBar({
                 className="sbb-magnet-flip"
                 title={`Magnet flipped from ${normalizedPrevMagnetDirection} to ${normalizedMagnetDirection}`}
               >
-                â†• flip
+                ↕ flip
               </span>
             ) : null}
           </span>
           <span className="sbb-metric-val sbb-stat-magnet">
-            {typeof magnet === "number" ? `${fmt(magnet)} ${magnetArrowDisplay}` : "-"}
+            {typeof magnet === "number" ? fmt(magnet) : "-"}
           </span>
-          {magnetCharacter ? (
-            <span className="sbb-metric-sub">
-              {String(magnetCharacter).replace(/[_-]+/g, " ")}
-            </span>
-          ) : null}
+          {(() => {
+            const sub = resolveMagnetSub(magnet, spot, strikeGap, magnetCharacter);
+            return sub ? <span className="sbb-metric-sub">{sub}</span> : null;
+          })()}
         </div>
         <div className="sbb-metric-item sbb-metric-maxpain">
           <span className="sbb-metric-lbl">Max pain</span>
           <span className="sbb-metric-val sbb-stat-maxpain">
             {typeof maxPain === "number" ? fmt(maxPain) : "-"}
           </span>
+          {(() => {
+            const sub = resolveMaxPainSub(maxPain, magnet, spot);
+            return sub ? <span className="sbb-metric-sub">{sub}</span> : null;
+          })()}
         </div>
         <div className="sbb-metric-item">
           <span className="sbb-metric-lbl">Band</span>
           <span className="sbb-metric-val">{fmt(bandWidth)} pts</span>
+          <span className="sbb-metric-sub">S to R width</span>
         </div>
         <div className={`sbb-metric-item sbb-metric-support ${metricToSupportTone}`}>
           <span className="sbb-metric-lbl">To support</span>
           <span className="sbb-metric-val">
             {belowS ? `-${fmt(Math.abs(distToS))} pts` : `${fmt(distToS)} pts`}
           </span>
+          {bandWidth > 0 && !belowS ? (
+            <span className="sbb-metric-sub">
+              {Math.round((distToS / bandWidth) * 100)}% of band
+            </span>
+          ) : null}
         </div>
-        <div className={`sbb-metric-item sbb-metric-resistance ${metricToResistanceTone}`}>
+        <div
+          className={`sbb-metric-item sbb-metric-resistance ${metricToResistanceTone}${
+            !aboveR && !belowS && bandWidth > 0 && distToR / bandWidth < 0.2
+              ? " sbb-metric-edge"
+              : ""
+          }`}
+        >
           <span className="sbb-metric-lbl">To resist</span>
           <span className="sbb-metric-val">
             {aboveR ? `+${fmt(Math.abs(distToR))} pts` : `${fmt(distToR)} pts`}
           </span>
+          {bandWidth > 0 && !aboveR ? (
+            <span className="sbb-metric-sub">
+              {distToR / bandWidth < 0.2
+                ? `${Math.round((distToR / bandWidth) * 100)}% - edge zone`
+                : `${Math.round((distToR / bandWidth) * 100)}% of band`}
+            </span>
+          ) : null}
         </div>
       </div>
 
-      {/* ── Strike OI mini-bars ── */}
       {visibleStrikes.length > 0 ? (
-        <div className="sbb-strikes">
+        <div className="sbb-strikes sbb-strikes-v2">
           {visibleStrikes.map((s) => {
             const d = strikeOiDefenseMap[s.strike];
+            const isSpot = nearestStrike === s.strike;
+            const hasWallTag =
+              s.tag === "pe_wall" || s.tag === "ce_wall" || s.tag === "magnet" || s.tag === "maxpain";
             return (
-              <div key={s.strike} className="sbb-strike-cell">
-                <span className={`sbb-strike-num ${nearestStrike === s.strike ? "sbb-strike-num-active" : ""}`}>
+              <div
+                key={s.strike}
+                className={`sbb-strike-cell${isSpot ? " sbb-strike-cell-spot" : ""}${hasWallTag ? ` sbb-strike-cell-${s.tag}` : ""}`}
+              >
+                <span className={`sbb-strike-num ${isSpot ? "sbb-strike-num-active" : ""}`}>
                   {fmt(s.strike)}
                 </span>
                 <div className="sbb-minibars">
@@ -445,43 +539,18 @@ export default function StructureBandBar({
                     <span className="sb-strike-delta-label">{d.label}</span>
                   </div>
                 ) : null}
-                {s.tag === "pe_wall" ? <span className="sbb-tag sbb-tag-pe">PE wall</span> : null}
-                {s.tag === "ce_wall" ? <span className="sbb-tag sbb-tag-ce">CE wall</span> : null}
-                {s.tag === "magnet" ? <span className="sbb-tag sbb-tag-magnet">magnet</span> : null}
-                {s.tag === "maxpain" ? <span className="sbb-tag sbb-tag-maxpain">max pain</span> : null}
+                {isSpot && !hasWallTag ? <span className="sbb-tag sbb-tag-spot">SPOT</span> : null}
+                {s.tag === "pe_wall" ? <span className="sbb-tag sbb-tag-pe sbb-tag-v2">PE WALL</span> : null}
+                {s.tag === "ce_wall" ? <span className="sbb-tag sbb-tag-ce sbb-tag-v2">CE WALL</span> : null}
+                {s.tag === "magnet" ? <span className="sbb-tag sbb-tag-magnet sbb-tag-v2">MAGNET</span> : null}
+                {s.tag === "maxpain" ? <span className="sbb-tag sbb-tag-maxpain sbb-tag-v2">MAX PAIN</span> : null}
               </div>
             );
           })}
         </div>
       ) : null}
 
-      {/* ── Legend ── */}
-      <div className="sbb-legend">
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-line" style={{ background: "#26a69a" }} />
-          PE wall / S
-        </span>
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-line" style={{ background: "#ef5350" }} />
-          CE wall / R
-        </span>
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-line" style={{ background: "#f59e0b" }} />
-          Magnet
-        </span>
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-dash" />
-          Max pain
-        </span>
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-line" style={{ background: "#94a3b8" }} />
-          Prev R
-        </span>
-        <span className="sbb-leg-item">
-          <span className="sbb-leg-dot" style={{ background: "rgba(226,232,240,0.95)" }} />
-          Spot
-        </span>
-      </div>
+      {/* legend removed in v2 - wall tags self-document */}
     </div>
   );
 }
