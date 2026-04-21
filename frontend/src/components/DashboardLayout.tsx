@@ -1,9 +1,6 @@
-import type { ReactNode } from "react";
 import DecisionBanner from "./DecisionBanner";
-import KeyLevelsCard from "./KeyLevelsCard";
 import TrapCard from "./TrapCard";
 import StructuralPriceContextCard from "./StructuralPriceContextCard";
-import TradePlanCard from "./TradePlanCard";
 import StrikeGuidanceCard from "./StrikeGuidanceCard";
 import EntryTargetCard from "./EntryTargetCard";
 
@@ -30,28 +27,6 @@ type DashboardLayoutProps = {
     decisionConfidence?: number | null;
     supportTransitionBadge?: boolean;
     resistanceTransitionBadge?: boolean;
-  };
-  decisionLayer: ReactNode;
-  keyLevels: {
-    support: string;
-    resistance: string;
-    supportDefenseRatio?: number | null;
-    resistanceDefenseRatio?: number | null;
-    majorSupport?: string;
-    majorResistance?: string;
-    breakoutTrigger?: string;
-    breakAbovePrimary: string;
-    breakAboveExtended: string;
-    breakBelowPrimary: string;
-    breakBelowExtended: string;
-    trapRisk: string;
-    watchNote: string;
-    breakoutProbability?: {
-      upside?: number;
-      downside?: number;
-      upside_state?: string;
-      downside_state?: string;
-    };
   };
   structure: {
     spotPrice: number | null;
@@ -124,20 +99,6 @@ type DashboardLayoutProps = {
       ce?: { delta?: number; ltp?: number };
       pe?: { delta?: number; ltp?: number };
     }> | null;
-  };
-  tradePlan: {
-    bias: string;
-    regime?: string;
-    plan: string;
-    trapRisk: string;
-    executionMode?: string;
-    entryZone?: string;
-    stopZone?: string;
-    targetZone?: string;
-    deltaGuidance?: string;
-    bullishTrigger?: string;
-    bearishTrigger?: string;
-    invalidation?: string;
   };
   trap: {
     trap_probability: number;
@@ -245,10 +206,7 @@ type DashboardLayoutProps = {
 
 export default function DashboardLayout({
   decision,
-  decisionLayer,
-  keyLevels,
   structure,
-  tradePlan,
   trap,
   alerts,
   strikeGuidance,
@@ -256,57 +214,7 @@ export default function DashboardLayout({
 }: DashboardLayoutProps) {
   return (
     <div className="ia-dashboard-layout">
-      <div className="ia-layout-decision">
-        <DecisionBanner
-          action={decision.action}
-          direction={decision.direction}
-          explanation={decision.explanation}
-          sessionPhase={decision.sessionPhase}
-          bias={decision.bias}
-          readinessScore={decision.readinessScore}
-          readinessState={decision.readinessState}
-          readinessExplainability={decision.readinessExplainability}
-          pressureState={decision.pressureState}
-          regime={decision.regime}
-          detailSummary={decision.detailSummary}
-          detailInsight={decision.detailInsight}
-          detailWalls={decision.detailWalls}
-          support={decision.support}
-          resistance={decision.resistance}
-          blockingReason={decision.blockingReason}
-          trapPct={decision.trapPct}
-          winningEngine={decision.winningEngine}
-          decisionConfidence={decision.decisionConfidence}
-          supportTransitionBadge={decision.supportTransitionBadge}
-          resistanceTransitionBadge={decision.resistanceTransitionBadge}
-        />
-      </div>
-
-      <div className="ia-layout-decision-layer">{false && decisionLayer}</div>
-
-      <div className="ia-layout-levels">
-        <div className="ia-card-stack">
-          {false && <KeyLevelsCard
-            support={keyLevels.support}
-            resistance={keyLevels.resistance}
-            supportDefenseRatio={keyLevels.supportDefenseRatio}
-            resistanceDefenseRatio={keyLevels.resistanceDefenseRatio}
-            majorSupport={keyLevels.majorSupport}
-            majorResistance={keyLevels.majorResistance}
-            breakoutTrigger={keyLevels.breakoutTrigger}
-            breakAbovePrimary={keyLevels.breakAbovePrimary}
-            breakAboveExtended={keyLevels.breakAboveExtended}
-            breakBelowPrimary={keyLevels.breakBelowPrimary}
-            breakBelowExtended={keyLevels.breakBelowExtended}
-            trapRisk={keyLevels.trapRisk}
-            watchNote={keyLevels.watchNote}
-            breakoutProbability={keyLevels.breakoutProbability}
-          />}
-        </div>
-      </div>
-
-
-      <div className="ia-layout-structure">
+      <div className={`ia-layout-structure${!entryTarget ? " ia-structure-full" : ""}`}>
         <div className="ia-card ia-structure-card">
           <StructuralPriceContextCard
             spotPrice={structure.spotPrice}
@@ -380,22 +288,6 @@ export default function DashboardLayout({
         </div>
       ) : null}
 
-      <div className="ia-layout-playbook">
-        {false && <TradePlanCard
-          bias={tradePlan.bias}
-          regime={tradePlan.regime}
-          plan={tradePlan.plan}
-          trapRisk={tradePlan.trapRisk}
-          executionMode={tradePlan.executionMode}
-          entryZone={tradePlan.entryZone}
-          stopZone={tradePlan.stopZone}
-          targetZone={tradePlan.targetZone}
-          deltaGuidance={tradePlan.deltaGuidance}
-          bullishTrigger={tradePlan.bullishTrigger}
-          bearishTrigger={tradePlan.bearishTrigger}
-          invalidation={tradePlan.invalidation}
-        />}
-      </div>
       {strikeGuidance ? (
         <div className="ia-layout-strike-guidance">
           <StrikeGuidanceCard
@@ -423,6 +315,32 @@ export default function DashboardLayout({
           />
         </div>
       ) : null}
+
+      <div className="ia-layout-decision">
+        <DecisionBanner
+          action={decision.action}
+          direction={decision.direction}
+          explanation={decision.explanation}
+          sessionPhase={decision.sessionPhase}
+          bias={decision.bias}
+          readinessScore={decision.readinessScore}
+          readinessState={decision.readinessState}
+          readinessExplainability={decision.readinessExplainability}
+          pressureState={decision.pressureState}
+          regime={decision.regime}
+          detailSummary={decision.detailSummary}
+          detailInsight={decision.detailInsight}
+          detailWalls={decision.detailWalls}
+          support={decision.support}
+          resistance={decision.resistance}
+          blockingReason={decision.blockingReason}
+          trapPct={decision.trapPct}
+          winningEngine={decision.winningEngine}
+          decisionConfidence={decision.decisionConfidence}
+          supportTransitionBadge={decision.supportTransitionBadge}
+          resistanceTransitionBadge={decision.resistanceTransitionBadge}
+        />
+      </div>
 
       <div className="ia-layout-trap">
         <div className="ia-card">

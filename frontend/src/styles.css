@@ -2797,36 +2797,38 @@ tbody tr:hover {
   margin-top: 16px;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(340px, 1.4fr) minmax(220px, 0.7fr) minmax(300px, 1.02fr);
+  grid-template-columns: minmax(340px, 2fr) minmax(280px, 1fr);
   grid-template-areas:
-    "structure structure setup"
-    "strike strike trap"
-    "decision levels playbook"
-    "decisionlayer levels playbook"
-    "decisionlayer levels playbook";
+    "structure setup"
+    "strike    trap"
+    "decision  decision";
 }
 
 .ia-layout-decision { grid-area: decision; }
-.ia-layout-decision-layer { grid-area: decisionlayer; }
-.ia-layout-levels { grid-area: levels; }
 .ia-layout-trap { grid-area: trap; min-width: 0; align-self: start; }
 .ia-layout-structure { grid-area: structure; min-width: 0; }
 .ia-layout-setup { grid-area: setup; min-width: 0; align-self: start; }
-.ia-layout-playbook { grid-area: playbook; }
-.ia-layout-strike-guidance { grid-area: strike; }
+.ia-layout-strike-guidance { grid-area: strike; align-self: start; }
 .ia-decision-entry-target { margin-top: 10px; }
+
+/* When setup is absent, structure expands to fill both columns */
+.ia-layout-structure:only-of-type,
+.ia-layout-structure.ia-structure-full {
+  grid-column: 1 / -1;
+}
 
 @media (max-width: 1100px) {
   .ia-dashboard-layout {
-    grid-template-columns: 1.2fr 1fr;
+    grid-template-columns: 1fr;
     grid-template-areas:
-      "structure structure"
-      "setup setup"
-      "trap trap"
-      "strike strike"
-      "decision decision"
-      "levels playbook"
-      "decisionlayer playbook";
+      "structure"
+      "setup"
+      "strike"
+      "trap"
+      "decision";
+  }
+  .ia-layout-structure.ia-structure-full {
+    grid-column: 1;
   }
 }
 
@@ -3073,7 +3075,7 @@ tbody tr:hover {
 
 .ia-layout-setup .ia-card,
 .ia-layout-trap .ia-card {
-  min-height: 248px;
+  min-height: 0;
 }
 
 .ia-layout-levels .ia-card-title,
@@ -6028,13 +6030,13 @@ tbody tr:hover {
     grid-template-columns: 1fr;
     grid-template-areas:
       "structure"
+      "setup"
       "strike"
       "trap"
-      "decision"
-      "levels"
-      "decisionlayer"
-      "playbook"
-      ;
+      "decision";
+  }
+  .ia-layout-structure.ia-structure-full {
+    grid-column: 1;
   }
 }
 
@@ -6973,7 +6975,7 @@ input[type="number"] {
   margin: 6px 0;
 }
 .sgc-wait-block {
-  padding: 10px 0;
+  padding: 4px 0 2px;
 }
 
 .sgc-wait-reason {
@@ -6986,6 +6988,17 @@ input[type="number"] {
   font-size: 11px;
   color: #d97706;
   font-style: italic;
+}
+
+.sgc-wait-compact {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ia-text-secondary);
+  line-height: 1.35;
+}
+
+.sgc-wait-compact-trap {
+  color: #f59e0b;
 }
 
 .sgc-trade-strip {
@@ -7561,5 +7574,294 @@ input[type="number"] {
 @media (max-width: 860px) {
   .et-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --- strike_guidance_v2 appended --- */
+
+/* ──────────────────────────────────────────────────────────────
+   Strike Guidance Card — v2 redesign (hierarchy-first layout)
+   Append to styles.css. Coexists with existing .sgc-* rules.
+   ────────────────────────────────────────────────────────────── */
+
+.sgc-v2 {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+/* Tier 1: Header row */
+.sgc-v2-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sgc-v2-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  color: var(--ia-text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-expiry-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ia-text-secondary);
+}
+
+.sgc-v2-theta-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.sgc-v2-theta-severe {
+  background: rgba(239, 83, 80, 0.14);
+  color: #ef5350;
+  border: 1px solid rgba(239, 83, 80, 0.3);
+}
+
+.sgc-v2-theta-elevated {
+  background: rgba(240, 180, 41, 0.14);
+  color: #f0b429;
+  border: 1px solid rgba(240, 180, 41, 0.3);
+}
+
+/* State line — dot + big label */
+.sgc-v2-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.sgc-v2-state-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sgc-v2-state-label {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.sgc-v2-state-wait .sgc-v2-state-dot {
+  background: #f0b429;
+  box-shadow: 0 0 8px rgba(240, 180, 41, 0.45);
+}
+
+.sgc-v2-state-wait .sgc-v2-state-label {
+  color: #f0b429;
+}
+
+.sgc-v2-state-buy .sgc-v2-state-dot {
+  background: #26a69a;
+  box-shadow: 0 0 8px rgba(38, 166, 154, 0.45);
+}
+
+.sgc-v2-state-buy .sgc-v2-state-label {
+  color: #26a69a;
+}
+
+.sgc-v2-state-sell .sgc-v2-state-dot {
+  background: #ef5350;
+  box-shadow: 0 0 8px rgba(239, 83, 80, 0.45);
+}
+
+.sgc-v2-state-sell .sgc-v2-state-label {
+  color: #ef5350;
+}
+
+.sgc-v2-subtitle {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ia-text-secondary);
+  margin-top: -4px;
+}
+
+/* Tier 2: Unlock block — the actionable centerpiece for WAIT state */
+.sgc-v2-unlock {
+  background: rgba(240, 180, 41, 0.06);
+  border-left: 3px solid #f0b429;
+  border-radius: 0 8px 8px 0;
+  padding: 10px 14px;
+}
+
+.sgc-v2-unlock-label {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: #f0b429;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.sgc-v2-unlock-body {
+  font-size: 13px;
+  color: var(--ia-text-primary);
+  line-height: 1.45;
+}
+
+/* Tier 2 alt: Execution block — for active signals */
+.sgc-v2-exec {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+.sgc-v2-exec-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ia-text-primary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-exec-context {
+  font-size: 11px;
+  color: var(--ia-text-tertiary);
+  margin-top: -4px;
+}
+
+.sgc-v2-exec-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.sgc-v2-exec-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+}
+
+.sgc-v2-exec-key {
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sgc-v2-exec-val {
+  font-size: 12px;
+  color: var(--ia-text-primary);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+/* Tier 3: Metric chips — 4-up grid */
+.sgc-v2-chips {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sgc-v2-chip {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sgc-v2-chip-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ia-text-tertiary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-chip-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ia-text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sgc-v2-chip-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--ia-text-tertiary);
+  margin-left: 2px;
+  text-transform: lowercase;
+}
+
+.sgc-v2-iv-low {
+  color: #26a69a;
+}
+
+.sgc-v2-iv-mid {
+  color: #f0b429;
+}
+
+.sgc-v2-iv-high {
+  color: #ef5350;
+}
+
+.sgc-v2-chip-maxpain {
+  color: #a78bfa;
+}
+
+/* Footer: execution context — muted single row */
+.sgc-v2-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--ia-border);
+  font-size: 11px;
+  color: var(--ia-text-tertiary);
+}
+
+.sgc-v2-footer span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.sgc-v2-footer span + span::before {
+  content: "·";
+  margin-right: 14px;
+  margin-left: -10px;
+  color: var(--ia-text-tertiary);
+  opacity: 0.6;
+}
+
+/* Responsive collapse for narrower columns */
+@media (max-width: 860px) {
+  .sgc-v2-chips {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sgc-v2-exec-grid {
+    grid-template-columns: 1fr;
   }
 }

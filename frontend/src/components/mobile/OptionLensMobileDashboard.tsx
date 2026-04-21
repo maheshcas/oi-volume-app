@@ -31,7 +31,7 @@ export default function OptionLensMobileDashboard({
     <div className="mx-auto flex h-dvh max-w-[480px] flex-col overflow-hidden bg-[#080f18] text-slate-100">
       <MobileHeader liveStatus={data.liveStatus} updatedAt={data.updatedAt} />
 
-      <div className="flex-1 overflow-y-auto px-0 pb-20 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex-1 overflow-y-auto px-0 pb-[68px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <SpotHeroCard
           symbol={data.symbol}
           expiry={data.expiry}

@@ -7,6 +7,7 @@ import logging.handlers
 import os
 import re
 import time
+from copy import deepcopy
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -4334,6 +4335,64 @@ def _build_v2_intelligence(
     trap["show_affected_level"] = bool(str(trap.get("trap_type") or "").strip() and trap_affected_level is not None)
 
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    # Stale-resistance trap discount:
+    # If price has stayed above resistance for a sustained period and SR did not
+    # transition, reduce resistance-side false-break trap inflation.
+    support_transition_now = _is_support_transition_active(
+        support_reference_state.get("support_shift_cycle", 0)
+    )
+    prev_cycle_resistance_for_stale = _safe_float(
+        (previous_state or {}).get("current_resistance")
+        or (previous_state or {}).get("resistance_level")
+        or (((previous_state or {}).get("levels") or {}).get("resistance", {}) or {}).get("immediate")
+    )
+    current_cycle_resistance_for_stale = _safe_float(support_reference_state.get("current_resistance"))
+    resistance_transition_now = (
+        prev_cycle_resistance_for_stale is not None
+        and current_cycle_resistance_for_stale is not None
+        and abs(prev_cycle_resistance_for_stale - current_cycle_resistance_for_stale) > 1e-6
+    )
+    sr_transition_now = bool(support_transition_now or resistance_transition_now)
+    above_resistance_now = (
+        _safe_float(spot) is not None
+        and _safe_float(resistance_level) is not None
+        and float(spot or 0.0) > float(resistance_level or 0.0)
+    )
+    prev_seconds_above_resistance = int((previous_state or {}).get("seconds_above_resistance", 0) or 0)
+    seconds_above_resistance = (
+        prev_seconds_above_resistance + REFRESH_SECONDS if above_resistance_now else 0
+    )
+    stale_break_window_met = bool(
+        above_resistance_now and (seconds_above_resistance >= 20 * 60) and (not sr_transition_now)
+    )
+    trap_type_text = str(trap.get("trap_type") or "").strip().lower()
+    resistance_false_break_context = bool(
+        ("false-break" in trap_type_text)
+        or ("breakout failure" in trap_type_text)
+        or (str(trap.get("trap_direction") or "").strip().lower() == "upside")
+    )
+    stale_resistance_discount_applied = False
+    stale_resistance_discount_points = 0.0
+    if stale_break_window_met and resistance_false_break_context:
+        stale_resistance_discount_points = 12.0
+        trap_probability = max(5.0, trap_probability - stale_resistance_discount_points)
+        trap["trap_probability_pct"] = int(round(trap_probability))
+        trap["trap_probability"] = int(round(trap_probability))
+        trap["trap_risk"] = int(round(trap_probability))
+        trap["trap_type"] = "Breakout In Progress"
+        trap["trap_direction"] = ""
+        trap["trap_message"] = (
+            f"Spot has held above resistance {int(float(resistance_level or 0.0))} for 20+ minutes without SR transition; "
+            "discounting stale false-break risk."
+        )
+        trap["trap_affected_level"] = resistance_level
+        trap["show_affected_level"] = True
+        stale_resistance_discount_applied = True
+    trap["stale_resistance_discount_applied"] = bool(stale_resistance_discount_applied)
+    trap["stale_resistance_discount_points"] = float(stale_resistance_discount_points)
+    trap["seconds_above_resistance"] = int(seconds_above_resistance)
+    trap["stale_break_window_met"] = bool(stale_break_window_met)
+
     oi_buildup_type = str(oi.get("buildup_type") or "")
     pinning_active = oi_buildup_type.strip().lower() == "two-sided writing"
     pinning_trap_modifier_points = PINNING_TRAP_MODIFIER_POINTS if pinning_active else 0.0
@@ -5706,9 +5765,16 @@ def _build_v2_intelligence(
         "trap_state": trap.get("trap_state"),
         "trap_type": trap.get("trap_type"),
         "trap_hysteresis_applied": bool(trap.get("trap_hysteresis_applied", False)),
+        "directional_signal": strike_intelligence.get("directional_signal"),
+        "directional_bias": strike_intelligence.get("directional_bias"),
+        "directional_rr": strike_intelligence.get("directional_rr"),
         "range_trap_cap_applied": range_trap_cap_applied,
         "range_trap_cap_reason": range_trap_cap_reason,
         "range_trap_cap_stage": range_trap_cap_stage,
+        "stale_resistance_discount_applied": bool(stale_resistance_discount_applied),
+        "stale_resistance_discount_points": round(float(stale_resistance_discount_points), 2),
+        "seconds_above_resistance": int(seconds_above_resistance),
+        "stale_break_window_met": bool(stale_break_window_met),
         "oi_imbalance_trap_probability": int(oi_imbalance_trap.get("trap_probability", 0) or 0),
         "oi_imbalance_trap_reason": oi_imbalance_trap.get("trap_reason"),
         "oi_imbalance_support_strength": int(oi_imbalance_trap.get("support_strength", 0) or 0),
@@ -6217,6 +6283,10 @@ def _build_v2_intelligence(
             "range_trap_cap_applied": range_trap_cap_applied,
             "range_trap_cap_reason": range_trap_cap_reason,
             "range_trap_cap_stage": range_trap_cap_stage,
+            "stale_resistance_discount_applied": bool(stale_resistance_discount_applied),
+            "stale_resistance_discount_points": round(float(stale_resistance_discount_points), 2),
+            "seconds_above_resistance": int(seconds_above_resistance),
+            "stale_break_window_met": bool(stale_break_window_met),
             "trade_readiness": decision.get("trade_readiness"),
             "readiness_state": decision.get("readiness_state"),
             "readiness_active": bool(decision.get("readiness_active", False)),

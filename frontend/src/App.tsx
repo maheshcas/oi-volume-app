@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactECharts from "echarts-for-react";
 import MarketBanner from "./components/MarketBanner";
-import DecisionPanel from "./components/DecisionPanel";
 import StructuralDiagnostics from "./components/StructuralDiagnostics";
 import EngineHealthPanel, { type EngineHealthResponse } from "./components/EngineHealthPanel";
 import DashboardLayout from "./components/DashboardLayout";
@@ -999,11 +998,6 @@ export default function App() {
   const [showStructural, setShowStructural] = useState(false);
   const [showDailyPerformance, setShowDailyPerformance] = useState(false);
   const [showAdvancedAnalysis, setShowAdvancedAnalysis] = useState(false);
-  const [stableBadges, setStableBadges] = useState({
-    structure: "-",
-    pressure: "Stable",
-    trap: "Low",
-  });
   const [pressureSmoothed, setPressureSmoothed] = useState(50);
   const [readinessDisplay, setReadinessDisplay] = useState<{
     score: number;
@@ -1021,12 +1015,6 @@ export default function App() {
     state: "None" | "Support Broken" | "Resistance Broken";
     count: number;
   }>({ state: "None", count: 0 });
-  const pendingBadgeRef = useRef({
-    structure: { value: "-", count: 0 },
-    pressure: { value: "Stable", count: 0 },
-    trap: { value: "Low", count: 0 },
-  });
-
   const parseExpiryDate = (label: string): Date | null => {
     const text = String(label || "").trim();
     const m = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
@@ -2107,12 +2095,6 @@ export default function App() {
     intelligence?.market_state?.trap_risk ??
     intradayEngine.trapScore;
   const displayReversalRisk = intelligence?.market_state?.reversal_risk ?? scalpingEngine.reversalRisk;
-  const adaptiveMode = intelligence?.market_state?.adaptive_mode ?? "Base";
-  const adaptiveWeights = intelligence?.market_state?.adaptive_weights;
-  const displayAlignmentCount = Math.max(
-    0,
-    Math.min(4, Math.round(((intelligence?.market_state?.alignment_ratio ?? (displayConfidence / 100)) || 0) * 4))
-  );
   const displayVolatilityState = intelligence?.market_state?.volatility_state ?? "Stable";
   const displayFreshnessState = intelligence?.market_state?.freshness_state;
   const isExpiryMode = intelligence?.signals?.expiry_adaptive?.expiry_mode ?? false;
@@ -2326,8 +2308,6 @@ export default function App() {
   const displaySessionPhase = intelligence?.market_state?.session_phase ?? intradayEngine.sessionPhase;
   const regimeExplanation = explainRegime(displayRegime);
   const structureScore = Number(intelligence?.market_state?.market_structure_score ?? 0);
-  const structureState = intelligence?.market_state?.structure_state ?? "-";
-  const driftState = intelligence?.market_state?.drift ?? "Stable";
   const projectionState =
     intelligence?.market_state?.projection ??
     effectiveTargetProjection.status ??
@@ -2417,7 +2397,6 @@ export default function App() {
   );
   const readinessCandidate: "WAIT" | "CAUTION" | "READY" =
     readinessRaw < 40 ? "WAIT" : readinessRaw < 65 ? "CAUTION" : "READY";
-  const playbookPlan = playbook?.strategy ?? displayTradePlan.strategy_type;
   const bandWidthPts =
     typeof displaySupport === "number" && typeof displayResistance === "number"
       ? Math.max(50, Math.abs(displayResistance - displaySupport))
@@ -2426,17 +2405,9 @@ export default function App() {
     typeof displayTarget1 === "number" && typeof displayResistance === "number" && displayTarget1 > displayResistance
       ? displayTarget1
       : null;
-  const liveAboveExtended =
-    typeof displayTarget2 === "number" && typeof displayResistance === "number" && displayTarget2 > displayResistance
-      ? displayTarget2
-      : null;
   const liveBelowPrimary =
     typeof displayTarget1 === "number" && typeof displaySupport === "number" && displayTarget1 < displaySupport
       ? displayTarget1
-      : null;
-  const liveBelowExtended =
-    typeof displayTarget2 === "number" && typeof displaySupport === "number" && displayTarget2 < displaySupport
-      ? displayTarget2
       : null;
   const projectedMovePts =
     typeof liveAbovePrimary === "number" && typeof displayResistance === "number"
@@ -2447,9 +2418,7 @@ export default function App() {
       ? Number(apiTargetProjection?.projectedMove)
       : bandWidthPts * 0.8;
   const derivedBreakAbovePrimary = Number(displayResistance ?? 0) + projectedMovePts * 0.6;
-  const derivedBreakAboveExtended = Number(displayResistance ?? 0) + projectedMovePts * 1.0;
   const derivedBreakBelowPrimary = Number(displaySupport ?? 0) - projectedMovePts * 0.6;
-  const derivedBreakBelowExtended = Number(displaySupport ?? 0) - projectedMovePts * 1.0;
   const strikeStep = useMemo(() => {
     const strikes = displayRows
       .map((row) => Number(row.strike))
@@ -2463,17 +2432,10 @@ export default function App() {
     }
     return Number.isFinite(minStep) ? minStep : 100;
   }, [displayRows]);
-  const breakoutTrigger =
-    typeof displayResistance === "number" ? displayResistance + strikeStep : null;
-
   const canonicalBreakAbovePrimary =
     typeof liveAbovePrimary === "number" ? liveAbovePrimary : derivedBreakAbovePrimary;
-  const canonicalBreakAboveExtended =
-    typeof liveAboveExtended === "number" ? liveAboveExtended : derivedBreakAboveExtended;
   const canonicalBreakBelowPrimary =
     typeof liveBelowPrimary === "number" ? liveBelowPrimary : derivedBreakBelowPrimary;
-  const canonicalBreakBelowExtended =
-    typeof liveBelowExtended === "number" ? liveBelowExtended : derivedBreakBelowExtended;
   const trapSuggestedAction =
     displayTrapLevel === "High"
       ? trapDirection === "downside"
@@ -2595,39 +2557,6 @@ export default function App() {
     </div>
   );
 
-  const decisionLayerContent = (
-    <DecisionPanel
-      bias={displayBias}
-      regime={displayRegime}
-      bullProbability={displayBullProbability}
-      bearProbability={displayBearProbability}
-      confidence={displayConfidence}
-      trapRisk={displayTrapRiskPct}
-      reversalRisk={displayReversalRisk}
-      summaryLine={displayDecisionText}
-      absorptionDetected={Boolean(intelligence?.market_state?.absorption_detected)}
-      absorptionLevel={intelligence?.market_state?.absorption_level ?? null}
-      alignmentCount={displayAlignmentCount}
-      marketingMode={MARKETING_MODE}
-      adaptiveMode={adaptiveMode}
-      adaptiveOiWeight={adaptiveWeights?.oi}
-      adaptiveBreakoutWeight={adaptiveWeights?.breakout}
-      marketStructureScore={structureScore}
-      structureState={structureState}
-      structureBadge={stableBadges.structure}
-      pressureBadge={stableBadges.pressure}
-      trapBadge={stableBadges.trap}
-      projection={projectionState}
-      conflictState={conflictState}
-      pressureScore={pressureSmoothed}
-      pressureStateLabel={pressureStateLabel}
-      directionalPressureLabel={directionalPressureLabel}
-      readinessState={displayReadinessState}
-      readinessScore={displayReadinessScore}
-      institutionalStructure={institutionalStructure}
-      marketInsight={marketInsights}
-    />
-  );
   const decisionLayerInsight =
     marketInsights.find((item) => item && item.trim().length > 0) ?? "No fresh structural insight.";
   const decisionLayerWalls = [
@@ -2668,27 +2597,6 @@ export default function App() {
       ) : null}
     </>
   );
-
-  useEffect(() => {
-    const updateIfStable = (
-      key: "structure" | "pressure" | "trap",
-      nextValue: string
-    ) => {
-      const pending = pendingBadgeRef.current[key];
-      if (pending.value !== nextValue) {
-        pendingBadgeRef.current[key] = { value: nextValue, count: 1 };
-        return;
-      }
-      pending.count += 1;
-      if (pending.count >= 2) {
-        setStableBadges((prev) => (prev[key] === nextValue ? prev : { ...prev, [key]: nextValue }));
-      }
-    };
-
-    updateIfStable("structure", structureState || "-");
-    updateIfStable("pressure", driftState || "Stable");
-    updateIfStable("trap", String(displayTrapLevel || "Low"));
-  }, [structureState, driftState, displayTrapLevel]);
 
   useEffect(() => {
     setPressureSmoothed((prev) =>
@@ -2914,15 +2822,6 @@ export default function App() {
     }
     return displayDecisionText;
   })();
-  const keyWatchNote =
-    displayTrapLevel === "High"
-      ? "Watch for rejection near resistance before any breakout trade."
-      : decisionDirection === "Bearish"
-        ? "Watch resistance for rejection or clean breakdown confirmation."
-        : decisionDirection === "Bullish"
-          ? "Watch support for continuation and hold above nearby structure."
-          : "Wait for confirmation at either range edge before acting.";
-
   const visibleTabs: Array<
     "overview" | "charts" | "heatmap" | "writers" | "basis" | "option-chain"
   > = MARKETING_MODE
@@ -3594,22 +3493,6 @@ export default function App() {
             supportTransitionBadge: decisionSupportTransitionBadge,
             resistanceTransitionBadge: decisionResistanceTransitionBadge,
           }}
-          keyLevels={{
-            support: formatNumber(displaySupport),
-            resistance: formatNumber(displayResistance),
-            supportDefenseRatio,
-            resistanceDefenseRatio,
-            majorSupport: formatNumber(intelligence?.levels?.support?.major ?? null),
-            majorResistance: formatNumber(intelligence?.levels?.resistance?.major ?? null),
-            breakoutTrigger: formatNumber(breakoutTrigger),
-            breakAbovePrimary: formatNumber(canonicalBreakAbovePrimary),
-            breakAboveExtended: formatNumber(canonicalBreakAboveExtended),
-            breakBelowPrimary: formatNumber(canonicalBreakBelowPrimary),
-            breakBelowExtended: formatNumber(canonicalBreakBelowExtended),
-            trapRisk: `${displayTrapLevel} (${Math.round(Number(displayTrapRiskPct ?? 0))}%)`,
-            watchNote: keyWatchNote,
-            breakoutProbability: intelligence?.market_state?.breakout_probability,
-          }}
           structure={{
             spotPrice: typeof spotValue === "number" ? spotValue : null,
             dayOpen: dayOpenValue,
@@ -3751,24 +3634,6 @@ export default function App() {
               })
               .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
           }}
-          tradePlan={{
-            bias: String(playbook?.bias ?? displayPrimaryBias),
-            regime: displayRegime,
-            plan: String(playbookPlan),
-            trapRisk: String(displayTrapLevel),
-            executionMode: String(displayTradePlan.execution_mode),
-            entryZone: String(displayTradePlan.entry_zone),
-            stopZone: String(displayTradePlan.stop_zone),
-            targetZone: String(displayTradePlan.target_zone),
-            deltaGuidance: String(displayTradePlan.delta_strike_guidance),
-            bullishTrigger: typeof displayResistance === "number"
-              ? `Acceptance above active resistance ${formatNumber(displayResistance)}.`
-              : undefined,
-            bearishTrigger: typeof displaySupport === "number"
-              ? `Break below active support ${formatNumber(displaySupport)}.`
-              : undefined,
-          }}
-          decisionLayer={decisionLayerContent}
           trap={{
             trap_probability: displayTrapRiskPct,
             trap_level: displayTrapLevel,

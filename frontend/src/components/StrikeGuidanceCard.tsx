@@ -80,16 +80,9 @@ function parsePremiumFromRrNote(note?: string | null): number | null {
   return Number(m[1]);
 }
 
-function getUnlockHint(reason: string, trap: number): string {
-  if (trap >= 55) return `Trap risk ${trap}% - wait for it to drop below 55%`;
-  if (reason === "RANGE_CONFLICT") return "Wait for spot to approach S or R edge";
-  if (reason === "HIGH_TRAP_NO_BREACH_CAP") return "Need trap to ease and level breach";
-  return "Conditions not fully aligned - wait for next cycle";
-}
-
 function signalBadgeText(signal?: string, action?: string, option?: string) {
   const code = String(signal || "").trim().toUpperCase();
-  if (!code || code === "WAIT_NO_SETUP") return "WAIT - No Clean Setup";
+  if (!code || code === "WAIT_NO_SETUP") return "Wait · no clean setup";
   const side = String(action || "").trim().toUpperCase();
   const opt = String(option || "").trim().toUpperCase();
   const pretty = code
@@ -98,7 +91,22 @@ function signalBadgeText(signal?: string, action?: string, option?: string) {
     .replace(/_/g, " ")
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
-  return `${side || "WAIT"}${opt ? ` ${opt}` : ""} - ${pretty}`;
+  return `${side || "Wait"}${opt ? ` ${opt}` : ""} · ${pretty}`;
+}
+
+function thetaSeverity(days_to_expiry: number, theta_warning: boolean): {
+  label: string;
+  tone: "severe" | "elevated" | "normal";
+} {
+  if (days_to_expiry <= 0) return { label: "Severe", tone: "severe" };
+  if (days_to_expiry <= 1 || theta_warning) return { label: "Elevated", tone: "elevated" };
+  return { label: "Normal", tone: "normal" };
+}
+
+function ivTone(rank: number): "low" | "mid" | "high" {
+  if (rank <= 30) return "low";
+  if (rank >= 70) return "high";
+  return "mid";
 }
 
 const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
@@ -120,7 +128,6 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
   entry_zone,
   stop_zone,
   target_zone,
-  blocking_reason,
   trap_probability,
   strikeIntelligence,
 }) => {
@@ -149,10 +156,6 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
   const filteredSuggestedStrikes = suggested_strikes.filter(
     (s) => Number(s.ltp || 0) >= 1 && Math.abs(Number(s.delta || 0)) >= 0.01,
   );
-  const actionableReason =
-    isWaitSignal && clampedIvRank !== null && clampedIvRank <= 30
-      ? `IV low (${clampedIvRank.toFixed(0)}%) - premium cheap · No clean setup${trapPct !== null ? ` · Trap ${trapPct}%` : ""}`
-      : displayReason;
   const rrPremium = parsePremiumFromRrNote(risk_reward_note);
   const hasLivePremiumStrike = suggested_strikes.some((s) => Number(s.ltp || 0) >= 1);
   const showRrNote =
@@ -167,146 +170,169 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
       : 0;
   void selling_favoured;
 
+  // Build the one-line subtitle that explains the state
+  const stateSubtitle = (() => {
+    if (isWaitSignal) {
+      const parts: string[] = [];
+      if (avoid_buying_premium) parts.push("Premium buying locked");
+      if (trapProbabilityValue >= 55) parts.push(`Trap ${trapProbabilityValue}% blocking signals`);
+      if (displayReason) parts.push(displayReason);
+      else if (parts.length === 0) parts.push("No directional conviction yet");
+      return parts.join(" · ");
+    }
+    return displayReason || "Signal active · review zones below";
+  })();
+
+  const theta = thetaSeverity(days_to_expiry, theta_warning);
+  const ivRankTone = clampedIvRank !== null ? ivTone(clampedIvRank) : null;
+
   return (
-    <div className="ia-card strike-guidance-card">
-      <div className="ia-card-title-row">
-        <h3 className="ia-card-title">Strike Guidance</h3>
-        <span className={`sgc-action-badge ${isBuySignal ? "sgc-signal-buy" : isWaitSignal ? "sgc-signal-wait" : "sgc-signal-sell"}`}>
-          {actionBadgeLabel}
-        </span>
-      </div>
-      {actionableReason ? <div className="sgc-entry-reason">{actionableReason}</div> : null}
-
-      {clampedIvRank !== null && !ivHistoryBuilding && (
-        <div className="sgc-iv-row">
-          <div className="sgc-iv-bar-wrap">
-            <div
-              className="sgc-iv-bar"
-              style={{
-                width: `${Math.max(2, Math.min(100, clampedIvRank))}%`,
-                background: clampedIvRank >= 70 ? "#ef4444" : clampedIvRank <= 30 ? "#22c55e" : "#f59e0b",
-              }}
-            />
-          </div>
-          <span className="sgc-iv-label">IV Rank {clampedIvRank.toFixed(0)}%</span>
-          <span className="sgc-iv-context">{iv_context}</span>
-        </div>
-      )}
-      {ivHistoryBuilding && (
-        <div className="sgc-iv-row sgc-iv-row-building">
-          <span className="sgc-iv-label">IV Rank -</span>
-          <span className="sgc-iv-context">Building...</span>
-        </div>
-      )}
-
-      <div className="sgc-meta-row">
-        <span className={`sgc-expiry ${theta_warning ? "sgc-expiry-warn" : ""}`}>
+    <div className="ia-card strike-guidance-card sgc-v2">
+      {/* Tier 1: Header — muted label + state */}
+      <div className="sgc-v2-header">
+        <div className="sgc-v2-eyebrow">Strike Guidance</div>
+        <div className="sgc-v2-expiry-meta">
           {days_to_expiry}d to expiry
-          {theta_warning ? " - theta risk" : ""}
-        </span>
-      </div>
-      <div className="sgc-meta-row sgc-meta-grid">
-        <span className="sgc-meta-chip">Layer: {execution_layer || "-"}</span>
-        <span className="sgc-meta-chip">
-          Size: {position_size_label || "-"}
-          {typeof position_size_fraction === "number" ? ` (${Math.round(position_size_fraction * 100)}%)` : ""}
-        </span>
-      </div>
-      {avoid_buying_premium ? (
-        <div className="sgc-lock-indicator">Premium buy lock active</div>
-      ) : null}
-      {waitSignal ? (
-        <div className="sgc-wait-block">
-          <div className="sgc-wait-reason">{displayReason}</div>
-          {blocking_reason ? (
-            <div className="sgc-wait-unlock">
-              Unlock: {getUnlockHint(String(blocking_reason), trapProbabilityValue)}
-            </div>
+          {theta.tone !== "normal" ? (
+            <span className={`sgc-v2-theta-tag sgc-v2-theta-${theta.tone}`}>Theta {theta.label}</span>
           ) : null}
         </div>
-      ) : (entry_zone || stop_zone || target_zone || delta_guidance || execution_layer || strikeIntelligence?.stop_description || strikeIntelligence?.target_description) ? (
-        <div className="sgc-trade-strip">
-          <div className="sgc-trade-strip-title">{executionTitle}</div>
-          <div className="sgc-trade-strip-context">{executionContext}</div>
-          <div className="sgc-trade-grid">
-            <div className="sgc-trade-item">
-              <span className="sgc-trade-label">Delta</span>
-              <span className="sgc-trade-value">
+      </div>
+
+      <div className={`sgc-v2-state sgc-v2-state-${isBuySignal ? "buy" : isSellSignal ? "sell" : "wait"}`}>
+        <span className="sgc-v2-state-dot" />
+        <span className="sgc-v2-state-label">{actionBadgeLabel}</span>
+      </div>
+
+      <div className="sgc-v2-subtitle">{stateSubtitle}</div>
+
+      {/* Tier 2: Unlock block (WAIT state) OR Execution block (active signal) */}
+      {waitSignal ? (
+        <div className="sgc-v2-unlock">
+          <div className="sgc-v2-unlock-label">Unlock when</div>
+          <div className="sgc-v2-unlock-body">
+            {trapProbabilityValue >= 55
+              ? `Trap drops below 55% · currently ${trapProbabilityValue}%`
+              : "Spot approaches support or resistance edge"}
+          </div>
+        </div>
+      ) : (entry_zone || stop_zone || target_zone || delta_guidance || strikeIntelligence?.stop_description || strikeIntelligence?.target_description) ? (
+        <div className="sgc-v2-exec">
+          <div className="sgc-v2-exec-label">{executionTitle}</div>
+          <div className="sgc-v2-exec-context">{executionContext}</div>
+          <div className="sgc-v2-exec-grid">
+            <div className="sgc-v2-exec-item">
+              <span className="sgc-v2-exec-key">Delta</span>
+              <span className="sgc-v2-exec-val">
                 {strikeIntelligence?.delta_target_min != null && strikeIntelligence?.delta_target_max != null
-                  ? `Delta ${Number(strikeIntelligence.delta_target_min).toFixed(2)}-${Number(strikeIntelligence.delta_target_max).toFixed(2)} ${isBuySignal ? "(directional)" : isSellSignal ? "(OTM)" : ""}`
+                  ? `${Number(strikeIntelligence.delta_target_min).toFixed(2)}–${Number(strikeIntelligence.delta_target_max).toFixed(2)} ${isBuySignal ? "(directional)" : isSellSignal ? "(OTM)" : ""}`
                   : compactValue(delta_guidance, execution_layer || "-")}
               </span>
             </div>
-            <div className="sgc-trade-item">
-              <span className="sgc-trade-label">Stop</span>
-              <span className="sgc-trade-value">{compactValue(strikeIntelligence?.stop_description, compactValue(stop_zone))}</span>
+            <div className="sgc-v2-exec-item">
+              <span className="sgc-v2-exec-key">Stop</span>
+              <span className="sgc-v2-exec-val">{compactValue(strikeIntelligence?.stop_description, compactValue(stop_zone))}</span>
             </div>
-            <div className="sgc-trade-item">
-              <span className="sgc-trade-label">Target</span>
-              <span className="sgc-trade-value">{compactValue(strikeIntelligence?.target_description, compactValue(target_zone))}</span>
+            <div className="sgc-v2-exec-item">
+              <span className="sgc-v2-exec-key">Target</span>
+              <span className="sgc-v2-exec-val">{compactValue(strikeIntelligence?.target_description, compactValue(target_zone))}</span>
             </div>
           </div>
         </div>
       ) : null}
 
+      {/* Tier 3: Metric chips — context at a glance */}
+      <div className="sgc-v2-chips">
+        <div className="sgc-v2-chip">
+          <span className="sgc-v2-chip-label">IV Rank</span>
+          <span className={`sgc-v2-chip-value ${ivRankTone ? `sgc-v2-iv-${ivRankTone}` : ""}`}>
+            {clampedIvRank !== null && !ivHistoryBuilding
+              ? `${clampedIvRank.toFixed(0)}%`
+              : ivHistoryBuilding
+                ? "Building"
+                : "-"}
+          </span>
+        </div>
+        <div className="sgc-v2-chip">
+          <span className="sgc-v2-chip-label">Max Pain</span>
+          <span className="sgc-v2-chip-value sgc-v2-chip-maxpain">
+            {strikeIntelligence?.max_pain_strike != null
+              ? formatNumber(strikeIntelligence.max_pain_strike)
+              : "-"}
+            {strikeIntelligence?.max_pain_pull ? (
+              <span className="sgc-v2-chip-sub">{` ${strikeIntelligence.max_pain_pull}`}</span>
+            ) : null}
+          </span>
+        </div>
+        <div className="sgc-v2-chip">
+          <span className="sgc-v2-chip-label">Straddle</span>
+          <span className="sgc-v2-chip-value">
+            ₹{strikeIntelligence?.atm_straddle_premium != null ? Number(strikeIntelligence.atm_straddle_premium).toFixed(1) : "-"}
+            {strikeIntelligence?.straddle_trend ? (
+              <span className="sgc-v2-chip-sub">{` ${strikeIntelligence.straddle_trend}`}</span>
+            ) : null}
+          </span>
+        </div>
+        <div className="sgc-v2-chip">
+          <span className="sgc-v2-chip-label">IV Skew</span>
+          <span className="sgc-v2-chip-value">{compactValue(strikeIntelligence?.iv_skew, "-")}</span>
+        </div>
+      </div>
+
+      {/* Tier 4: Suggested strikes table (active signal only) */}
       {!waitSignal &&
         suggested_strikes.some((s) => Number(s.ltp || 0) >= 1) &&
         filteredSuggestedStrikes.length > 0 && (
-        <div className="sgc-strikes">
-          <div className="sgc-strikes-header">
-            <span>Strike</span>
-            <span>Delta</span>
-            <span>Gamma</span>
-            <span>Theta/day</span>
-            <span>LTP</span>
-          </div>
-          {filteredSuggestedStrikes.map((s, idx) => (
-            <div
-              key={s.strike}
-              className={`sgc-strike-row${idx === Math.floor(filteredSuggestedStrikes.length / 2) ? " sgc-strike-best" : ""}`}
-            >
-              <span className="sgc-strike-val">
-                {formatNumber(s.strike)} {option_type}
-                <span className="sgc-moneyness">
-                  {s.moneyness}
-                  {s.distance_from_spot != null
-                    ? ` • ${Math.round(s.distance_from_spot)}pts`
-                    : ""}
-                </span>
-                <span className="sgc-delta-pnl">
-                  <span className="sgc-delta-pnl-up">+1pt -&gt; +₹{s.delta?.toFixed(2)}</span>
-                  &nbsp;|&nbsp;
-                  <span className="sgc-delta-pnl-dn">-1pt -&gt; -₹{s.delta?.toFixed(2)}</span>
-                </span>
-              </span>
-              <span>{s.delta.toFixed(2)}</span>
-              <span>{Number.isFinite(s.gamma) ? s.gamma.toFixed(4) : "-"}</span>
-              <span className="sgc-theta">₹{Math.abs(s.theta).toFixed(1)}</span>
-              <span>₹{s.ltp.toFixed(1)}</span>
+          <div className="sgc-strikes">
+            <div className="sgc-strikes-header">
+              <span>Strike</span>
+              <span>Delta</span>
+              <span>Gamma</span>
+              <span>Theta/day</span>
+              <span>LTP</span>
             </div>
-          ))}
-        </div>
-      )}
+            {filteredSuggestedStrikes.map((s, idx) => (
+              <div
+                key={s.strike}
+                className={`sgc-strike-row${idx === Math.floor(filteredSuggestedStrikes.length / 2) ? " sgc-strike-best" : ""}`}
+              >
+                <span className="sgc-strike-val">
+                  {formatNumber(s.strike)} {option_type}
+                  <span className="sgc-moneyness">
+                    {s.moneyness}
+                    {s.distance_from_spot != null
+                      ? ` • ${Math.round(s.distance_from_spot)}pts`
+                      : ""}
+                  </span>
+                  <span className="sgc-delta-pnl">
+                    <span className="sgc-delta-pnl-up">+1pt → +₹{s.delta?.toFixed(2)}</span>
+                    &nbsp;|&nbsp;
+                    <span className="sgc-delta-pnl-dn">-1pt → -₹{s.delta?.toFixed(2)}</span>
+                  </span>
+                </span>
+                <span>{s.delta.toFixed(2)}</span>
+                <span>{Number.isFinite(s.gamma) ? s.gamma.toFixed(4) : "-"}</span>
+                <span className="sgc-theta">₹{Math.abs(s.theta).toFixed(1)}</span>
+                <span>₹{s.ltp.toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
       {showRrNote && <div className="sgc-rr-note">{risk_reward_note}</div>}
-      {showNoPremiumNote && <div className="sgc-rr-note">Strike at expiry - no premium</div>}
-      <div className="sgc-bottom-info">
-        Max pain: {strikeIntelligence?.max_pain_strike != null ? formatNumber(strikeIntelligence.max_pain_strike) : "-"}
-        {strikeIntelligence?.max_pain_pull ? ` (${strikeIntelligence.max_pain_pull} pull)` : ""}
-        {" | "}
-        IV skew: {compactValue(strikeIntelligence?.iv_skew, "-")}
-        {" | "}
-        Straddle {"₹"}
-        {strikeIntelligence?.atm_straddle_premium != null ? Number(strikeIntelligence.atm_straddle_premium).toFixed(1) : "-"}
-        {" "}
-        {compactValue(strikeIntelligence?.straddle_trend, "-")}
-      </div>
+      {showNoPremiumNote && <div className="sgc-rr-note">Strike at expiry — no premium</div>}
 
-      {warnings.length > 0 && (
-        <div className="sgc-warnings">
-          {warnings.map((w) => (
-            <div key={w} className="sgc-warning-item">[!] {w}</div>
-          ))}
+      {/* Footer: size/layer context — only shown when relevant */}
+      {(execution_layer || position_size_label || trapPct !== null) && (
+        <div className="sgc-v2-footer">
+          {execution_layer ? <span>Layer: {execution_layer}</span> : null}
+          {position_size_label ? (
+            <span>
+              Size: {position_size_label}
+              {typeof position_size_fraction === "number" ? ` (${Math.round(position_size_fraction * 100)}%)` : ""}
+            </span>
+          ) : null}
+          {trapPct !== null ? <span>Trap {trapPct}%</span> : null}
         </div>
       )}
     </div>
