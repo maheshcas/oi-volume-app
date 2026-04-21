@@ -1,8 +1,8 @@
 [build]
-buildCommand = "python -m pip install --upgrade pip && python -m pip install -r requirements.txt"
+buildCommand = "sh -c 'python -m pip install --upgrade pip && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; elif [ -f backend/requirements.txt ]; then python -m pip install -r backend/requirements.txt; else echo \"requirements.txt not found\" && exit 1; fi'"
 
 [deploy]
-startCommand = "sh -c 'python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1'"
+startCommand = "sh -c 'if [ -d backend/app ]; then APP_DIR=backend; else APP_DIR=.; fi; python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --app-dir ${APP_DIR}'"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"
