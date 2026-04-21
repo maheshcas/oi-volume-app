@@ -78,7 +78,11 @@ def _compute_iv_skew(atm_pe_iv: float, atm_ce_iv: float) -> tuple[str, float]:
     return "neutral", diff
 
 
-def _compute_max_pain_strike(liquidity_map: list[dict[str, Any]], spot: float) -> int | None:
+def _compute_max_pain_strike(
+    liquidity_map: list[dict[str, Any]],
+    spot: float,
+    strike_gap: int,
+) -> int | None:
     if not liquidity_map:
         return None
     strikes = sorted({_safe_int(row.get("strike"), 0) for row in liquidity_map if _safe_int(row.get("strike"), 0) > 0})
@@ -826,7 +830,7 @@ def compute_strike_intelligence(context: dict) -> dict:
         straddle_trend = _compute_straddle_trend(atm_straddle_premium, _safe_float(prev_straddle_premium, 0.0))
         iv_skew, iv_skew_magnitude = _compute_iv_skew(atm_pe_iv, atm_ce_iv)
 
-        max_pain_strike = _compute_max_pain_strike(liquidity_map, spot)
+        max_pain_strike = _compute_max_pain_strike(liquidity_map, spot, strike_gap)
         max_pain_distance, max_pain_pull = _compute_max_pain_pull(spot, max_pain_strike, strike_gap)
         magnet_result = _compute_price_magnet(
             liquidity_map=liquidity_map,
