@@ -3386,8 +3386,6 @@ export default function App() {
             <span className="hero-ist-debug-clock">{marketRefresh.istClock}</span>
             <span className="hero-ist-debug-sep">·</span>
             <span className="hero-ist-debug-state">{marketRefresh.label}</span>
-            <span className="hero-ist-debug-sep">·</span>
-            <span className="hero-ist-debug-rate">{Math.round(effectiveRefreshMs / 1000)}s</span>
           </div>
         </div>
       </header>
@@ -3504,7 +3502,7 @@ export default function App() {
           expiryMode={isExpiryMode}
           phase={displaySessionPhase}
           projection={projectionState}
-          showProjection={!MARKETING_MODE}
+          showProjection={false}
           alerts={intelligence?.signals?.alerts || []}
         />
         {/* Entry target card now rendered next to Trade Signal inside DashboardLayout */}

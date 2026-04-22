@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 // StructureBand removed in band-consolidation patch.
 import StructureBandBar from "./StructureBandBar";
 
@@ -214,17 +214,6 @@ const buildAlertMessage = ({
   return null;
 };
 
-const readinessGlowOpacity = (score?: number | null, state?: string | null) => {
-  if (typeof score === "number" && Number.isFinite(score)) {
-    return Math.max(0.14, Math.min(0.68, score / 100));
-  }
-  const normalized = String(state || "").toLowerCase();
-  if (normalized === "high") return 0.68;
-  if (normalized === "moderate") return 0.5;
-  if (normalized === "low") return 0.28;
-  return 0.16;
-};
-
 const formatReason = ({
   resolvedReason,
   decisionExplanation,
@@ -434,30 +423,62 @@ export default function StructuralPriceContextCard(props: Props) {
     return `${fmt(Math.min(...targets))} – ${fmt(Math.max(...targets))}`;
   }, [props.target1, props.target2]);
 
-  if (!summary) {
-    return (
-      <div className="spc-card">
-        <div className="spc-head">
-          <div className="spc-title">Structure</div>
-        </div>
-        <div className="spc-compact-panel">
-          <div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div>
-        </div>
+  const emptyStateCard = (
+    <div className="spc-card">
+      <div className="spc-head">
+        <div className="spc-title">Structure</div>
       </div>
-    );
-  }
+      <div className="spc-compact-panel">
+        <div className="spc-compact-empty">Support, resistance, or spot is not available yet.</div>
+      </div>
+    </div>
+  );
+
+  // Track when each transition badge first became active so we can show "Xm ago".
+  const transitionOnsetRef = useRef<{ support: number | null; resistance: number | null }>({
+    support: null,
+    resistance: null,
+  });
+  const [, setTick] = useState(0);
 
   const trapRisk =
     typeof props.trapProbability === "number" && Number.isFinite(props.trapProbability)
       ? Math.max(0, Math.min(100, props.trapProbability))
       : 0;
-  const readiness =
-    typeof props.readinessScore === "number" && Number.isFinite(props.readinessScore)
-      ? Math.max(0, Math.min(100, props.readinessScore))
-      : null;
   const act = actionLabel(props.tradeAction);
   const supportTransition = Boolean(props.supportTransitionBadge ?? props.supportTransitionActive);
   const resistanceTransition = Boolean(props.resistanceTransitionBadge);
+
+  useEffect(() => {
+    const now = Date.now();
+    if (supportTransition) {
+      if (transitionOnsetRef.current.support === null) transitionOnsetRef.current.support = now;
+    } else {
+      transitionOnsetRef.current.support = null;
+    }
+    if (resistanceTransition) {
+      if (transitionOnsetRef.current.resistance === null) transitionOnsetRef.current.resistance = now;
+    } else {
+      transitionOnsetRef.current.resistance = null;
+    }
+  }, [supportTransition, resistanceTransition]);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!summary) {
+    return emptyStateCard;
+  }
+
+  const transitionAgeMinutes = (onset: number | null): number | null => {
+    if (onset === null) return null;
+    const mins = Math.round((Date.now() - onset) / 60_000);
+    return mins <= 5 ? mins : null;
+  };
+  const supportTransitionAge = transitionAgeMinutes(transitionOnsetRef.current.support);
+  const resistanceTransitionAge = transitionAgeMinutes(transitionOnsetRef.current.resistance);
 
   const baseReason = formatReason({
     resolvedReason: props.resolvedReason,
@@ -478,7 +499,6 @@ export default function StructuralPriceContextCard(props: Props) {
       : reason;
 
   const phaseBadge = formatPhaseBadge({ phase: props.sessionPhase, supportTransition, resistanceTransition });
-  const readinessGlow = readinessGlowOpacity(readiness, props.readinessState);
   const readinessExplainability = sanitizeReadinessExplainability(props.readinessExplainability);
 
   const distToS =
@@ -578,6 +598,11 @@ export default function StructuralPriceContextCard(props: Props) {
               {summary.brokenS ? `−${Math.abs(distToS)} pts` : `+${distToS} pts`}
             </span>
           ) : null}
+          {supportTransition && supportTransitionAge !== null ? (
+            <span className="spc-level-transition-age">
+              S → {fmt(summary.support)} · {supportTransitionAge === 0 ? "<1" : supportTransitionAge}m ago
+            </span>
+          ) : null}
         </div>
 
         {/* Spot (center) */}
@@ -585,21 +610,23 @@ export default function StructuralPriceContextCard(props: Props) {
           <span className="spc-level-label">SPOT</span>
           <span className={`spc-spot-price ${spotToneClass}`}>
             {summary.spot.toLocaleString("en-IN", {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
+              minimumFractionDigits: 0,
+              maximumFractionDigits: 0,
             })}
           </span>
           <span
             className={`spc-spot-proximity spc-spot-proximity-${
-              labelState === "NEAR_RESISTANCE" || labelState === "ABOVE_RESISTANCE"
+              labelState === "NEAR_RESISTANCE" || labelState === "ABOVE_RESISTANCE" || labelState === "UPPER_BAND"
                 ? "resistance"
-                : labelState === "NEAR_SUPPORT" || labelState === "BELOW_SUPPORT"
+                : labelState === "NEAR_SUPPORT" || labelState === "BELOW_SUPPORT" || labelState === "LOWER_BAND"
                   ? "support"
                   : "neutral"
             } ${
               labelState === "ABOVE_RESISTANCE" || labelState === "BELOW_SUPPORT"
                 ? "spc-spot-proximity-breached"
-                : ""
+                : labelState === "UPPER_BAND" || labelState === "LOWER_BAND"
+                  ? "spc-spot-proximity-muted"
+                  : ""
             }`}
           >
             {distToR !== null && (labelState === "NEAR_RESISTANCE" || labelState === "ABOVE_RESISTANCE")
@@ -640,16 +667,17 @@ export default function StructuralPriceContextCard(props: Props) {
               {summary.brokenR ? `+${Math.abs(distToR)} pts` : `−${distToR} pts`}
             </span>
           ) : null}
+          {resistanceTransition && resistanceTransitionAge !== null ? (
+            <span className="spc-level-transition-age spc-level-transition-age-r">
+              R → {fmt(summary.resistance)} · {resistanceTransitionAge === 0 ? "<1" : resistanceTransitionAge}m ago
+            </span>
+          ) : null}
         </div>
       </div>
 
       {/* ═══════════════════════════════════════════
           VISUAL BAND (StructureBand SVG track)
       ═══════════════════════════════════════════ */}
-      <div className="spc-readiness-rail-glow-wrap" aria-hidden="true">
-        <div className="spc-readiness-rail-glow" style={{ opacity: readinessGlow }} />
-      </div>
-
       {/* ═══════════════════════════════════════════
           OI BAR — embedded mode (no duplicate stats/zones)
       ═══════════════════════════════════════════ */}
@@ -706,12 +734,14 @@ export default function StructuralPriceContextCard(props: Props) {
         let rangeStale = false;
         let rangeStaleDirection: "above" | "below" | null = null;
         if (typeof props.target1 === "number" && typeof props.target2 === "number" && summary) {
-          const lo = Math.min(props.target1, props.target2);
-          const hi = Math.max(props.target1, props.target2);
-          if (summary.spot > hi) {
+          // Keep warning logic aligned with the rounded values rendered in Expected Range.
+          const lo = Math.round(Math.min(props.target1, props.target2));
+          const hi = Math.round(Math.max(props.target1, props.target2));
+          const spotRounded = Math.round(summary.spot);
+          if (spotRounded > hi) {
             rangeStale = true;
             rangeStaleDirection = "above";
-          } else if (summary.spot < lo) {
+          } else if (spotRounded < lo) {
             rangeStale = true;
             rangeStaleDirection = "below";
           }
@@ -740,12 +770,16 @@ export default function StructuralPriceContextCard(props: Props) {
               {rangeText ? (
                 <div className={`spc-footer-range${rangeStale ? " spc-footer-range-stale" : ""}`}>
                   <span className="spc-footer-range-lbl">Expected Range</span>
-                  <span className="spc-footer-range-val">{rangeText}</span>
                   {rangeStale ? (
-                    <span className="spc-footer-range-warn">
-                      spot {rangeStaleDirection === "above" ? "above" : "below"} range
-                    </span>
-                  ) : null}
+                    <>
+                      <span className="spc-footer-range-warn spc-footer-range-warn-headline">
+                        Spot {rangeStaleDirection === "above" ? "above" : "below"} range
+                      </span>
+                      <span className="spc-footer-range-warn">was {rangeText}</span>
+                    </>
+                  ) : (
+                    <span className="spc-footer-range-val">{rangeText}</span>
+                  )}
                 </div>
               ) : null}
 

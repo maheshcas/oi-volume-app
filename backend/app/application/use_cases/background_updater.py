@@ -115,6 +115,9 @@ _SCHEDULED_FLUSH_WINDOWS_IST: list[tuple[int, int]] = [
 # Track which windows have already fired today to prevent repeat flushes.
 _flushed_windows: set[tuple[int, int]] = set()
 _flushed_windows_date: datetime | None = None
+_last_seeded_flush_ist: datetime | None = None
+_cycle_count_since_flush: int = 0
+_alignment_bootstrap_logged: set[str] = set()
 
 REGIME_MIN_HOLD_CYCLES = 3
 REGIME_SWITCH_CONFIRM_CYCLES = 2
@@ -271,7 +274,7 @@ async def _check_scheduled_flush(now_ist: datetime) -> bool:
     Fires within a ±30 second tolerance window to survive slow cycles.
     Resets the fired-set at midnight so windows fire again each trading day.
     """
-    global _flushed_windows, _flushed_windows_date
+    global _flushed_windows, _flushed_windows_date, _last_seeded_flush_ist, _cycle_count_since_flush
 
     today = now_ist.date()
     if _flushed_windows_date != today:
@@ -290,6 +293,8 @@ async def _check_scheduled_flush(now_ist: datetime) -> bool:
         if abs(current_total - target_total) <= 30:
             preserved_count = await _seeded_runtime_flush()
             _flushed_windows.add(window_key)
+            _last_seeded_flush_ist = now_ist
+            _cycle_count_since_flush = 0
             logger.info(
                 "Seeded flush fired at %02d:%02d IST (window %02d:%02d) - preserved %d S/R anchors",
                 hh,
@@ -881,6 +886,9 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "sr_previous_resistance_anchor_source",
         "sr_support_buffer_blocked",
         "sr_resistance_buffer_blocked",
+        "sr_anchor_age_seconds",
+        "seeded_flush_last_fired_at",
+        "cycle_count_since_flush",
         "regime",
         "drift",
         "adaptive_mode",
@@ -1237,6 +1245,7 @@ def _resolve_absorption_reference_level(
     spot: float | None,
     current_support: float | None,
     current_resistance: float | None,
+    current_timestamp_utc: datetime | None,
     previous_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     prev = previous_state or {}
@@ -1245,6 +1254,17 @@ def _resolve_absorption_reference_level(
     prev_current_resistance = _safe_float(prev.get("current_resistance"))
     prev_previous_resistance = _safe_float(prev.get("previous_resistance"))
     prev_shift_cycle = int(prev.get("support_shift_cycle", 0) or 0)
+    prev_anchor_started_raw = str(prev.get("sr_anchor_started_at_utc") or "").strip()
+    prev_anchor_started_utc: datetime | None = None
+    if prev_anchor_started_raw:
+        try:
+            parsed = datetime.fromisoformat(prev_anchor_started_raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            prev_anchor_started_utc = parsed.astimezone(timezone.utc)
+        except ValueError:
+            prev_anchor_started_utc = None
+    now_utc = current_timestamp_utc or datetime.now(timezone.utc)
 
     current_support_value = _safe_float(current_support)
     current_resistance_value = _safe_float(current_resistance)
@@ -1272,11 +1292,12 @@ def _resolve_absorption_reference_level(
         else:
             support_shift_cycle = 0
 
-    if (
+    resistance_shift_detected = (
         current_resistance_value is not None
         and prev_current_resistance is not None
         and abs(current_resistance_value - prev_current_resistance) > 1e-6
-    ):
+    )
+    if resistance_shift_detected:
         previous_resistance = prev_current_resistance
     else:
         # Keep prior-session resistance memory alive at session open even when the
@@ -1289,6 +1310,12 @@ def _resolve_absorption_reference_level(
             else prev_current_resistance
         )
 
+    if support_shift_detected or resistance_shift_detected or prev_anchor_started_utc is None:
+        anchor_started_utc = now_utc
+    else:
+        anchor_started_utc = prev_anchor_started_utc
+    sr_anchor_age_seconds = max(0, int((now_utc - anchor_started_utc).total_seconds()))
+
     resolved = {
         "previous_support": previous_support,
         "current_support": current_support_value,
@@ -1298,6 +1325,8 @@ def _resolve_absorption_reference_level(
         # Keep transition telemetry separately via previous_support/support_shift_cycle.
         "absorption_reference_level": current_support_value,
         "support_shift_cycle": int(support_shift_cycle),
+        "sr_anchor_started_at_utc": _utc_iso(anchor_started_utc),
+        "sr_anchor_age_seconds": sr_anchor_age_seconds,
     }
     logger.debug(
         "Support reference resolved: previous_support=%s current_support=%s previous_resistance=%s current_resistance=%s shift_cycle=%s",
@@ -4277,6 +4306,9 @@ def _build_v2_intelligence(
         spot=spot,
         current_support=support_level,
         current_resistance=resistance_level,
+        current_timestamp_utc=session_eval_time.astimezone(timezone.utc)
+        if isinstance(session_eval_time, datetime)
+        else None,
         previous_state=previous_state,
     )
     absorption_reference_level = support_reference_state.get("absorption_reference_level")
@@ -5793,6 +5825,9 @@ def _build_v2_intelligence(
         "current_support": support_reference_state.get("current_support"),
         "previous_resistance": support_reference_state.get("previous_resistance"),
         "current_resistance": support_reference_state.get("current_resistance"),
+        "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
+        "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
+        "cycle_count_since_flush": int(_cycle_count_since_flush),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
         "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
         "sr_breach_state": sr_breach_state,
@@ -6048,6 +6083,9 @@ def _build_v2_intelligence(
             "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
             "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
             "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
+            "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
+            "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
+            "cycle_count_since_flush": int(_cycle_count_since_flush),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
             "support_transition_active": _is_support_transition_active(
@@ -6322,6 +6360,10 @@ def _build_v2_intelligence(
             "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
             "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
             "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
+            "sr_anchor_started_at_utc": support_reference_state.get("sr_anchor_started_at_utc"),
+            "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
+            "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
+            "cycle_count_since_flush": int(_cycle_count_since_flush),
             "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
             "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
             "blocking_reason": blocking_reason,
@@ -6424,8 +6466,30 @@ async def _build_symbol_payloads(
         key = _cache_key(symbol=symbol, instrument_type=instrument_type, expiry=expiry)
         previous_score = await cache.get_previous_score(key)
         last_10_scores = await cache.get_score_history(key, limit=10)
-        previous_state = await cache.get_previous_state(f"STATE::{key}") or _load_persisted_state("STATE", key)
-        previous_adaptive_state = await cache.get_previous_state(f"ADAPT::{key}") or _load_persisted_state("ADAPT", key)
+        cached_previous_state = await cache.get_previous_state(f"STATE::{key}")
+        persisted_previous_state = {} if cached_previous_state else _load_persisted_state("STATE", key)
+        previous_state = cached_previous_state or persisted_previous_state
+        cached_previous_adaptive_state = await cache.get_previous_state(f"ADAPT::{key}")
+        persisted_previous_adaptive_state = (
+            {} if cached_previous_adaptive_state else _load_persisted_state("ADAPT", key)
+        )
+        previous_adaptive_state = cached_previous_adaptive_state or persisted_previous_adaptive_state
+        if key not in _alignment_bootstrap_logged:
+            source = (
+                "cache"
+                if cached_previous_state
+                else ("snapshot" if persisted_previous_state else "empty")
+            )
+            logger.info(
+                "Alignment bootstrap [%s]: source=%s support=%s resistance=%s anchor_age=%s shift_cycle=%s",
+                key,
+                source,
+                previous_state.get("current_support"),
+                previous_state.get("current_resistance"),
+                previous_state.get("sr_anchor_age_seconds"),
+                previous_state.get("support_shift_cycle"),
+            )
+            _alignment_bootstrap_logged.add(key)
         perf_snapshot = tracker.get_daily_metrics(key)
         bias_acc = float(perf_snapshot.get("bias_accuracy_percent", 55.0) or 55.0) / 100.0
         trap_acc = float(perf_snapshot.get("trap_accuracy_percent", 55.0) or 55.0) / 100.0
@@ -6523,6 +6587,8 @@ async def _build_symbol_payloads(
                 if isinstance(item, dict) and str(item.get("message", "")).strip()
             ]
         )
+        # Deduplicate: alerts and prioritized_signals can carry the same message text.
+        emitted_signals = list(dict.fromkeys(emitted_signals))
         metrics = tracker.process_snapshot(
             key=key,
             timestamp=_parse_timestamp_utc(records.get("timestamp")),
@@ -6595,6 +6661,7 @@ async def _build_symbol_payloads(
 
 
 async def run_update_cycle() -> None:
+    global _cycle_count_since_flush
     if not await cache.begin_fetch():
         logger.debug("Skipping update cycle: previous fetch still in progress.")
         return
@@ -6658,6 +6725,7 @@ async def run_update_cycle() -> None:
         await cache.update_cache(option_chain_data, summary_data)
         latency_ms = (time.perf_counter() - started) * 1000
         await cache.mark_fetch_success(latency_ms=latency_ms)
+        _cycle_count_since_flush += 1
 
         if ENABLE_HZC:
             # Optional offline historical-zone snapshots. This is context-only and

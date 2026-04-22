@@ -363,11 +363,17 @@ async def engine_health():
     from app.application.use_cases.background_updater import (
         _SCHEDULED_FLUSH_WINDOWS_IST,
         _flushed_windows,
+        _last_seeded_flush_ist,
+        _cycle_count_since_flush,
     )
 
     payload["scheduled_flush_windows"] = [f"{h:02d}:{m:02d} IST" for h, m in _SCHEDULED_FLUSH_WINDOWS_IST]
     payload["flushed_today"] = [f"{h:02d}:{m:02d} IST" for h, m in sorted(_flushed_windows)]
     payload["next_flush"] = _get_next_flush_ist()
+    payload["seeded_flush_last_fired_at"] = (
+        _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None
+    )
+    payload["cycle_count_since_flush"] = int(_cycle_count_since_flush)
     return payload
 
 
