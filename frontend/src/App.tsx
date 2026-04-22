@@ -7,6 +7,7 @@ import DashboardLayout from "./components/DashboardLayout";
 import AdvancedAnalysisCard from "./components/AdvancedAnalysisCard";
 import OptionLensMobileDashboard from "./components/mobile/OptionLensMobileDashboard";
 import { MARKETING_MODE } from "./config/uiMode";
+import { useMarketAwareRefresh } from "./hooks/useMarketAwareRefresh";
 
 const TAB_LABELS = {
   overview: "Overview",
@@ -481,6 +482,8 @@ type DailyPerformance = {
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
+// Legacy constants kept as fallback defaults.
+// Actual intervals now come from useMarketAwareRefresh() at runtime.
 const REFRESH_MS = 15000;
 const SPOT_REFRESH_MS = 2000;
 const HEATMAP_WINDOW_MINUTES = 120;
@@ -984,6 +987,9 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [useSample, setUseSample] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const marketRefresh = useMarketAwareRefresh();
+  const effectiveRefreshMs = marketRefresh?.refreshMs ?? REFRESH_MS;
+  const effectiveSpotRefreshMs = marketRefresh?.spotRefreshMs ?? SPOT_REFRESH_MS;
   const [nseStatus, setNseStatus] = useState<"ok" | "blocked" | "checking">("checking");
   const [nseMessage, setNseMessage] = useState<string>("");
   const [indexData, setIndexData] = useState<IndexRow[]>([]);
@@ -1258,9 +1264,9 @@ export default function App() {
       });
     };
     syncActiveExpiry();
-    const timer = setInterval(syncActiveExpiry, REFRESH_MS);
+    const timer = setInterval(syncActiveExpiry, effectiveRefreshMs);
     return () => clearInterval(timer);
-  }, [expiries]);
+  }, [expiries, effectiveRefreshMs]);
 
   useEffect(() => {
     if (!expiry) return;
@@ -1274,18 +1280,18 @@ export default function App() {
       loadIndexData();
       loadSummary();
       loadEngineHealth();
-    }, REFRESH_MS);
+    }, effectiveRefreshMs);
     return () => clearInterval(timer);
-  }, [expiry, symbol, instrumentType, useSample, autoRefresh]);
+  }, [expiry, symbol, instrumentType, useSample, autoRefresh, effectiveRefreshMs]);
 
   useEffect(() => {
     if (!expiry) return;
     loadIndexData();
     const timer = setInterval(() => {
       loadIndexData();
-    }, SPOT_REFRESH_MS);
+    }, effectiveSpotRefreshMs);
     return () => clearInterval(timer);
-  }, [expiry, symbol]);
+  }, [expiry, symbol, effectiveSpotRefreshMs]);
 
   const filteredRows = useMemo(() => rows, [rows]);
   const rangeFilteredRows = useMemo(() => {
@@ -3461,6 +3467,7 @@ export default function App() {
           resistanceLevel={typeof displayResistance === "number" ? displayResistance : null}
           updatedAt={lastUpdated || meta?.timestamp || "-"}
           liveStatus={bannerLiveStatus}
+          scheduleLabel={marketRefresh.label}
           expiryMode={isExpiryMode}
           phase={displaySessionPhase}
           projection={projectionState}

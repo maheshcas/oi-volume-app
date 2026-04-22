@@ -11,6 +11,7 @@ type MarketBannerProps = {
   resistanceLevel?: number | null;
   updatedAt: string;
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
+  scheduleLabel?: string;
   expiryMode?: boolean;
   phase?: string;
   projection?: string;
@@ -191,6 +192,9 @@ export default function MarketBanner(props: MarketBannerProps) {
               ) : null}
             </span>
           </div>
+          {props.scheduleLabel && liveTone === "ok" ? null : props.scheduleLabel ? (
+            <span className="mb-v2-schedule">{props.scheduleLabel}</span>
+          ) : null}
         </div>
 
         <div className="mb-v2-price">
