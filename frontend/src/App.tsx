@@ -507,6 +507,7 @@ const SYMBOL_DISPLAY: Record<SymbolKey, string> = {
   SENSEX: "SENSEX",
 };
 const SYMBOL_STORAGE_KEY = "optionlens:selected-symbol";
+const AUTO_REFRESH_STORAGE_KEY = "optionlens:auto-refresh";
 
 function isSymbolKey(value: string): value is SymbolKey {
   return (SYMBOLS as readonly string[]).includes(value);
@@ -528,6 +529,26 @@ function persistSymbol(symbol: SymbolKey) {
     window.localStorage.setItem(SYMBOL_STORAGE_KEY, symbol);
   } catch {
     // Ignore storage failures; symbol state still updates locally.
+  }
+}
+
+function readPersistedAutoRefresh(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const stored = window.localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
+    if (stored === null) return true;
+    return stored === "1" || stored === "true";
+  } catch {
+    return true;
+  }
+}
+
+function persistAutoRefresh(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // Ignore storage failures; preference still works for this session.
   }
 }
 
@@ -986,7 +1007,7 @@ export default function App() {
   const [status, setStatus] = useState<string>("Idle");
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [useSample, setUseSample] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(readPersistedAutoRefresh);
   const marketRefresh = useMarketAwareRefresh();
   const effectiveRefreshMs = marketRefresh?.refreshMs ?? REFRESH_MS;
   const effectiveSpotRefreshMs = marketRefresh?.spotRefreshMs ?? SPOT_REFRESH_MS;
@@ -1083,6 +1104,10 @@ export default function App() {
     persistSymbol(nextSymbol);
     setSymbol(nextSymbol);
   };
+
+  useEffect(() => {
+    persistAutoRefresh(autoRefresh);
+  }, [autoRefresh]);
 
   async function loadExpiries() {
     setStatus("Loading expiries...");
@@ -1286,12 +1311,13 @@ export default function App() {
 
   useEffect(() => {
     if (!expiry) return;
+    if (!autoRefresh) return;
     loadIndexData();
     const timer = setInterval(() => {
       loadIndexData();
     }, effectiveSpotRefreshMs);
     return () => clearInterval(timer);
-  }, [expiry, symbol, effectiveSpotRefreshMs]);
+  }, [expiry, symbol, effectiveSpotRefreshMs, autoRefresh]);
 
   const filteredRows = useMemo(() => rows, [rows]);
   const rangeFilteredRows = useMemo(() => {
@@ -3356,6 +3382,13 @@ export default function App() {
             </span>
             <span className="hero-refresh-toggle-label">Auto Refresh</span>
           </label>
+          <div className="hero-ist-debug" title="Scheduler debug">
+            <span className="hero-ist-debug-clock">{marketRefresh.istClock}</span>
+            <span className="hero-ist-debug-sep">·</span>
+            <span className="hero-ist-debug-state">{marketRefresh.label}</span>
+            <span className="hero-ist-debug-sep">·</span>
+            <span className="hero-ist-debug-rate">{Math.round(effectiveRefreshMs / 1000)}s</span>
+          </div>
         </div>
       </header>
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const MARKET_OPEN_MIN = 9 * 60;
 const MARKET_CLOSE_MIN = 15 * 60 + 45;
@@ -35,8 +35,9 @@ export function toISTParts(now: Date = new Date()): {
   dateKey: string;
   minutesSinceMidnight: number;
 } {
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
-  const istMs = utcMs + (5 * 60 + 30) * 60_000;
+  // `getTime()` is already UTC epoch milliseconds.
+  // Add IST offset directly to avoid double-applying local timezone offsets.
+  const istMs = now.getTime() + (5 * 60 + 30) * 60_000;
   const ist = new Date(istMs);
   const year = ist.getUTCFullYear();
   const month = ist.getUTCMonth() + 1;
@@ -77,7 +78,7 @@ export function resolveMarketSession(
   if (parts.minutesSinceMidnight < MARKET_OPEN_MIN) {
     return { state: "closed-pre-market", isOpen: false, istParts: parts };
   }
-  if (parts.minutesSinceMidnight > MARKET_CLOSE_MIN) {
+  if (parts.minutesSinceMidnight >= MARKET_CLOSE_MIN) {
     return { state: "closed-after-hours", isOpen: false, istParts: parts };
   }
   return { state: "open", isOpen: true, istParts: parts };
@@ -96,29 +97,19 @@ export function useMarketAwareRefresh(): {
   label: string;
   istClock: string;
 } {
-  const [, forceTick] = useState(0);
-  const lastSessionRef = useRef<MarketSessionState | null>(null);
+  const [now, setNow] = useState<Date>(() => new Date());
 
   useEffect(() => {
     const id = setInterval(() => {
-      const now = new Date();
-      const { state } = resolveMarketSession(now);
-      if (state !== lastSessionRef.current) {
-        lastSessionRef.current = state;
-        forceTick((n) => n + 1);
-      }
-    }, 30_000);
+      setNow(new Date());
+    }, 1_000);
     return () => clearInterval(id);
   }, []);
 
-  const now = new Date();
   const { state, isOpen, istParts } = resolveMarketSession(now);
-  lastSessionRef.current = state;
 
   const refreshMs = isOpen ? MARKET_OPEN_REFRESH_MS : MARKET_CLOSED_REFRESH_MS;
-  const spotRefreshMs = isOpen
-    ? MARKET_OPEN_SPOT_REFRESH_MS
-    : MARKET_CLOSED_SPOT_REFRESH_MS;
+  const spotRefreshMs = isOpen ? MARKET_OPEN_SPOT_REFRESH_MS : MARKET_CLOSED_SPOT_REFRESH_MS;
 
   const pad = (n: number) => n.toString().padStart(2, "0");
   const istClock = `${pad(istParts.hour)}:${pad(istParts.minute)} IST`;
