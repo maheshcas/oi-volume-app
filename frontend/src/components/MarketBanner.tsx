@@ -23,21 +23,12 @@ type MarketBannerProps = {
   }>;
 };
 
-const alertColors: Record<string, string> = {
-  primary: "ia-alert-bull",
-  counter: "ia-alert-bear",
-  warning: "ia-alert-warn",
-};
-
 function splitSpotParts(value: string) {
   const text = String(value ?? "").trim();
-  if (!text || text === "-") {
-    return { whole: "-", decimal: "" };
-  }
+  if (!text || text === "-") return { whole: "-", decimal: "" };
   const numeric = Number(text.replace(/,/g, ""));
-  if (Number.isFinite(numeric)) {
+  if (Number.isFinite(numeric))
     return { whole: Math.round(numeric).toLocaleString("en-IN"), decimal: "" };
-  }
   const [whole] = text.split(".");
   return { whole, decimal: "" };
 }
@@ -55,17 +46,59 @@ function isNegativeDelta(value?: string) {
   );
 }
 
+function trimTimestamp(ts: string): string {
+  const t = String(ts || "").trim();
+  if (!t) return "";
+  const m = t.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if (m) return `${m[1]}:${m[2]}:${m[3]}`;
+  const m2 = t.match(/(\d{1,2}):(\d{2})/);
+  if (m2) return `${m2[1]}:${m2[2]}`;
+  return t;
+}
+
+function cleanPct(value?: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace(/^[▲▼↑↓+\-\s]+/, "").trim();
+}
+
+function cleanAbs(value?: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace(/^[▲▼↑↓\s]+/, "").trim();
+}
+
+type AlertItem = NonNullable<MarketBannerProps["alerts"]>[number];
+
+function alertSeverity(a: AlertItem): "high" | "watch" | "info" {
+  const tier = String(a.tier || "").toLowerCase();
+  if (tier === "high" || tier === "critical") return "high";
+  if (tier === "watch" || tier === "warn" || tier === "warning") return "watch";
+  const type = String(a.type || "").toLowerCase();
+  if (type === "warning") return "watch";
+  if (type === "counter") return "watch";
+  return "info";
+}
+
+function alertTone(a: AlertItem): "bull" | "bear" | "warn" {
+  const type = String(a.type || "").toLowerCase();
+  if (type === "primary") return "bull";
+  if (type === "counter") return "bear";
+  return "warn";
+}
+
 export default function MarketBanner(props: MarketBannerProps) {
   const spotParts = splitSpotParts(props.spot);
   const spotNum = Number(String(props.spot || "").replace(/,/g, ""));
+
   const liveTone =
     props.liveStatus === "live"
-      ? "ia-live-ok"
+      ? "ok"
       : props.liveStatus === "stale"
-        ? "ia-live-stale"
+        ? "stale"
         : props.liveStatus === "delayed" || props.liveStatus === "blocked"
-          ? "ia-live-delayed"
-          : "ia-live-checking";
+          ? "delayed"
+          : "checking";
 
   const liveLabel =
     props.liveStatus === "live"
@@ -91,20 +124,22 @@ export default function MarketBanner(props: MarketBannerProps) {
 
   const pctDown = isNegativeDelta(props.pctChange) || isNegativeDelta(props.spotDelta);
   const openDeltaDown = isNegativeDelta(props.fromOpenDelta);
-  const projectionTone = props.projection?.toLowerCase().includes("down")
-    ? "ia-text-bear"
-    : props.projection?.toLowerCase().includes("up")
-      ? "ia-text-bull"
-      : "";
+
   const regimeLabel = props.regime ?? (props.volatilityState === "Stable" ? "Range Day" : "Trend Day");
   const projectionLabel = props.projection ?? "No breakout signal";
+  const projectionIsBreakout = /breakout/i.test(projectionLabel);
+  const projectionTone = projectionIsBreakout
+    ? props.projection?.toLowerCase().includes("down")
+      ? "bear"
+      : "bull"
+    : "neutral";
+
   const bandLabel =
     typeof props.supportLevel === "number" && Number.isFinite(props.supportLevel) &&
     typeof props.resistanceLevel === "number" && Number.isFinite(props.resistanceLevel)
       ? `${props.supportLevel.toLocaleString("en-IN")} – ${props.resistanceLevel.toLocaleString("en-IN")}`
-      : "levels unavailable";
-  const stanceLabel = regimeLabel.toLowerCase().includes("range") ? "Range bound" : regimeLabel;
-  const breakoutLabel = /breakout/i.test(projectionLabel) ? projectionLabel : "No breakout signal";
+      : null;
+
   const distToS =
     Number.isFinite(spotNum) && typeof props.supportLevel === "number"
       ? Math.abs(spotNum - props.supportLevel)
@@ -113,82 +148,133 @@ export default function MarketBanner(props: MarketBannerProps) {
     Number.isFinite(spotNum) && typeof props.resistanceLevel === "number"
       ? Math.abs(props.resistanceLevel - spotNum)
       : null;
-  const nearestLevel =
-    distToS !== null && distToR !== null && typeof props.supportLevel === "number" && typeof props.resistanceLevel === "number"
+
+  const nearestLabel =
+    distToS !== null && distToR !== null &&
+    typeof props.supportLevel === "number" &&
+    typeof props.resistanceLevel === "number"
       ? distToS < distToR
         ? `support ${props.supportLevel.toLocaleString("en-IN")}`
         : `resistance ${props.resistanceLevel.toLocaleString("en-IN")}`
-      : "key levels";
-  const summaryFromLegacy = String(props.regimeExplanation || "").replace(
-    "Needs 3x Balanced Structure to advance",
-    `Range bound · no breakout signal · watch ${nearestLevel}`,
-  );
-  const summaryLine = summaryFromLegacy || `${stanceLabel} · ${bandLabel} · ${breakoutLabel}`;
+      : null;
+
+  const stanceWord = regimeLabel.toLowerCase().includes("range")
+    ? "Spot holding inside range"
+    : regimeLabel.toLowerCase().includes("trend")
+      ? "Spot trending"
+      : "Spot active";
+
+  const summaryPrefix = stanceWord;
+  const summaryAction = nearestLabel ? `watch ${nearestLabel}` : null;
+
+  const absChange = cleanAbs(props.spotDelta);
+  const pctDisplay = cleanPct(props.pctChange);
+
+  const displayTimestamp = trimTimestamp(props.updatedAt);
+
+  const sortedAlerts = (props.alerts ?? []).slice().sort((a, b) => {
+    const order = { high: 0, watch: 1, info: 2 } as const;
+    return order[alertSeverity(a)] - order[alertSeverity(b)];
+  });
 
   return (
-    <div className="ia-status-bar">
-      <div className="ia-banner-row ia-banner-row-primary">
-        <span className="ia-inline-pill">{props.indexName}</span>
-        <span className={`ia-live-badge ${liveTone}`} title={liveTitle}>
-          <span className={`ia-live-dot ${liveTone}`} />
-          {liveLabel}
-        </span>
-      </div>
-
-      <div className="ia-banner-spot-row">
-        <span className="ia-spot-strong">
-          <span className="ia-spot-int">{spotParts.whole}</span>
-          {spotParts.decimal ? <span className="ia-spot-dec">{spotParts.decimal}</span> : null}
-        </span>
-        <span className={`ia-spot-change-badge ${pctDown ? "ia-spot-change-badge-down" : "ia-spot-change-badge-up"}`}>
-          {props.spotDelta ? `${props.spotDelta} ${props.pctChange}` : props.pctChange}
-        </span>
-      </div>
-
-      <div className="ia-banner-row ia-banner-row-spot-meta">
-        <span className="ia-banner-group ia-banner-group-compact">
-          <span className="ia-banner-label">Vs Prev Close</span>
-          {props.spotDelta ? <span className={pctDown ? "ia-text-bear" : "ia-text-bull"}>{props.spotDelta}</span> : <span>-</span>}
-        </span>
-        <span className="ia-banner-group ia-banner-group-compact">
-          <span className="ia-banner-label">From Open</span>
-          {props.fromOpenDelta
-            ? <span className={openDeltaDown ? "ia-text-bear" : "ia-text-bull"}>{props.fromOpenDelta}</span>
-            : <span>-</span>}
-        </span>
-        <span className="ia-banner-group ia-banner-group-compact">
-          <span className="ia-banner-label">Updated</span>
-          <span>{props.updatedAt}</span>
-        </span>
-      </div>
-
-      {props.alerts && props.alerts.length > 0 ? (
-        <div className="ia-alert-ticker">
-          <span className="ia-alert-ticker-label">LIVE</span>
-          <div className="ia-alert-ticker-track">
-            {props.alerts.map((a, i) => (
-              <span
-                key={`${a.message}-${i}`}
-                className={`ia-alert-chip ${alertColors[a.type] ?? "ia-alert-warn"}`}
-              >
-                {a.message}
-              </span>
-            ))}
+    <div className="mb-v2">
+      <div className="mb-v2-hero">
+        <div className="mb-v2-identity">
+          <span className="mb-v2-eyebrow">{props.indexName}</span>
+          <div className={`mb-v2-live mb-v2-live-${liveTone}`} title={liveTitle}>
+            <span className="mb-v2-live-dot" />
+            <span className="mb-v2-live-label">
+              {liveLabel}
+              {displayTimestamp && liveTone === "ok" ? (
+                <span className="mb-v2-live-time"> · {displayTimestamp}</span>
+              ) : null}
+            </span>
           </div>
+        </div>
+
+        <div className="mb-v2-price">
+          <span className="mb-v2-price-whole">{spotParts.whole}</span>
+          <div className={`mb-v2-price-change mb-v2-price-change-${pctDown ? "down" : "up"}`}>
+            {absChange ? (
+              <span className="mb-v2-price-abs">
+                {pctDown ? "▼" : "▲"} {absChange}
+              </span>
+            ) : null}
+            {pctDisplay ? (
+              <span className="mb-v2-price-pct">{pctDisplay}</span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mb-v2-secondary">
+          {props.fromOpenDelta ? (
+            <div className="mb-v2-sec-item">
+              <span className="mb-v2-sec-key">From Open</span>
+              <span className={`mb-v2-sec-val ${openDeltaDown ? "mb-v2-sec-val-down" : "mb-v2-sec-val-up"}`}>
+                {props.fromOpenDelta}
+              </span>
+            </div>
+          ) : null}
+          {bandLabel ? (
+            <div className="mb-v2-sec-item">
+              <span className="mb-v2-sec-key">Band</span>
+              <span className="mb-v2-sec-val">{bandLabel}</span>
+            </div>
+          ) : null}
+          {liveTone !== "ok" && displayTimestamp ? (
+            <div className="mb-v2-sec-item">
+              <span className="mb-v2-sec-key">Updated</span>
+              <span className="mb-v2-sec-val mb-v2-sec-val-stale">{displayTimestamp}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mb-v2-classification">
+          <span className="mb-v2-pill mb-v2-pill-regime">{regimeLabel}</span>
+          {props.showProjection === false ? null : (
+            <span className={`mb-v2-pill mb-v2-pill-${projectionTone}`}>
+              {projectionLabel}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {(summaryPrefix || summaryAction) ? (
+        <div className="mb-v2-summary">
+          {summaryPrefix ? <span>{summaryPrefix}</span> : null}
+          {summaryAction ? (
+            <>
+              <span className="mb-v2-summary-sep"> · </span>
+              <span className="mb-v2-summary-action">{summaryAction}</span>
+            </>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="ia-banner-row ia-banner-row-secondary">
-        <span className="ia-pill ia-pill-status">
-          {regimeLabel}
-        </span>
-        {props.showProjection === false ? null : (
-          <span className={`ia-pill ia-pill-status ${projectionTone ? "ia-pill-status-emphasis" : ""}`}>
-            {projectionLabel}
-          </span>
-        )}
-      </div>
-      <div className="ia-banner-regime-note">{summaryLine}</div>
+      {sortedAlerts.length > 0 ? (
+        <div className="mb-v2-alerts">
+          <div className="mb-v2-alerts-head">
+            <span className="mb-v2-alerts-label">Alerts</span>
+            <span className="mb-v2-alerts-count">{sortedAlerts.length}</span>
+          </div>
+          <div className="mb-v2-alerts-track">
+            {sortedAlerts.map((a, i) => {
+              const sev = alertSeverity(a);
+              const tone = alertTone(a);
+              return (
+                <span
+                  key={`${a.message}-${i}`}
+                  className={`mb-v2-alert-chip mb-v2-alert-chip-${tone}`}
+                >
+                  <span className={`mb-v2-alert-dot mb-v2-alert-dot-${sev}`} />
+                  {a.message}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

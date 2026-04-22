@@ -7,8 +7,9 @@ __pycache__
 *.pyd
 *.log
 logs
+backend/logs
 venv
-data
-tests
 validation
-calibration
+scripts
+restart-servers.ps1
+VALIDATION_LOGIC_OVERVIEW.txt
