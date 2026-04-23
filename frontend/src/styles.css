@@ -7237,6 +7237,21 @@ input[type="number"] {
   overflow: hidden;
 }
 
+.sbb-sr-inside-note {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  margin: 0 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: #9ca3af;
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+}
+
 .band-outer {
   position: relative;
   overflow-x: hidden;
@@ -8279,8 +8294,8 @@ input[type="number"] {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-top: 6px;
   padding: 4px 10px;
+  margin-bottom: 6px;
   border-radius: 999px;
   font-size: 10px;
   letter-spacing: 0.04em;

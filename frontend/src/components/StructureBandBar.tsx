@@ -106,6 +106,7 @@ export default function StructureBandBar({
   const nearThreshold = Math.max(100, strikeGap * 2);
   const nearS = distToS < nearThreshold;
   const nearR = distToR < nearThreshold;
+  const spotInsideRange = !aboveR && !belowS;
 
   const pct = (value: number) =>
     clamp(((value - support) / bandWidth) * 100, 2, 98);
@@ -159,25 +160,53 @@ export default function StructureBandBar({
     Boolean(normalizedMagnetDirection) &&
     normalizedPrevMagnetDirection !== normalizedMagnetDirection;
 
-  const visibleStrikes = (strikes || [])
-    .filter(
-      (s) =>
-        s &&
-        Number.isFinite(s.strike) &&
-        s.strike >= support &&
-        s.strike <= resistance,
-    )
+  const allSortedStrikes = (strikes || [])
+    .filter((s) => s && Number.isFinite(s.strike))
     .sort((a, b) => a.strike - b.strike);
 
-  const nearestStrike = visibleStrikes.length
-    ? visibleStrikes.reduce((best, current) =>
+  const nearestStrike = allSortedStrikes.length
+    ? allSortedStrikes.reduce((best, current) =>
       Math.abs(current.strike - spot) < Math.abs(best.strike - spot)
         ? current
         : best,
     ).strike
     : null;
 
-  const maxOi = visibleStrikes.reduce(
+  const ladderStrikes = useMemo(() => {
+    if (allSortedStrikes.length === 0) return [];
+
+    const inRange = allSortedStrikes.filter(
+      (s) => s.strike >= support && s.strike <= resistance,
+    );
+    if (inRange.length === 0) return allSortedStrikes.slice(0, 3);
+
+    const shouldShowLowerNeighbor = spot <= support + strikeGap;
+    const shouldShowUpperNeighbor = spot >= resistance - strikeGap;
+
+    const belowSupport = shouldShowLowerNeighbor
+      ? [...allSortedStrikes]
+        .filter((s) => s.strike < support)
+        .sort((a, b) => b.strike - a.strike)[0]
+      : undefined;
+
+    const aboveResistance = shouldShowUpperNeighbor
+      ? allSortedStrikes.find((s) => s.strike > resistance)
+      : undefined;
+
+    const merged = [
+      ...(belowSupport ? [belowSupport] : []),
+      ...inRange,
+      ...(aboveResistance ? [aboveResistance] : []),
+    ];
+
+    const dedup = new Map<number, StrikePoint>();
+    for (const s of merged) {
+      dedup.set(s.strike, s);
+    }
+    return [...dedup.values()].sort((a, b) => a.strike - b.strike);
+  }, [allSortedStrikes, support, resistance, spot, strikeGap]);
+
+  const maxOi = ladderStrikes.reduce(
     (m, s) => Math.max(m, s.oi_ce || 0, s.oi_pe || 0),
     0,
   );
@@ -190,7 +219,7 @@ export default function StructureBandBar({
       label: string;
       side: "ce" | "pe" | "neutral";
     }> = {};
-    for (const row of visibleStrikes) {
+    for (const row of allSortedStrikes) {
       if (!row || !Number.isFinite(row.strike)) continue;
       const ce = Math.max(0, Number(row.oi_ce) || 0);
       const pe = Math.max(0, Number(row.oi_pe) || 0);
@@ -201,11 +230,12 @@ export default function StructureBandBar({
       const label = supportSide
         ? `PE/CE ${ratio.toFixed(2)}x`
         : `CE/PE ${ratio.toFixed(2)}x`;
-      const side = supportSide ? "pe" : "ce";
+      const side =
+        ratio >= 1.1 ? (supportSide ? "pe" : "ce") : ratio <= 0.9 ? (supportSide ? "ce" : "pe") : "neutral";
       map[row.strike] = { ratio, label, side };
     }
     return map;
-  }, [visibleStrikes, spot]);
+  }, [allSortedStrikes, spot]);
 
   const metricToSupportTone =
     nearS || belowS ? "sbb-metric-warn-s" : "sbb-metric-neutral";
@@ -286,6 +316,24 @@ export default function StructureBandBar({
       )}
 
       <div className={`band-section${rubberBandActive ? " band-section-rubber" : ""}${rejectionRisk ? " band-section-rejection" : ""}`}>
+        {spotInsideRange ? (
+          <div className="sbb-sr-inside-note">SPOT INSIDE S/R BAND</div>
+        ) : null}
+        {rubberBandActive ? (
+          <div className={`sbb-rubber-status${rejectionRisk ? " sbb-rubber-status-risk" : ""}`}>
+            <span className="sbb-rubber-state">
+              {aboveR ? "Above R" : "Below S"}
+            </span>
+            <span className="sbb-rubber-tension">
+              tension {tension.toFixed(2)}
+            </span>
+            {materialBreachConfirmed ? (
+              <span className="sbb-rubber-badge sbb-rubber-badge-accept">Acceptance</span>
+            ) : rejectionRisk ? (
+              <span className="sbb-rubber-badge sbb-rubber-badge-reject">Rejection risk</span>
+            ) : null}
+          </div>
+        ) : null}
         <div className="band-outer sbb-track-wrap">
           <div className="band-track sbb-track" />
           {rubberBandActive && brokenLevel !== null && rubberSnapAnchorPct !== null ? (
@@ -392,22 +440,6 @@ export default function StructureBandBar({
                 : undefined,
             }}
           />
-          {rubberBandActive ? (
-            <div className={`sbb-rubber-status${rejectionRisk ? " sbb-rubber-status-risk" : ""}`}>
-              <span className="sbb-rubber-state">
-                {aboveR ? "Above R" : "Below S"}
-              </span>
-              <span className="sbb-rubber-tension">
-                tension {tension.toFixed(2)}
-              </span>
-              {materialBreachConfirmed ? (
-                <span className="sbb-rubber-badge sbb-rubber-badge-accept">Acceptance</span>
-              ) : rejectionRisk ? (
-                <span className="sbb-rubber-badge sbb-rubber-badge-reject">Rejection risk</span>
-              ) : null}
-            </div>
-          ) : null}
-
           <div className="sbb-lbl-above" style={topLabelStyle(supportPct, "#26a69a")}>
             S {fmt(support)}
           </div>
@@ -514,9 +546,9 @@ export default function StructureBandBar({
         </div>
       </div>
 
-      {visibleStrikes.length > 0 ? (
+      {ladderStrikes.length > 0 ? (
         <div className="sbb-strikes sbb-strikes-v2">
-          {visibleStrikes.map((s) => {
+          {ladderStrikes.map((s) => {
             const d = strikeOiDefenseMap[s.strike];
             const isSpot = nearestStrike === s.strike;
             const hasWallTag =
