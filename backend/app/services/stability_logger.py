@@ -13,7 +13,9 @@ from typing import Any
 
 from app.core.cache import cache, make_cache_key
 
-LOG_DIR = Path(__file__).resolve().parents[2] / "logs" / "stability"
+# Keep log directory aligned with signal_logger/signal_outcome_tracker:
+# repo_root/logs/stability
+LOG_DIR = Path(__file__).resolve().parents[3] / "logs" / "stability"
 LOGGER_NAME = "optionlens.stability_logger"
 LOG_ROTATION_MAX_BYTES = max(1024, int(os.getenv("OPTIONLENS_LOG_ROTATION_MAX_BYTES", str(10 * 1024 * 1024))))
 LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP_COUNT", "2")))

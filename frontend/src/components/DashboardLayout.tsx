@@ -99,6 +99,8 @@ type DashboardLayoutProps = {
       ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
       pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
     }> | null;
+    absorptionStrength?: number | null;
+    absorptionSignal?: string | null;
   };
   trap: {
     trap_probability: number;
@@ -120,6 +122,10 @@ type DashboardLayoutProps = {
     oi_price_divergence?: boolean;
     absorption_detected?: boolean;
     absorption_message?: string | null;
+    absorption_signal?: string | null;
+    absorption_strength?: number | null;
+    support_absorption_strength?: number | null;
+    resistance_absorption_strength?: number | null;
     show_affected_level?: boolean;
     key_range?: string | null;
     institutional_levels?: string | null;
@@ -281,6 +287,8 @@ export default function DashboardLayout({
             strikeGap={structure.strikeGap}
             strikes={structure.strikes}
             chainGreeks={structure.chainGreeks}
+            absorptionStrength={structure.absorptionStrength}
+            absorptionSignal={structure.absorptionSignal}
           />
         </div>
       </div>
@@ -373,6 +381,10 @@ export default function DashboardLayout({
             oi_price_divergence={trap.oi_price_divergence}
             absorption_detected={trap.absorption_detected}
             absorption_message={trap.absorption_message}
+            absorption_signal={trap.absorption_signal}
+            absorption_strength={trap.absorption_strength}
+            support_absorption_strength={trap.support_absorption_strength}
+            resistance_absorption_strength={trap.resistance_absorption_strength}
             show_affected_level={trap.show_affected_level}
             key_range={trap.key_range}
             institutional_levels={trap.institutional_levels}

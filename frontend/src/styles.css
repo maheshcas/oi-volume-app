@@ -8882,6 +8882,83 @@ input[type="number"] {
   color: var(--ia-text-primary);
 }
 
+.sbb-absorption-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(100, 116, 139, 0.08);
+  color: #94a3b8;
+}
+
+.sbb-absorption-pill-moderate {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.sbb-absorption-pill-strong {
+  color: #2dd4bf;
+  background: rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.35);
+}
+
+.sbb-absorption-pill-extreme {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.16);
+}
+
+.sbb-absorption-moderate .sbb-track {
+  box-shadow: inset 0 0 22px rgba(245, 158, 11, 0.12);
+}
+
+.sbb-absorption-strong .sbb-track {
+  box-shadow: inset 0 0 24px rgba(45, 212, 191, 0.16);
+}
+
+.sbb-absorption-extreme .sbb-track {
+  box-shadow:
+    inset 0 0 30px rgba(16, 185, 129, 0.2),
+    0 0 16px rgba(16, 185, 129, 0.16);
+}
+
+.trap-v2-ctx-sub {
+  grid-column: 2 / -1;
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  letter-spacing: 0.04em;
+  margin-top: -2px;
+}
+
+.trap-v2-ctx-row-absorption-weak {
+  background: rgba(100, 116, 139, 0.07);
+  border-left-color: rgba(100, 116, 139, 0.55);
+}
+
+.trap-v2-ctx-row-absorption-moderate {
+  background: rgba(245, 158, 11, 0.08);
+  border-left-color: rgba(245, 158, 11, 0.55);
+}
+
+.trap-v2-ctx-row-absorption-strong {
+  background: rgba(45, 212, 191, 0.08);
+  border-left-color: rgba(45, 212, 191, 0.55);
+}
+
+.trap-v2-ctx-row-absorption-extreme {
+  background: rgba(16, 185, 129, 0.1);
+  border-left-color: rgba(16, 185, 129, 0.65);
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.2);
+}
+
 /* Alerts block v2 - grouped + severity-sorted */
 .trap-alerts-v2 {
   display: grid;

@@ -569,6 +569,144 @@ def _compute_oi_matrix_trap(
     }
 
 
+def _closest_liquidity_row(
+    liquidity_map: list[dict[str, Any]] | None,
+    level: float | None,
+) -> dict[str, Any] | None:
+    if not isinstance(liquidity_map, list) or not liquidity_map:
+        return None
+    if not isinstance(level, (int, float)) or float(level) <= 0:
+        return None
+    try:
+        return min(
+            liquidity_map,
+            key=lambda r: abs(float((r or {}).get("strike", 0) or 0) - float(level)),
+        )
+    except Exception:
+        return None
+
+
+def _compute_absorption_signal(
+    *,
+    spot: float | None,
+    support: float | None,
+    resistance: float | None,
+    strike_gap: int,
+    liquidity_map: list[dict[str, Any]] | None,
+    trap_probability: float,
+    observations: list[dict[str, float]] | None,
+) -> dict[str, Any]:
+    spot_v = float(spot) if isinstance(spot, (int, float)) else None
+    support_v = float(support) if isinstance(support, (int, float)) else None
+    resistance_v = float(resistance) if isinstance(resistance, (int, float)) else None
+    gap = max(1.0, float(strike_gap or 50))
+    near_buffer = 2.0 * gap
+    trap_v = float(trap_probability or 0.0)
+
+    if spot_v is None or support_v is None or resistance_v is None:
+        return {
+            "absorption_signal": "NONE",
+            "absorption_strength": 0.0,
+            "absorption_reason": "Absorption inactive - missing structural levels.",
+            "absorption_level": None,
+            "absorption_confirmed": False,
+            "support_absorption_strength": 0.0,
+            "resistance_absorption_strength": 0.0,
+        }
+
+    prices = [float(x.get("spot", 0.0)) for x in (observations or []) if isinstance(x, dict)]
+    last_price = prices[-1] if prices else spot_v
+
+    support_row = _closest_liquidity_row(liquidity_map, support_v)
+    resistance_row = _closest_liquidity_row(liquidity_map, resistance_v)
+    pe_chg = float((support_row or {}).get("oi_pe_change", 0.0) or 0.0)
+    ce_chg = float((resistance_row or {}).get("oi_ce_change", 0.0) or 0.0)
+
+    near_support = spot_v <= (support_v + near_buffer)
+    near_resistance = spot_v >= (resistance_v - near_buffer)
+
+    attempted_breakdown = any(p < support_v for p in prices) if prices else (spot_v < support_v)
+    attempted_breakout = any(p > resistance_v for p in prices) if prices else (spot_v > resistance_v)
+    reclaimed_support = last_price >= support_v
+    rejected_resistance = last_price <= resistance_v
+
+    support_price_failure = (attempted_breakdown and reclaimed_support) or (near_support and last_price >= support_v)
+    resistance_price_failure = (attempted_breakout and rejected_resistance) or (near_resistance and last_price <= resistance_v)
+
+    support_prox = _clamp01(1.0 - max(0.0, (spot_v - support_v)) / max(1e-9, near_buffer))
+    resistance_prox = _clamp01(1.0 - max(0.0, (resistance_v - spot_v)) / max(1e-9, near_buffer))
+    support_failure_score = 1.0 if (attempted_breakdown and reclaimed_support) else (0.7 if support_price_failure else 0.0)
+    resistance_failure_score = 1.0 if (attempted_breakout and rejected_resistance) else (0.7 if resistance_price_failure else 0.0)
+    support_defender_score = _clamp01((pe_chg - 0.0) / 0.12) if pe_chg > 0 else 0.0
+    resistance_defender_score = _clamp01((ce_chg - 0.0) / 0.12) if ce_chg > 0 else 0.0
+    trap_score = _clamp01((trap_v - 45.0) / 25.0)
+
+    support_strength = 100.0 * (
+        0.30 * support_prox
+        + 0.30 * support_failure_score
+        + 0.30 * support_defender_score
+        + 0.10 * trap_score
+    )
+    resistance_strength = 100.0 * (
+        0.30 * resistance_prox
+        + 0.30 * resistance_failure_score
+        + 0.30 * resistance_defender_score
+        + 0.10 * trap_score
+    )
+
+    support_confirmed = bool(
+        near_support
+        and support_price_failure
+        and pe_chg > 0.03
+        and trap_v > 55.0
+        and support_strength >= 55.0
+    )
+    resistance_confirmed = bool(
+        near_resistance
+        and resistance_price_failure
+        and ce_chg > 0.03
+        and trap_v > 55.0
+        and resistance_strength >= 55.0
+    )
+
+    if support_confirmed and (not resistance_confirmed or support_strength >= resistance_strength):
+        return {
+            "absorption_signal": "SUPPORT_ABSORPTION",
+            "absorption_strength": round(support_strength, 1),
+            "absorption_reason": (
+                f"Support absorption: price failed to break {int(round(support_v))} while PE OI built ({pe_chg:.2f}) "
+                f"with trap {int(round(trap_v))}%."
+            ),
+            "absorption_level": support_v,
+            "absorption_confirmed": True,
+            "support_absorption_strength": round(support_strength, 1),
+            "resistance_absorption_strength": round(resistance_strength, 1),
+        }
+    if resistance_confirmed:
+        return {
+            "absorption_signal": "RESISTANCE_ABSORPTION",
+            "absorption_strength": round(resistance_strength, 1),
+            "absorption_reason": (
+                f"Resistance absorption: price failed to hold above {int(round(resistance_v))} while CE OI built ({ce_chg:.2f}) "
+                f"with trap {int(round(trap_v))}%."
+            ),
+            "absorption_level": resistance_v,
+            "absorption_confirmed": True,
+            "support_absorption_strength": round(support_strength, 1),
+            "resistance_absorption_strength": round(resistance_strength, 1),
+        }
+
+    return {
+        "absorption_signal": "NONE",
+        "absorption_strength": round(max(support_strength, resistance_strength), 1),
+        "absorption_reason": "No confirmed absorption setup at support/resistance.",
+        "absorption_level": support_v if support_strength >= resistance_strength else resistance_v,
+        "absorption_confirmed": False,
+        "support_absorption_strength": round(support_strength, 1),
+        "resistance_absorption_strength": round(resistance_strength, 1),
+    }
+
+
 def run_trap_engine(
     features: dict[str, Any],
     breakout: dict[str, Any],
@@ -859,6 +997,16 @@ def run_trap_engine(
     if not resolved_trap_type and trap_risk >= 45:
         resolved_trap_type = "False-Break Risk" if trap_direction == "upside" else "Breakdown Risk"
 
+    absorption_result = _compute_absorption_signal(
+        spot=float(spot) if isinstance(spot, (int, float)) else None,
+        support=float(support) if isinstance(support, (int, float)) else None,
+        resistance=float(resistance) if isinstance(resistance, (int, float)) else None,
+        strike_gap=int(strike_gap or features.get("strike_gap") or 50),
+        liquidity_map=liquidity_map if isinstance(liquidity_map, list) else [],
+        trap_probability=float(trap_risk),
+        observations=observations,
+    )
+
     return {
         "is_trap": is_trap,
         "trap_probability_pct": int(trap_risk),
@@ -900,5 +1048,12 @@ def run_trap_engine(
         "breach_level": oi_matrix_result.get("breach_level"),
         "breach_oi_confirming": oi_matrix_result.get("breach_oi_confirming"),
         "oi_price_divergence": oi_matrix_result.get("oi_price_divergence"),
+        "absorption_signal": absorption_result.get("absorption_signal"),
+        "absorption_strength": absorption_result.get("absorption_strength"),
+        "absorption_reason": absorption_result.get("absorption_reason"),
+        "absorption_level": absorption_result.get("absorption_level"),
+        "absorption_confirmed": bool(absorption_result.get("absorption_confirmed")),
+        "support_absorption_strength": absorption_result.get("support_absorption_strength"),
+        "resistance_absorption_strength": absorption_result.get("resistance_absorption_strength"),
         "total_chain_oi": round(float(current_total_chain_oi), 2),
     }

@@ -73,6 +73,8 @@ type Props = {
     ce?: { delta?: number; ltp?: number };
     pe?: { delta?: number; ltp?: number };
   }> | null;
+  absorptionStrength?: number | null;
+  absorptionSignal?: string | null;
 };
 
 const fmt = (v: number | null | undefined, d = 0) =>
@@ -695,6 +697,8 @@ export default function StructuralPriceContextCard(props: Props) {
         chainGreeks={props.chainGreeks ?? undefined}
         trapProbability={props.trapProbability ?? null}
         materialBreachConfirmed={props.materialBreachConfirmed}
+        absorptionStrength={props.absorptionStrength ?? null}
+        absorptionSignal={props.absorptionSignal ?? null}
         embedded
       />
 

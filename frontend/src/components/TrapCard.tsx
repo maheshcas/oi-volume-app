@@ -20,6 +20,10 @@ export type TrapCardProps = {
   oi_price_divergence?: boolean;
   absorption_detected?: boolean;
   absorption_message?: string | null;
+  absorption_signal?: string | null;
+  absorption_strength?: number | null;
+  support_absorption_strength?: number | null;
+  resistance_absorption_strength?: number | null;
   show_affected_level?: boolean;
   key_range?: string | null;
   institutional_levels?: string | null;
@@ -37,6 +41,21 @@ const toneFor = (level: TrapLevel): LevelTone =>
     : level === "Low"
       ? { tone: "low", label: "Low" }
       : { tone: "moderate", label: "Moderate" };
+
+type AbsorptionBand = "weak" | "moderate" | "strong" | "extreme";
+
+function classifyAbsorption(
+  score: number | null | undefined,
+): { band: AbsorptionBand; label: string; stateLabel: string } {
+  const value =
+    typeof score === "number" && Number.isFinite(score)
+      ? Math.max(0, Math.min(100, Math.round(score)))
+      : 0;
+  if (value >= 76) return { band: "extreme", label: "Extreme", stateLabel: "EXTREME_ABSORPTION" };
+  if (value >= 51) return { band: "strong", label: "Strong", stateLabel: "STRONG_ABSORPTION" };
+  if (value >= 26) return { band: "moderate", label: "Moderate", stateLabel: "MODERATE_ABSORPTION" };
+  return { band: "weak", label: "Weak", stateLabel: "WEAK_ABSORPTION" };
+}
 
 function resolveDirectionalContext(
   direction: "upside" | "downside" | "",
@@ -152,6 +171,10 @@ export default function TrapCard({
   oi_price_divergence,
   absorption_detected,
   absorption_message,
+  absorption_signal,
+  absorption_strength,
+  support_absorption_strength,
+  resistance_absorption_strength,
   key_range,
 }: TrapCardProps) {
   void trap_type;
@@ -181,7 +204,19 @@ export default function TrapCard({
   );
 
   const supportContext = resolveSupportReason(support_reason);
-  const hasAbsorption = Boolean(absorption_detected) && Boolean(absorption_message);
+  const absorptionScore =
+    typeof absorption_strength === "number" && Number.isFinite(absorption_strength)
+      ? Math.max(0, Math.min(100, Math.round(absorption_strength)))
+      : 0;
+  const absorptionBand = classifyAbsorption(absorptionScore);
+  const absorptionSignalLabel = String(absorption_signal || "").trim()
+    ? String(absorption_signal).replace(/[_-]+/g, " ").toLowerCase()
+    : "";
+  const hasAbsorption =
+    absorptionScore > 0 ||
+    Boolean(absorption_detected) ||
+    Boolean(absorption_message) ||
+    Boolean(absorptionSignalLabel);
   const hasContextRows =
     Boolean(key_range) || hasAbsorption || Boolean(supportContext) || Boolean(oiMatrix) || Boolean(trap_reason);
 
@@ -259,9 +294,27 @@ export default function TrapCard({
           ) : null}
 
           {hasAbsorption ? (
-            <div className="trap-v2-ctx-row trap-v2-ctx-row-accent">
+            <div className={`trap-v2-ctx-row trap-v2-ctx-row-accent trap-v2-ctx-row-absorption-${absorptionBand.band}`}>
               <span className="trap-v2-ctx-key">Absorption</span>
-              <span className="trap-v2-ctx-val">{absorption_message}</span>
+              <span className="trap-v2-ctx-val">
+                {`${absorptionBand.label} (${absorptionScore})`}
+                {absorptionSignalLabel ? ` · ${absorptionSignalLabel}` : ""}
+                {absorption_message ? ` · ${absorption_message}` : ""}
+              </span>
+              {(typeof support_absorption_strength === "number" || typeof resistance_absorption_strength === "number") ? (
+                <span className="trap-v2-ctx-sub">
+                  {typeof support_absorption_strength === "number"
+                    ? `S ${Math.round(support_absorption_strength)}`
+                    : null}
+                  {typeof support_absorption_strength === "number" &&
+                  typeof resistance_absorption_strength === "number"
+                    ? " · "
+                    : null}
+                  {typeof resistance_absorption_strength === "number"
+                    ? `R ${Math.round(resistance_absorption_strength)}`
+                    : null}
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>

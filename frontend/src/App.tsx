@@ -315,6 +315,10 @@ type IntelligenceResponse = {
       downside_state?: string;
     };
     absorption_detected?: boolean;
+    absorption_signal?: string | null;
+    absorption_strength?: number | null;
+    support_absorption_strength?: number | null;
+    resistance_absorption_strength?: number | null;
     absorption_level?: number | null;
     absorption_message?: string | null;
     support_transition_active?: boolean;
@@ -404,6 +408,10 @@ type IntelligenceResponse = {
       breach_level?: number | null;
       breach_oi_confirming?: boolean;
       oi_price_divergence?: boolean;
+      absorption_signal?: string | null;
+      absorption_strength?: number | null;
+      support_absorption_strength?: number | null;
+      resistance_absorption_strength?: number | null;
     };
     material_breach?: {
       material_breach_confirmed?: boolean;
@@ -3652,6 +3660,16 @@ export default function App() {
                     pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
                   }>
               : null,
+            absorptionStrength:
+              typeof intelligence?.signals?.trap?.absorption_strength === "number"
+                ? intelligence.signals.trap.absorption_strength
+                : (typeof intelligence?.market_state?.absorption_strength === "number"
+                  ? intelligence.market_state.absorption_strength
+                  : null),
+            absorptionSignal:
+              intelligence?.signals?.trap?.absorption_signal
+              ?? intelligence?.market_state?.absorption_signal
+              ?? null,
             strikes: displayRows
               .map((row) => {
                 const strike = toSafeNumber(row?.strike);
@@ -3700,6 +3718,28 @@ export default function App() {
             oi_price_divergence: intelligence?.signals?.trap?.oi_price_divergence ?? undefined,
             absorption_detected: Boolean(intelligence?.market_state?.absorption_detected),
             absorption_message: intelligence?.market_state?.absorption_message ?? null,
+            absorption_signal:
+              intelligence?.signals?.trap?.absorption_signal
+              ?? intelligence?.market_state?.absorption_signal
+              ?? null,
+            absorption_strength:
+              typeof intelligence?.signals?.trap?.absorption_strength === "number"
+                ? intelligence.signals.trap.absorption_strength
+                : (typeof intelligence?.market_state?.absorption_strength === "number"
+                  ? intelligence.market_state.absorption_strength
+                  : null),
+            support_absorption_strength:
+              typeof intelligence?.signals?.trap?.support_absorption_strength === "number"
+                ? intelligence.signals.trap.support_absorption_strength
+                : (typeof intelligence?.market_state?.support_absorption_strength === "number"
+                  ? intelligence.market_state.support_absorption_strength
+                  : null),
+            resistance_absorption_strength:
+              typeof intelligence?.signals?.trap?.resistance_absorption_strength === "number"
+                ? intelligence.signals.trap.resistance_absorption_strength
+                : (typeof intelligence?.market_state?.resistance_absorption_strength === "number"
+                  ? intelligence.market_state.resistance_absorption_strength
+                  : null),
             show_affected_level: showTrapAffectedLevel,
             key_range: displayDecisionText,
             institutional_levels: decisionLayerWalls || null,

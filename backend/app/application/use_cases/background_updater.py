@@ -785,6 +785,8 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "absorption_detected",
         "absorption_level",
         "absorption_message",
+        "absorption_signal",
+        "absorption_strength",
         "support_zone_pressure",
         "support_zone_state",
         "resistance_zone_pressure",
@@ -962,6 +964,11 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "breach_level": trap.get("breach_level"),
         "breach_oi_confirming": trap.get("breach_oi_confirming"),
         "oi_price_divergence": trap.get("oi_price_divergence"),
+        "absorption_signal": trap.get("absorption_signal"),
+        "absorption_strength": trap.get("absorption_strength"),
+        "absorption_reason": trap.get("absorption_reason"),
+        "absorption_level": trap.get("absorption_level"),
+        "absorption_confirmed": trap.get("absorption_confirmed"),
     }
 
     material_breach = (
@@ -983,6 +990,18 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "absorption_detected": support_absorption.get("absorption_detected"),
         "level": support_absorption.get("level"),
         "message": support_absorption.get("message"),
+        "strength": support_absorption.get("strength"),
+    }
+    resistance_absorption = (
+        signals.get("resistance_absorption")
+        if isinstance(signals.get("resistance_absorption"), dict)
+        else {}
+    )
+    sanitized["resistance_absorption"] = {
+        "absorption_detected": resistance_absorption.get("absorption_detected"),
+        "level": resistance_absorption.get("level"),
+        "message": resistance_absorption.get("message"),
+        "strength": resistance_absorption.get("strength"),
     }
 
     sr = signals.get("sr") if isinstance(signals.get("sr"), dict) else {}
@@ -4570,11 +4589,42 @@ def _build_v2_intelligence(
         breakout_strength=breakout_strength_adjusted,
         trap_probability=trap_probability,
     )
+    trap_absorption_signal = str(trap.get("absorption_signal") or "NONE")
+    trap_absorption_confirmed = bool(trap.get("absorption_confirmed"))
+    support_absorption_detected = bool(support_absorption.get("absorption_detected")) or (
+        trap_absorption_signal == "SUPPORT_ABSORPTION" and trap_absorption_confirmed
+    )
+    resistance_absorption_detected = (
+        trap_absorption_signal == "RESISTANCE_ABSORPTION" and trap_absorption_confirmed
+    )
+    if support_absorption_detected:
+        support_absorption["absorption_detected"] = True
+        support_absorption.setdefault("level", trap.get("absorption_level") or absorption_reference_level)
+        support_absorption["message"] = str(
+            support_absorption.get("message")
+            or trap.get("absorption_reason")
+            or "Support absorption detected."
+        )
+        support_absorption["strength"] = float(
+            trap.get("support_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
+        )
+    resistance_absorption = {
+        "absorption_detected": bool(resistance_absorption_detected),
+        "level": trap.get("absorption_level") if resistance_absorption_detected else resistance_level,
+        "message": (
+            str(trap.get("absorption_reason") or "Resistance absorption detected.")
+            if resistance_absorption_detected
+            else None
+        ),
+        "strength": float(
+            trap.get("resistance_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
+        ),
+    }
     confirmation_type = str(material_breach.get("confirmation_type") or "")
     material_breach_confirmed = bool(material_breach.get("material_breach_confirmed"))
-    absorption_detected = bool(support_absorption.get("absorption_detected"))
+    absorption_detected = bool(support_absorption_detected or resistance_absorption_detected)
     absorption_wins = False
-    if bool(material_breach.get("support_broken")) and absorption_detected:
+    if bool(material_breach.get("support_broken")) and support_absorption_detected:
         if not material_breach_confirmed or not confirmation_type:
             absorption_wins = True
         elif confirmation_type == "support_abandonment":
@@ -4596,13 +4646,13 @@ def _build_v2_intelligence(
     breach_projection_override: str | None = None
     if material_breach_confirmed:
         if bool(material_breach.get("resistance_broken")):
-            if absorption_detected:
+            if resistance_absorption_detected:
                 breach_projection_override = "Resistance Broken — Absorption Active"
                 decision["trade_action"] = "WAIT"
             else:
                 breach_projection_override = "Resistance Broken — Monitoring Expansion"
         elif bool(material_breach.get("support_broken")):
-            if absorption_detected:
+            if support_absorption_detected:
                 breach_projection_override = "Support Broken — Absorption Active"
                 decision["trade_action"] = "WAIT"
             else:
@@ -5956,6 +6006,7 @@ def _build_v2_intelligence(
         "wall_break": wall_break,
         "liquidity_map": liquidity_map,
         "support_absorption": support_absorption,
+        "resistance_absorption": resistance_absorption,
         "session_phase": session_phase_payload.get("session_phase"),
         "session_phase_confidence": session_phase_payload.get("confidence"),
     }
@@ -6003,6 +6054,7 @@ def _build_v2_intelligence(
         "wall_break": wall_break,
         "liquidity_map": liquidity_map,
         "support_absorption": support_absorption,
+        "resistance_absorption": resistance_absorption,
         "previous_support": support_reference_state.get("previous_support"),
         "current_support": support_reference_state.get("current_support"),
         "previous_resistance": support_reference_state.get("previous_resistance"),
@@ -6116,6 +6168,7 @@ def _build_v2_intelligence(
             "resistance": resistance_level,
             "material_breach": material_breach,
             "support_absorption": support_absorption,
+            "resistance_absorption": resistance_absorption,
             "previous_support": support_reference_state.get("previous_support"),
             "current_support": support_reference_state.get("current_support"),
             "previous_resistance": support_reference_state.get("previous_resistance"),
@@ -6138,9 +6191,15 @@ def _build_v2_intelligence(
             ),
             "support_transition_badge": support_transition_badge,
             "resistance_transition_badge": resistance_transition_badge,
-            "absorption_detected": bool(support_absorption.get("absorption_detected")),
-            "absorption_level": support_absorption.get("level"),
-            "absorption_message": support_absorption.get("message"),
+            "absorption_detected": bool(absorption_detected),
+            "absorption_level": trap.get("absorption_level") if trap_absorption_confirmed else support_absorption.get("level"),
+            "absorption_message": (
+                trap.get("absorption_reason")
+                if trap_absorption_confirmed
+                else support_absorption.get("message")
+            ),
+            "absorption_signal": trap_absorption_signal,
+            "absorption_strength": float(trap.get("absorption_strength", 0.0) or 0.0),
             "support_zone_pressure": round(float(support_zone_pressure), 2),
             "support_zone_state": support_zone_state,
             "resistance_zone_pressure": round(float(resistance_zone_pressure), 2),
@@ -6262,6 +6321,14 @@ def _build_v2_intelligence(
             "oi_imbalance_trap": oi_imbalance_trap,
             "material_breach": material_breach,
             "support_absorption": support_absorption,
+            "resistance_absorption": resistance_absorption,
+            "absorption": {
+                "signal": trap_absorption_signal,
+                "strength": float(trap.get("absorption_strength", 0.0) or 0.0),
+                "confirmed": bool(trap_absorption_confirmed),
+                "reason": trap.get("absorption_reason"),
+                "level": trap.get("absorption_level"),
+            },
             "breakout_candidate": breakout_candidate,
             "sr_breach_state": sr_breach_state,
             "alignment_filter": {

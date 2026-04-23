@@ -31,6 +31,8 @@ type StructureBandBarProps = {
   embedded?: boolean;
   trapProbability?: number | null;
   materialBreachConfirmed?: boolean;
+  absorptionStrength?: number | null;
+  absorptionSignal?: string | null;
 };
 
 const fmt = (value?: number | null) =>
@@ -93,6 +95,8 @@ export default function StructureBandBar({
   embedded = false,
   trapProbability = null,
   materialBreachConfirmed = false,
+  absorptionStrength = null,
+  absorptionSignal = null,
 }: StructureBandBarProps) {
   void chainGreeks;
 
@@ -147,6 +151,32 @@ export default function StructureBandBar({
     rubberBandActive &&
     tension >= 0.65 &&
     (typeof trapProbability === "number" && trapProbability >= 55);
+
+  const absorptionScore =
+    typeof absorptionStrength === "number" && Number.isFinite(absorptionStrength)
+      ? clamp(Math.round(absorptionStrength), 0, 100)
+      : 0;
+  const absorptionBand =
+    absorptionScore >= 76
+      ? "extreme"
+      : absorptionScore >= 51
+        ? "strong"
+        : absorptionScore >= 26
+          ? "moderate"
+          : "weak";
+  const absorptionLabel =
+    absorptionBand === "extreme"
+      ? "Extreme"
+      : absorptionBand === "strong"
+        ? "Strong"
+        : absorptionBand === "moderate"
+          ? "Mild"
+          : "Weak";
+  const absorptionSignalLabel = String(absorptionSignal || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .toLowerCase();
+  const showAbsorptionPill = absorptionScore > 25;
 
   const haloOpacity = rubberBandActive ? 0.4 + tension * 0.5 : 0.25;
   const markerWidthPx = rubberBandActive ? 1 + Math.round(tension * 2) : 1;
@@ -315,7 +345,13 @@ export default function StructureBandBar({
         </div>
       )}
 
-      <div className={`band-section${rubberBandActive ? " band-section-rubber" : ""}${rejectionRisk ? " band-section-rejection" : ""}`}>
+      <div className={`band-section${rubberBandActive ? " band-section-rubber" : ""}${rejectionRisk ? " band-section-rejection" : ""}${showAbsorptionPill ? ` sbb-absorption-${absorptionBand}` : ""}`}>
+        {showAbsorptionPill ? (
+          <div className={`sbb-absorption-pill sbb-absorption-pill-${absorptionBand}`}>
+            {`Absorption ${absorptionLabel} (${absorptionScore})`}
+            {absorptionSignalLabel ? ` · ${absorptionSignalLabel}` : ""}
+          </div>
+        ) : null}
         {spotInsideRange ? (
           <div className="sbb-sr-inside-note">SPOT INSIDE S/R BAND</div>
         ) : null}
