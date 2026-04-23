@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(python -c ' *)",
-      "Bash(python -c \"from app.services.spot_feed import fetch_index_data; print\\('spot_feed OK'\\)\")"
+      "Bash(python -c \"from app.services.spot_feed import fetch_index_data; print\\('spot_feed OK'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import json; f=open\\('c:/Users/Maheswar/OneDrive/Desktop/oi-volume-app/backend/logs/optionlens_cycle_log.jsonl'\\); line=f.readline\\(\\); r=json.loads\\(line\\); print\\(list\\(r.keys\\(\\)\\)\\)\")",
+      "Bash(python backend/app/application/use_cases/background_updater.py --version)",
+      "Bash(python3 --version)",
+      "Bash(py -3 --version)",
+      "Bash(py -3 -c \"import json; f=open\\('backend/logs/optionlens_cycle_log.jsonl'\\); line=f.readline\\(\\); r=json.loads\\(line\\); print\\(list\\(r.keys\\(\\)\\)\\)\")",
+      "Bash(py -3 -c ' *)"
     ]
   }
 }

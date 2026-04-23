@@ -1,9 +1,13 @@
-import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
+import { Component, lazy, StrictMode, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import App from "./App";
 import LandingPage from "./LandingPage";
 import "./styles.css";
+
+const LocalAnalytics = import.meta.env.DEV
+  ? lazy(() => import("./pages/LocalAnalytics"))
+  : null;
 
 type RootErrorBoundaryState = {
   error: Error | null;
@@ -93,6 +97,12 @@ createRoot(container).render(
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/app" element={<App />} />
+          {LocalAnalytics && (
+            <Route
+              path="/local-analytics"
+              element={<Suspense fallback={null}><LocalAnalytics /></Suspense>}
+            />
+          )}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
