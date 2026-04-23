@@ -51,6 +51,19 @@ from app.engines.historical_zone_engine import get_intraday_zones
 from app.services.decision_engine import build_decision_input, master_decision_engine
 from app.infrastructure.persistence.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
+
+try:
+    from app.services.signal_logger import maybe_log_signal
+except Exception:
+    def maybe_log_signal(*args: Any, **kwargs: Any) -> None:  # type: ignore[no-redef]
+        return None
+
+try:
+    from app.services.signal_outcome_tracker import run_eod_outcome_computation
+except Exception:
+    async def run_eod_outcome_computation(*args: Any, **kwargs: Any) -> None:  # type: ignore[no-redef]
+        return None
+
 from app.infrastructure.feeds.bse_fetcher import get_sensex_option_chain
 from app.infrastructure.feeds.bse_adapter import (
     fetch_sensex_option_chain_async,
@@ -110,6 +123,7 @@ _SCHEDULED_FLUSH_WINDOWS_IST: list[tuple[int, int]] = [
     (9, 15),
     (12, 0),
     (15, 30),
+    (15, 35),  # EOD outcome computation (5 min after market close)
 ]
 
 # Track which windows have already fired today to prevent repeat flushes.
@@ -310,6 +324,13 @@ async def _check_scheduled_flush(now_ist: datetime) -> bool:
                     logger.info("EOD calibration triggered by scheduled flush at 15:30 IST")
                 except Exception as exc:
                     logger.warning("EOD calibration failed: %s", exc)
+            if window_key == (15, 35):
+                try:
+                    for sym in SYMBOLS:
+                        result = run_eod_outcome_computation(symbol=sym)
+                        logger.info("EOD outcome computation %s: %s", sym, result)
+                except Exception as exc:
+                    logger.warning("EOD outcome computation failed: %s", exc)
             return True
 
     return False
@@ -5941,6 +5962,30 @@ def _build_v2_intelligence(
     log_key = _cache_key(symbol=symbol, instrument_type=INSTRUMENT_TYPE, expiry=expiry)
     if _should_log_cycle(log_key):
         _append_cycle_log(cycle_log_entry)
+
+    # Signal logging — fires when directional_signal transitions from WAIT to active.
+    try:
+        maybe_log_signal(
+            key=log_key,
+            symbol=symbol,
+            expiry=expiry,
+            timestamp=cycle_log_entry.get("timestamp"),
+            spot=float(spot or 0.0),
+            directional_signal=cycle_log_entry.get("directional_signal"),
+            entry_zone=cycle_log_entry.get("entry_zone"),
+            stop_zone=cycle_log_entry.get("stop_zone"),
+            target_zone=cycle_log_entry.get("target_zone"),
+            support_level=support_level,
+            resistance_level=resistance_level,
+            trap_probability=float(trap_probability or 0.0),
+            iv_rank=iv_rank_result.get("iv_rank"),
+            regime=cycle_log_entry.get("regime_zone") or cycle_log_entry.get("regime_state"),
+            readiness=float(decision.get("trade_readiness_v2") or decision.get("trade_readiness") or 0),
+            directional_rr=cycle_log_entry.get("directional_rr"),
+            bias=cycle_log_entry.get("primary_bias"),
+        )
+    except Exception as _sig_exc:
+        logger.debug("Signal logging error (non-fatal): %s", _sig_exc)
 
     _spot_val = float(spot or 0)
     if _spot_val > 0 and chain_greeks:

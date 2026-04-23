@@ -82,6 +82,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NSE OI-Volume App", version="1.0", lifespan=lifespan)
 app.include_router(option_chain.router, prefix="/api")
+
+ENABLE_LOCAL_ANALYTICS = os.getenv("OPTIONLENS_ENABLE_LOCAL_ANALYTICS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if ENABLE_LOCAL_ANALYTICS:
+    try:
+        from app.presentation.routers import local_analytics  # type: ignore
+
+        app.include_router(local_analytics.router)
+        logger.info("Local analytics router enabled")
+    except Exception as exc:
+        logger.warning("Local analytics router unavailable; skipping (%s)", exc)
+else:
+    logger.info("Local analytics router disabled by configuration")
+
 app.add_middleware(SupabaseAuthMiddleware)
 
 app.add_middleware(

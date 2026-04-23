@@ -26,3 +26,11 @@ resorces
 *.patch
 requirements.txtfreez
 README_ARCHITECTURE.md
+
+# Production exclusion set
+frontend/src/pages
+frontend/src/styles
+logs
+backend/app/services/signal_logger.py
+backend/app/services/signal_outcome_tracker.py
+backend/app/presentation/routers/local_analytics.py
