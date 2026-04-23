@@ -19,6 +19,9 @@ type DecisionBannerProps = {
   detailWalls?: string | null;
   support: string;
   resistance: string;
+  spotNumeric?: number | null;
+  supportNumeric?: number | null;
+  resistanceNumeric?: number | null;
   blockingReason?: string;
   trapPct?: number | null;
   winningEngine?: string;
@@ -58,15 +61,15 @@ function resolveHeadline(
   const blocker = String(blockingReason || "").trim().toUpperCase();
   if (blocker && blocker !== "NONE") {
     const friendly = friendlyBlockingReason(blockingReason);
-    if (action === "WAIT") return `${friendly} · waiting for a clean edge before committing`;
-    if (action === "CAUTION") return `${friendly} · setup forming, confirmation pending`;
-    return `${friendly} · conditions aligned for execution`;
+    if (action === "WAIT") return `${friendly} - waiting for a clean edge before committing`;
+    if (action === "CAUTION") return `${friendly} - setup forming, confirmation pending`;
+    return `${friendly} - conditions aligned for execution`;
   }
   const clean = (explanation || "").trim();
   if (clean) return clean;
   if (action === "READY") return "Conditions aligned for execution";
   if (action === "CAUTION") return "Setup forming, confirmation pending";
-  return `${formatDirectionLabel(direction)} · waiting for a clean edge`;
+  return `${formatDirectionLabel(direction)} - waiting for a clean edge`;
 }
 
 function resolveUnlockHint(
@@ -76,7 +79,7 @@ function resolveUnlockHint(
   const blocker = String(blockingReason || "").trim().toUpperCase();
   if (!blocker || blocker === "NONE") return null;
   if (blocker === "RANGE_CONFLICT")
-    return "Spot reaches S or R edge — readiness holds above 60%";
+    return "Spot reaches S or R edge - readiness holds above 60%";
   if (blocker === "TRAP_HIGH" && typeof trapPct === "number")
     return `Trap drops below 55% (now ${Math.round(trapPct)}%)`;
   if (blocker === "HIGH_TRAP_NO_BREACH_CAP")
@@ -108,6 +111,118 @@ function readinessTone(score: number): "below" | "near" | "above" {
   return "below";
 }
 
+type GateStatus = "pass" | "near" | "fail" | "unknown";
+
+type Gate = {
+  key: string;
+  label: string;
+  status: GateStatus;
+  current: string;
+  gap: string | null;
+};
+
+function resolveGates(args: {
+  trapPct: number | null | undefined;
+  spot: number | null | undefined;
+  support: number | null | undefined;
+  resistance: number | null | undefined;
+  readinessScore: number;
+  decisionConfidence: number | null | undefined;
+}): Gate[] {
+  const gates: Gate[] = [];
+
+  const trap =
+    typeof args.trapPct === "number" && Number.isFinite(args.trapPct)
+      ? Math.round(args.trapPct)
+      : null;
+  if (trap !== null) {
+    const status: GateStatus =
+      trap < 55 ? "pass" : trap < 60 ? "near" : "fail";
+    gates.push({
+      key: "trap",
+      label: "Trap below 55%",
+      status,
+      current: `${trap}%`,
+      gap: status === "pass" ? null : `drop ${trap - 54}%`,
+    });
+  } else {
+    gates.push({
+      key: "trap",
+      label: "Trap below 55%",
+      status: "unknown",
+      current: "-",
+      gap: null,
+    });
+  }
+
+  const spot = typeof args.spot === "number" && Number.isFinite(args.spot) ? args.spot : null;
+  const support =
+    typeof args.support === "number" && Number.isFinite(args.support) ? args.support : null;
+  const resistance =
+    typeof args.resistance === "number" && Number.isFinite(args.resistance) ? args.resistance : null;
+
+  if (spot !== null && (support !== null || resistance !== null)) {
+    const distToS = support !== null ? Math.abs(spot - support) : Infinity;
+    const distToR = resistance !== null ? Math.abs(spot - resistance) : Infinity;
+    const nearestDist = Math.min(distToS, distToR);
+    const nearestSide = distToS < distToR ? "support" : "resistance";
+    const status: GateStatus =
+      nearestDist <= 60 ? "pass" : nearestDist <= 100 ? "near" : "fail";
+    gates.push({
+      key: "edge",
+      label: "Spot at S/R edge",
+      status,
+      current: `${Math.round(nearestDist)}pts to ${nearestSide}`,
+      gap: status === "pass" ? null : `move ${Math.round(nearestDist - 60)}pts`,
+    });
+  } else {
+    gates.push({
+      key: "edge",
+      label: "Spot at S/R edge",
+      status: "unknown",
+      current: "-",
+      gap: null,
+    });
+  }
+
+  const readiness = Math.max(0, Math.min(100, Number(args.readinessScore) || 0));
+  const readinessStatus: GateStatus =
+    readiness >= 60 ? "pass" : readiness >= 50 ? "near" : "fail";
+  gates.push({
+    key: "readiness",
+    label: "Readiness >= 60%",
+    status: readinessStatus,
+    current: `${Math.round(readiness)}%`,
+    gap: readinessStatus === "pass" ? null : `gain ${Math.round(60 - readiness)}%`,
+  });
+
+  const confidence =
+    typeof args.decisionConfidence === "number" && Number.isFinite(args.decisionConfidence)
+      ? Math.max(0, Math.min(100, args.decisionConfidence))
+      : null;
+  if (confidence !== null) {
+    const status: GateStatus =
+      confidence >= 50 ? "pass" : confidence >= 40 ? "near" : "fail";
+    gates.push({
+      key: "confidence",
+      label: "Confidence >= 50%",
+      status,
+      current: `${Math.round(confidence)}%`,
+      gap: status === "pass" ? null : `gain ${Math.round(50 - confidence)}%`,
+    });
+  } else {
+    gates.push({
+      key: "confidence",
+      label: "Confidence >= 50%",
+      status: "unknown",
+      current: "-",
+      gap: null,
+    });
+  }
+
+  return gates;
+}
+
 export default function DecisionBanner({
   action,
   direction,
@@ -119,6 +234,9 @@ export default function DecisionBanner({
   readinessExplainability = null,
   pressureState,
   regime,
+  spotNumeric = null,
+  supportNumeric = null,
+  resistanceNumeric = null,
   blockingReason = "NONE",
   trapPct = null,
   winningEngine = "",
@@ -138,10 +256,20 @@ export default function DecisionBanner({
 
   const headline = resolveHeadline(action, direction, explanation, blockingReason);
   const unlockHint = resolveUnlockHint(blockingReason, trapPct);
+  const gates = resolveGates({
+    trapPct,
+    spot: spotNumeric,
+    support: supportNumeric,
+    resistance: resistanceNumeric,
+    readinessScore,
+    decisionConfidence,
+  });
+  const passedGates = gates.filter((g) => g.status === "pass").length;
+  const totalGates = gates.length;
 
   const biasLabel = bias || formatDirectionLabel(direction);
   const pressureLabel = pressureState.replace(/\s*Pressure$/i, "").trim() || pressureState;
-  const regimeLabel = regime || "—";
+  const regimeLabel = regime || "-";
 
   const rTone = readinessTone(readinessPct);
   const rStateText = readinessState
@@ -162,7 +290,7 @@ export default function DecisionBanner({
   const cSubText =
     blockingReason && blockingReason.toUpperCase() !== "NONE"
       ? friendlyBlockingReason(blockingReason).toLowerCase()
-      : "—";
+      : "-";
 
   const transitionLabel = supportTransitionBadge
     ? "Support Transition Active"
@@ -185,16 +313,16 @@ export default function DecisionBanner({
             <span className="db-v3-state-dot" />
             <span className="db-v3-state-label">{stateWord}</span>
             {phaseStr ? (
-              <span className="db-v3-state-sub">· {phaseStr.toLowerCase()}</span>
+              <span className="db-v3-state-sub">- {phaseStr.toLowerCase()}</span>
             ) : null}
           </div>
         </div>
 
         <div className="db-v3-meta">
           <span>{biasLabel}</span>
-          <span className="db-v3-meta-sep">·</span>
+          <span className="db-v3-meta-sep">-</span>
           <span>{pressureLabel}</span>
-          <span className="db-v3-meta-sep">·</span>
+          <span className="db-v3-meta-sep">-</span>
           <span>{regimeLabel}</span>
         </div>
       </div>
@@ -256,21 +384,29 @@ export default function DecisionBanner({
           </div>
         </div>
 
-        {unlockHint ? (
-          <div className="db-v3-unlock">
-            <div className="db-v3-unlock-label">Unlock when</div>
-            <div className="db-v3-unlock-body">{unlockHint}</div>
+        <div
+          className={`db-v3-gates${action === "READY" ? " db-v3-gates-ready" : ""}`}
+        >
+          <div className="db-v3-gates-head">
+            <span className="db-v3-gates-label">Unlock gates</span>
+            <span className="db-v3-gates-progress">
+              {passedGates}/{totalGates} cleared
+            </span>
           </div>
-        ) : (
-          <div className="db-v3-unlock db-v3-unlock-clear">
-            <div className="db-v3-unlock-label">Status</div>
-            <div className="db-v3-unlock-body">
-              {action === "READY"
-                ? "All gates cleared · execute with plan"
-                : "No active blocker · monitoring for signal"}
-            </div>
+          {unlockHint ? <div className="db-v3-cell-note">{unlockHint}</div> : null}
+          <div className="db-v3-gates-list">
+            {gates.map((g) => (
+              <div key={g.key} className={`db-v3-gate db-v3-gate-${g.status}`}>
+                <span className="db-v3-gate-mark" aria-hidden="true">
+                  {g.status === "pass" ? "✓" : g.status === "unknown" ? "·" : "✗"}
+                </span>
+                <span className="db-v3-gate-label">{g.label}</span>
+                <span className="db-v3-gate-current">{g.current}</span>
+                {g.gap ? <span className="db-v3-gate-gap">{g.gap}</span> : null}
+              </div>
+            ))}
           </div>
-        )}
+        </div>
       </div>
 
       <div className="db-v3-footer">
@@ -278,7 +414,7 @@ export default function DecisionBanner({
           <span>Engine: {engineLabel}</span>
           {capLabel ? (
             <>
-              <span className="db-v3-footer-sep">·</span>
+              <span className="db-v3-footer-sep">-</span>
               <span>Cap: {capLabel}</span>
             </>
           ) : null}

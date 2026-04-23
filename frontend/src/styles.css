@@ -7256,7 +7256,7 @@ input[type="number"] {
   margin: 20px 0 34px;   /* top: room for sbb-lbl-above (-16px); bottom: room for 2 stacked sbb-lbl-below (-14px / -26px) */
   overflow: visible;      /* was hidden — clipped the floating labels */
 }
-.sbb-track { position: absolute; left: 0; right: 0; top: 18px; height: 16px; background: rgba(148, 163, 184, 0.08); border-radius: 3px; }
+.sbb-track { position: absolute; left: 0; right: 0; top: 18px; height: 16px; background: linear-gradient(90deg, rgba(38, 166, 154, 0.9) 0%, rgba(245, 158, 11, 0.86) 52%, rgba(239, 83, 80, 0.9) 100%); border-radius: 3px; }
 .sbb-fill { position: absolute; top: 18px; height: 16px; }
 .sbb-fill-support { background: rgba(38, 166, 154, 0.16); border-radius: 3px 0 0 3px; }
 .sbb-fill-resistance { background: rgba(239, 83, 80, 0.16); border-radius: 0 3px 3px 0; }
@@ -10675,5 +10675,366 @@ input[type="number"] {
 
   .lp-notify-input {
     width: 100%;
+  }
+}
+
+/* ------------------------------------------------------------------
+   StrikeGuidanceCard - Greeks Context block (patch 13)
+   ------------------------------------------------------------------ */
+.sgc-v2-greeks {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(148, 163, 184, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+}
+
+.sgc-v2-greeks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sgc-v2-greeks-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ia-text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-greeks-tag {
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sgc-v2-breakeven {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+}
+
+.sgc-v2-breakeven-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.sgc-v2-breakeven-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ia-text-tertiary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-breakeven-range {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a78bfa;
+  font-variant-numeric: tabular-nums;
+}
+
+.sgc-v2-breakeven-values {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.sgc-v2-breakeven-low,
+.sgc-v2-breakeven-high {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ia-text-primary);
+}
+
+.sgc-v2-breakeven-low {
+  color: #26a69a;
+}
+
+.sgc-v2-breakeven-high {
+  color: #ef5350;
+}
+
+.sgc-v2-breakeven-track {
+  position: relative;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sgc-v2-breakeven-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #26a69a 0%, #787b86 50%, #ef5350 100%);
+  opacity: 0.4;
+}
+
+.sgc-v2-breakeven-note {
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  font-style: italic;
+}
+
+.sgc-v2-greeks-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sgc-v2-greek-cell {
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sgc-v2-greek-key {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ia-text-tertiary);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sgc-v2-greek-val {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ia-text-primary);
+  line-height: 1.2;
+}
+
+.sgc-v2-greek-sub {
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sgc-v2-greek-cell-high .sgc-v2-greek-val {
+  color: #ef5350;
+}
+
+.sgc-v2-greek-cell-elevated .sgc-v2-greek-val,
+.sgc-v2-greek-cell-severe .sgc-v2-greek-val {
+  color: #ef5350;
+}
+
+.sgc-v2-greek-cell-mid .sgc-v2-greek-val,
+.sgc-v2-greek-cell-normal .sgc-v2-greek-val {
+  color: #f0b429;
+}
+
+.sgc-v2-greek-cell-low .sgc-v2-greek-val {
+  color: #26a69a;
+}
+
+.sgc-strikes-header-v2 {
+  display: grid;
+  grid-template-columns: 1.8fr 0.7fr 0.7fr 0.8fr 0.7fr 0.8fr;
+  gap: 8px;
+}
+
+.sgc-strike-row-v2 {
+  display: grid !important;
+  grid-template-columns: 1.8fr 0.7fr 0.7fr 0.8fr 0.7fr 0.8fr;
+  gap: 8px;
+}
+
+.sgc-vega {
+  color: #a78bfa;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .sgc-v2-greeks-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .sgc-v2-greek-cell:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+  .sgc-strikes-header-v2,
+  .sgc-strike-row-v2 {
+    grid-template-columns: 1.4fr 0.6fr 0.6fr 0.7fr 0.6fr 0.7fr;
+    font-size: 10px;
+  }
+  .sgc-v2-breakeven-values {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    text-align: center;
+  }
+}
+
+/* ------------------------------------------------------------------
+   DecisionBanner v3 - Unlock Gates panel (patch B)
+   ------------------------------------------------------------------ */
+.db-v3-gates {
+  padding: 10px 12px;
+  background: rgba(240, 180, 41, 0.05);
+  border-left: 3px solid #f0b429;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.db-v3-gates-ready {
+  background: rgba(38, 166, 154, 0.05);
+  border-left-color: #26a69a;
+}
+
+.db-v3-gates-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.db-v3-gates-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: #f0b429;
+}
+
+.db-v3-gates-ready .db-v3-gates-label {
+  color: #26a69a;
+}
+
+.db-v3-gates-progress {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ia-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.db-v3-gates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.db-v3-gate {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: baseline;
+  gap: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2px 0;
+}
+
+.db-v3-gate-mark {
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.db-v3-gate-label {
+  color: var(--ia-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-v3-gate-current {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 11px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.db-v3-gate-gap {
+  grid-column: 2 / -1;
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+  margin-top: -2px;
+}
+
+.db-v3-gate-pass .db-v3-gate-mark {
+  color: #26a69a;
+}
+
+.db-v3-gate-pass .db-v3-gate-label {
+  color: var(--ia-text-primary);
+}
+
+.db-v3-gate-pass .db-v3-gate-current {
+  color: #26a69a;
+}
+
+.db-v3-gate-near .db-v3-gate-mark {
+  color: #f0b429;
+}
+
+.db-v3-gate-near .db-v3-gate-current {
+  color: #f0b429;
+}
+
+.db-v3-gate-fail .db-v3-gate-mark {
+  color: #ef5350;
+  opacity: 0.85;
+}
+
+.db-v3-gate-fail .db-v3-gate-current {
+  color: #ef5350;
+  opacity: 0.95;
+}
+
+.db-v3-gate-unknown .db-v3-gate-mark {
+  color: var(--ia-text-tertiary);
+  opacity: 0.5;
+}
+
+.db-v3-gate-unknown .db-v3-gate-label {
+  opacity: 0.6;
+}
+
+.db-v3-gate-unknown .db-v3-gate-current {
+  color: var(--ia-text-tertiary);
+}
+
+@media (max-width: 600px) {
+  .db-v3-gate {
+    grid-template-columns: 14px 1fr;
+  }
+  .db-v3-gate-current {
+    grid-column: 2 / -1;
+    text-align: left;
+    margin-top: 0;
+  }
+  .db-v3-gate-gap {
+    grid-column: 2 / -1;
   }
 }

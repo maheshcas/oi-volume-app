@@ -96,8 +96,8 @@ type DashboardLayoutProps = {
     }> | null;
     chainGreeks?: Array<{
       strike: number;
-      ce?: { delta?: number; ltp?: number };
-      pe?: { delta?: number; ltp?: number };
+      ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
+      pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
     }> | null;
   };
   trap: {
@@ -176,8 +176,11 @@ type DashboardLayoutProps = {
       max_pain_strike?: number | null;
       max_pain_pull?: string;
       iv_skew?: string;
+      iv_skew_magnitude?: number | null;
       straddle_trend?: string;
       atm_straddle_premium?: number | null;
+      atm_strike?: number | null;
+      iv_percentile?: number | null;
       ce_wall_holding?: boolean;
       pe_wall_holding?: boolean;
     } | null;
@@ -312,6 +315,8 @@ export default function DashboardLayout({
             blocking_reason={decision.blockingReason ?? null}
             trap_probability={trap.trap_probability}
             strikeIntelligence={strikeGuidance.strikeIntelligence ?? null}
+            spot={structure.spotPrice ?? null}
+            chainGreeks={structure.chainGreeks ?? null}
           />
         </div>
       ) : null}
@@ -333,6 +338,9 @@ export default function DashboardLayout({
           detailWalls={decision.detailWalls}
           support={decision.support}
           resistance={decision.resistance}
+          spotNumeric={structure.spotPrice ?? null}
+          supportNumeric={structure.supportLevel ?? null}
+          resistanceNumeric={structure.resistanceLevel ?? null}
           blockingReason={decision.blockingReason}
           trapPct={decision.trapPct}
           winningEngine={decision.winningEngine}

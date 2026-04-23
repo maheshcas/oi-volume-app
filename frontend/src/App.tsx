@@ -3622,26 +3622,34 @@ export default function App() {
                       strike,
                       ce: {
                         delta: typeof ce?.delta === "number" ? ce.delta : toSafeNumber(ce?.delta),
+                        gamma: typeof ce?.gamma === "number" ? ce.gamma : toSafeNumber(ce?.gamma),
+                        theta: typeof ce?.theta === "number" ? ce.theta : toSafeNumber(ce?.theta),
+                        vega: typeof ce?.vega === "number" ? ce.vega : toSafeNumber(ce?.vega),
+                        iv: typeof ce?.iv === "number" ? ce.iv : toSafeNumber(ce?.iv),
                         ltp: typeof ce?.ltp === "number" ? ce.ltp : toSafeNumber(ce?.ltp),
                       },
                       pe: {
                         delta: typeof pe?.delta === "number" ? pe.delta : toSafeNumber(pe?.delta),
+                        gamma: typeof pe?.gamma === "number" ? pe.gamma : toSafeNumber(pe?.gamma),
+                        theta: typeof pe?.theta === "number" ? pe.theta : toSafeNumber(pe?.theta),
+                        vega: typeof pe?.vega === "number" ? pe.vega : toSafeNumber(pe?.vega),
+                        iv: typeof pe?.iv === "number" ? pe.iv : toSafeNumber(pe?.iv),
                         ltp: typeof pe?.ltp === "number" ? pe.ltp : toSafeNumber(pe?.ltp),
                       },
                     };
                   })
                   .filter((row: {
                     strike: number;
-                    ce?: { delta?: number; ltp?: number };
-                    pe?: { delta?: number; ltp?: number };
+                    ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
+                    pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
                   } | null): row is {
                     strike: number;
-                    ce?: { delta?: number; ltp?: number };
-                    pe?: { delta?: number; ltp?: number };
+                    ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
+                    pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
                   } => row !== null)) as Array<{
                     strike: number;
-                    ce?: { delta?: number; ltp?: number };
-                    pe?: { delta?: number; ltp?: number };
+                    ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
+                    pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number; ltp?: number };
                   }>
               : null,
             strikes: displayRows

@@ -48,11 +48,20 @@ type StrikeGuidanceProps = {
     max_pain_strike?: number | null;
     max_pain_pull?: string;
     iv_skew?: string;
+    iv_skew_magnitude?: number | null;
     straddle_trend?: string;
     atm_straddle_premium?: number | null;
+    atm_strike?: number | null;
+    iv_percentile?: number | null;
     ce_wall_holding?: boolean;
     pe_wall_holding?: boolean;
   } | null;
+  spot?: number | null;
+  chainGreeks?: Array<{
+    strike: number;
+    ce?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number };
+    pe?: { delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number };
+  }> | null;
 };
 
 function formatNumber(v: number | null | undefined) {
@@ -103,6 +112,73 @@ function thetaSeverity(days_to_expiry: number, theta_warning: boolean): {
   return { label: "Normal", tone: "normal" };
 }
 
+function fmtNumber(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "-";
+  return Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+type AtmGreeks = {
+  gammaCe?: number;
+  gammaPe?: number;
+  thetaCe?: number;
+  thetaPe?: number;
+  vegaCe?: number;
+  vegaPe?: number;
+};
+
+function resolveAtmGreeks(
+  chainGreeks: StrikeGuidanceProps["chainGreeks"],
+  atmStrike: number | null | undefined,
+): AtmGreeks | null {
+  if (!chainGreeks || !Array.isArray(chainGreeks) || chainGreeks.length === 0) return null;
+  if (!atmStrike || !Number.isFinite(Number(atmStrike))) return null;
+  const row = chainGreeks.find((r) => Math.abs(Number(r.strike) - Number(atmStrike)) < 1);
+  if (!row) return null;
+  return {
+    gammaCe: row.ce?.gamma,
+    gammaPe: row.pe?.gamma,
+    thetaCe: row.ce?.theta,
+    thetaPe: row.pe?.theta,
+    vegaCe: row.ce?.vega,
+    vegaPe: row.pe?.vega,
+  };
+}
+
+function gammaTone(gamma: number | null | undefined): "high" | "mid" | "low" | null {
+  if (gamma === null || gamma === undefined || !Number.isFinite(gamma)) return null;
+  const g = Number(gamma);
+  if (g >= 0.0015) return "high";
+  if (g >= 0.0008) return "mid";
+  return "low";
+}
+
+function thetaBurnRupees(theta: number | null | undefined): number | null {
+  if (theta === null || theta === undefined || !Number.isFinite(theta)) return null;
+  return Math.abs(Number(theta));
+}
+
+function thetaBurnTone(burn: number | null): "severe" | "elevated" | "normal" | null {
+  if (burn === null) return null;
+  if (burn >= 50) return "severe";
+  if (burn >= 25) return "elevated";
+  return "normal";
+}
+
+function vegaToString(vega: number | null | undefined): string {
+  if (vega === null || vega === undefined || !Number.isFinite(vega)) return "-";
+  return `₹${Number(vega).toFixed(1)}`;
+}
+
+function chainGreeksRowFor(
+  chainGreeks: StrikeGuidanceProps["chainGreeks"],
+  strike: number,
+): { vegaCe?: number; vegaPe?: number } | null {
+  if (!chainGreeks || !Array.isArray(chainGreeks)) return null;
+  const row = chainGreeks.find((r) => Math.abs(Number(r.strike) - Number(strike)) < 1);
+  if (!row) return null;
+  return { vegaCe: row.ce?.vega, vegaPe: row.pe?.vega };
+}
+
 function ivTone(rank: number): "low" | "mid" | "high" {
   if (rank <= 30) return "low";
   if (rank >= 70) return "high";
@@ -130,6 +206,8 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
   target_zone,
   trap_probability,
   strikeIntelligence,
+  spot,
+  chainGreeks,
 }) => {
   const intelAction = String(strikeIntelligence?.recommended_action || "").toUpperCase();
   const intelOption = String(strikeIntelligence?.recommended_option || option_type || "").toUpperCase();
@@ -169,6 +247,40 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
       ? Math.round(trap_probability)
       : 0;
   void selling_favoured;
+
+  const spotNum =
+    typeof spot === "number" && Number.isFinite(spot) ? spot : null;
+  const atmStraddle =
+    typeof strikeIntelligence?.atm_straddle_premium === "number" &&
+    Number.isFinite(strikeIntelligence.atm_straddle_premium)
+      ? Number(strikeIntelligence.atm_straddle_premium)
+      : null;
+  const breakevenLower =
+    spotNum !== null && atmStraddle !== null ? spotNum - atmStraddle : null;
+  const breakevenUpper =
+    spotNum !== null && atmStraddle !== null ? spotNum + atmStraddle : null;
+  const breakevenRange =
+    atmStraddle !== null ? Math.round(atmStraddle * 2) : null;
+  const atmGreeks = resolveAtmGreeks(chainGreeks ?? null, strikeIntelligence?.atm_strike);
+  const atmGammaCe = atmGreeks?.gammaCe;
+  const atmThetaCe = atmGreeks?.thetaCe;
+  const atmThetaPe = atmGreeks?.thetaPe;
+  const atmThetaAvg =
+    atmThetaCe !== undefined && atmThetaPe !== undefined
+      ? (Number(atmThetaCe) + Number(atmThetaPe)) / 2
+      : atmThetaCe !== undefined
+        ? Number(atmThetaCe)
+        : atmThetaPe !== undefined
+          ? Number(atmThetaPe)
+          : null;
+  const thetaBurn = thetaBurnRupees(atmThetaAvg);
+  const thetaBurnToneValue = thetaBurnTone(thetaBurn);
+  const gammaToneValue = gammaTone(atmGammaCe);
+  const ivPercentile =
+    typeof strikeIntelligence?.iv_percentile === "number" &&
+    Number.isFinite(strikeIntelligence.iv_percentile)
+      ? Math.max(0, Math.min(100, Number(strikeIntelligence.iv_percentile)))
+      : null;
 
   // Build the one-line subtitle that explains the state
   const stateSubtitle = (() => {
@@ -279,22 +391,101 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
         </div>
       </div>
 
+      {(breakevenLower !== null || thetaBurn !== null || gammaToneValue !== null || ivPercentile !== null) ? (
+        <div className="sgc-v2-greeks">
+          <div className="sgc-v2-greeks-head">
+            <span className="sgc-v2-greeks-label">Greeks Context</span>
+            <span className="sgc-v2-greeks-tag">ATM</span>
+          </div>
+
+          {breakevenLower !== null && breakevenUpper !== null && atmStraddle !== null ? (
+            <div className="sgc-v2-breakeven">
+              <div className="sgc-v2-breakeven-row">
+                <span className="sgc-v2-breakeven-label">Breakeven band</span>
+                <span className="sgc-v2-breakeven-range">+/-{breakevenRange}pts</span>
+              </div>
+              <div className="sgc-v2-breakeven-values">
+                <span className="sgc-v2-breakeven-low">{fmtNumber(breakevenLower)}</span>
+                <div className="sgc-v2-breakeven-track">
+                  <div className="sgc-v2-breakeven-fill" />
+                </div>
+                <span className="sgc-v2-breakeven-high">{fmtNumber(breakevenUpper)}</span>
+              </div>
+              <div className="sgc-v2-breakeven-note">
+                Straddle buyer needs move &gt;= ₹{atmStraddle.toFixed(0)} to break even
+              </div>
+            </div>
+          ) : null}
+
+          <div className="sgc-v2-greeks-grid">
+            {gammaToneValue ? (
+              <div className={`sgc-v2-greek-cell sgc-v2-greek-cell-${gammaToneValue}`}>
+                <span className="sgc-v2-greek-key">Gamma</span>
+                <span className="sgc-v2-greek-val">
+                  {gammaToneValue === "high" ? "High" : gammaToneValue === "mid" ? "Normal" : "Low"}
+                </span>
+                <span className="sgc-v2-greek-sub">
+                  {gammaToneValue === "high"
+                    ? "premium swings sharp"
+                    : gammaToneValue === "mid"
+                      ? "moderate acceleration"
+                      : "slow reaction"}
+                </span>
+              </div>
+            ) : null}
+
+            {thetaBurn !== null && thetaBurnToneValue ? (
+              <div className={`sgc-v2-greek-cell sgc-v2-greek-cell-${thetaBurnToneValue}`}>
+                <span className="sgc-v2-greek-key">Theta / day</span>
+                <span className="sgc-v2-greek-val">₹{Math.round(thetaBurn)}</span>
+                <span className="sgc-v2-greek-sub">
+                  {thetaBurnToneValue === "severe"
+                    ? "severe burn - sellers win"
+                    : thetaBurnToneValue === "elevated"
+                      ? "elevated burn"
+                      : "manageable decay"}
+                </span>
+              </div>
+            ) : null}
+
+            {ivPercentile !== null ? (
+              <div
+                className={`sgc-v2-greek-cell sgc-v2-greek-cell-${
+                  ivPercentile >= 70 ? "high" : ivPercentile <= 30 ? "low" : "mid"
+                }`}
+              >
+                <span className="sgc-v2-greek-key">IV Percentile</span>
+                <span className="sgc-v2-greek-val">{ivPercentile.toFixed(0)}%</span>
+                <span className="sgc-v2-greek-sub">
+                  {ivPercentile >= 70
+                    ? "rich - sell favoured"
+                    : ivPercentile <= 30
+                      ? "cheap - buy favoured"
+                      : "neutral zone"}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {/* Tier 4: Suggested strikes table (active signal only) */}
       {!waitSignal &&
         suggested_strikes.some((s) => Number(s.ltp || 0) >= 1) &&
         filteredSuggestedStrikes.length > 0 && (
           <div className="sgc-strikes">
-            <div className="sgc-strikes-header">
+            <div className="sgc-strikes-header sgc-strikes-header-v2">
               <span>Strike</span>
               <span>Delta</span>
               <span>Gamma</span>
-              <span>Theta/day</span>
+              <span>Theta/d</span>
+              <span>Vega</span>
               <span>LTP</span>
             </div>
             {filteredSuggestedStrikes.map((s, idx) => (
               <div
                 key={s.strike}
-                className={`sgc-strike-row${idx === Math.floor(filteredSuggestedStrikes.length / 2) ? " sgc-strike-best" : ""}`}
+                className={`sgc-strike-row sgc-strike-row-v2${idx === Math.floor(filteredSuggestedStrikes.length / 2) ? " sgc-strike-best" : ""}`}
               >
                 <span className="sgc-strike-val">
                   {formatNumber(s.strike)} {option_type}
@@ -313,6 +504,14 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
                 <span>{s.delta.toFixed(2)}</span>
                 <span>{Number.isFinite(s.gamma) ? s.gamma.toFixed(4) : "-"}</span>
                 <span className="sgc-theta">₹{Math.abs(s.theta).toFixed(1)}</span>
+                <span className="sgc-vega">
+                  {(() => {
+                    const row = chainGreeksRowFor(chainGreeks ?? null, s.strike);
+                    const vega =
+                      option_type === "CE" ? row?.vegaCe : row?.vegaPe;
+                    return vegaToString(vega);
+                  })()}
+                </span>
                 <span>₹{s.ltp.toFixed(1)}</span>
               </div>
             ))}
