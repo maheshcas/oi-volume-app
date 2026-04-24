@@ -83,38 +83,100 @@ def _compute_max_pain_strike(
     spot: float,
     strike_gap: int,
 ) -> int | None:
+    metrics = _compute_max_pain_metrics(
+        liquidity_map=liquidity_map,
+        spot=spot,
+        strike_gap=strike_gap,
+    )
+    return _safe_int(metrics.get("max_pain_strike"), 0) or None
+
+
+def _compute_max_pain_metrics(
+    *,
+    liquidity_map: list[dict[str, Any]],
+    spot: float,
+    strike_gap: int,
+) -> dict[str, Any]:
     if not liquidity_map:
-        return None
-    strikes = sorted({_safe_int(row.get("strike"), 0) for row in liquidity_map if _safe_int(row.get("strike"), 0) > 0})
+        return {
+            "max_pain_strike": None,
+            "max_pain_confidence": 0.0,
+            "max_pain_strength": "Weak",
+        }
+
+    window = max(1, int(strike_gap)) * 8
+    candidates: list[dict[str, Any]] = []
+    for row in liquidity_map:
+        strike = _safe_int(row.get("strike"), 0)
+        if strike <= 0:
+            continue
+        if spot > 0 and abs(strike - spot) > window:
+            continue
+        ce_oi = max(0.0, _safe_float(row.get("oi_ce"), 0.0))
+        pe_oi = max(0.0, _safe_float(row.get("oi_pe"), 0.0))
+        candidates.append(
+            {
+                "strike": strike,
+                "ce_oi": ce_oi,
+                "pe_oi": pe_oi,
+                "combined_oi": ce_oi + pe_oi,
+            }
+        )
+    if not candidates:
+        return {
+            "max_pain_strike": None,
+            "max_pain_confidence": 0.0,
+            "max_pain_strength": "Weak",
+        }
+
+    max_oi = max(float(r["combined_oi"]) for r in candidates)
+    oi_cutoff = max_oi * 0.10
+    filtered = [r for r in candidates if float(r["combined_oi"]) >= oi_cutoff]
+    rows = filtered if filtered else candidates
+    strikes = sorted({_safe_int(r.get("strike"), 0) for r in rows if _safe_int(r.get("strike"), 0) > 0})
     if not strikes:
-        return None
+        return {
+            "max_pain_strike": None,
+            "max_pain_confidence": 0.0,
+            "max_pain_strength": "Weak",
+        }
 
     best_strike: int | None = None
-    best_pain: float | None = None
-    for strike in strikes:
-        if spot > 0 and abs(strike - spot) > 15 * strike_gap:
-            continue
+    best_loss: float | None = None
+    loss_values: list[float] = []
+    for k in strikes:
         total_loss = 0.0
-        for row in liquidity_map:
-            row_strike = _safe_int(row.get("strike"), 0)
-            if row_strike <= 0:
-                continue
-            oi_ce = _safe_float(row.get("oi_ce"), 0.0)
-            oi_pe = _safe_float(row.get("oi_pe"), 0.0)
-            # CE writers lose when expiry settles above their strike.
-            if row_strike < strike:
-                total_loss += max(0.0, oi_ce) * (strike - row_strike)
-            # PE writers lose when expiry settles below their strike.
-            if row_strike > strike:
-                total_loss += max(0.0, oi_pe) * (row_strike - strike)
-        pain = total_loss
-        if best_pain is None or pain < best_pain:
-            best_pain = pain
-            best_strike = strike
-        elif best_pain is not None and math.isclose(pain, best_pain, rel_tol=1e-9):
-            if best_strike is None or abs(strike - spot) < abs(best_strike - spot):
-                best_strike = strike
-    return best_strike
+        for row in rows:
+            strike = _safe_int(row.get("strike"), 0)
+            ce_oi = _safe_float(row.get("ce_oi"), 0.0)
+            pe_oi = _safe_float(row.get("pe_oi"), 0.0)
+            call_loss = max(0.0, float(k - strike)) * ce_oi
+            put_loss = max(0.0, float(strike - k)) * pe_oi
+            total_loss += call_loss + put_loss
+        loss_values.append(total_loss)
+        if best_loss is None or total_loss < best_loss:
+            best_loss = total_loss
+            best_strike = k
+        elif best_loss is not None and math.isclose(total_loss, best_loss, rel_tol=1e-9):
+            if best_strike is None or abs(k - spot) < abs(best_strike - spot):
+                best_strike = k
+
+    avg_loss = statistics.mean(loss_values) if loss_values else 0.0
+    min_loss = float(best_loss or 0.0)
+    confidence = 0.0
+    if avg_loss > 0:
+        confidence = max(0.0, min(100.0, (1.0 - (min_loss / avg_loss)) * 100.0))
+    if confidence >= 70:
+        strength = "Strong"
+    elif confidence >= 45:
+        strength = "Moderate"
+    else:
+        strength = "Weak"
+    return {
+        "max_pain_strike": best_strike,
+        "max_pain_confidence": round(confidence, 2),
+        "max_pain_strength": strength,
+    }
 
 
 def _compute_max_pain_pull(spot: float, max_pain_strike: int | None, strike_gap: int) -> tuple[float | None, str]:
@@ -132,6 +194,7 @@ def _compute_price_magnet(
     liquidity_map: list[dict[str, Any]],
     spot: float,
     strike_gap: int,
+    previous_direction: str | None = None,
 ) -> dict[str, Any]:
     """
     Price Magnet Effect: the underlying price tends to move toward
@@ -150,6 +213,8 @@ def _compute_price_magnet(
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,
             "magnet_character": "unknown",
+            "magnet_strength": 0.0,
+            "magnet_dominance_ratio": 0.0,
             "compression_zone": False,
         }
 
@@ -187,6 +252,8 @@ def _compute_price_magnet(
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,
             "magnet_character": "unknown",
+            "magnet_strength": 0.0,
+            "magnet_dominance_ratio": 0.0,
             "compression_zone": False,
         }
 
@@ -199,28 +266,58 @@ def _compute_price_magnet(
     ce_oi = float(primary["ce_oi"])
     pe_oi = float(primary["pe_oi"])
 
-    if spot < magnet_strike - strike_gap:
+    enter_threshold = float(strike_gap) * 1.5
+    exit_threshold = float(strike_gap) * 0.8
+    diff = float(magnet_strike) - float(spot)
+    abs_diff = abs(diff)
+    prev = str(previous_direction or "").strip().lower()
+    if prev not in {"up", "down", "at"}:
+        prev = "at"
+    if prev == "up" and diff > exit_threshold:
         pull = "up"
-    elif spot > magnet_strike + strike_gap:
+    elif prev == "down" and (-diff) > exit_threshold:
+        pull = "down"
+    elif abs_diff <= exit_threshold:
+        pull = "at"
+    elif diff >= enter_threshold:
+        pull = "up"
+    elif (-diff) >= enter_threshold:
         pull = "down"
     else:
-        pull = "at"
+        pull = prev
 
     distance = abs(float(spot) - float(magnet_strike)) if magnet_strike else None
     ce_pct = (ce_oi / magnet_combined * 100.0) if magnet_combined > 0 else 0.0
     pe_pct = (pe_oi / magnet_combined * 100.0) if magnet_combined > 0 else 0.0
 
-    if ce_pct >= 60:
-        character = "resistance"
-    elif pe_pct >= 60:
+    ce_frac = (ce_oi / magnet_combined) if magnet_combined > 0 else 0.0
+    pe_frac = (pe_oi / magnet_combined) if magnet_combined > 0 else 0.0
+    if pe_frac >= 0.65:
+        character = "strong_support"
+    elif pe_frac >= 0.55:
         character = "support"
+    elif ce_frac >= 0.65:
+        character = "strong_resistance"
+    elif ce_frac >= 0.55:
+        character = "resistance"
     else:
         character = "balanced"
+    magnet_strength = abs(ce_frac - pe_frac)
+    magnet_dominance_ratio = (
+        max(ce_oi, pe_oi) / max(1.0, min(ce_oi, pe_oi))
+        if magnet_combined > 0
+        else 0.0
+    )
 
     between = False
     compression = False
     sec_strike: int | None = None
-    if secondary:
+    show_secondary_magnet = (
+        character not in {"balanced", "unknown"}
+        and magnet_strength >= 0.15
+        and magnet_dominance_ratio >= 1.15
+    )
+    if secondary and show_secondary_magnet:
         sec_strike = int(secondary["strike"])
         lo = min(magnet_strike, sec_strike)
         hi = max(magnet_strike, sec_strike)
@@ -239,6 +336,8 @@ def _compute_price_magnet(
         "magnet_ce_pct": round(ce_pct, 1),
         "magnet_pe_pct": round(pe_pct, 1),
         "magnet_character": character,
+        "magnet_strength": round(float(magnet_strength), 4),
+        "magnet_dominance_ratio": round(float(magnet_dominance_ratio), 4),
         "compression_zone": compression,
     }
 
@@ -820,6 +919,10 @@ def compute_strike_intelligence(context: dict) -> dict:
         session_range_pct = _safe_float(context.get("session_range_pct"), 0.0)
         defense_ratio_ce = _safe_float(context.get("defense_ratio_ce"), 0.0)
         defense_ratio_pe = _safe_float(context.get("defense_ratio_pe"), 0.0)
+        previous_magnet_pull_direction = _non_empty_text(
+            context.get("previous_magnet_pull_direction"),
+            "at",
+        ).lower()
 
         # Intermediates
         atm_row = _closest_chain_row(chain_greeks, spot)
@@ -830,12 +933,20 @@ def compute_strike_intelligence(context: dict) -> dict:
         straddle_trend = _compute_straddle_trend(atm_straddle_premium, _safe_float(prev_straddle_premium, 0.0))
         iv_skew, iv_skew_magnitude = _compute_iv_skew(atm_pe_iv, atm_ce_iv)
 
-        max_pain_strike = _compute_max_pain_strike(liquidity_map, spot, strike_gap)
+        max_pain_metrics = _compute_max_pain_metrics(
+            liquidity_map=liquidity_map,
+            spot=spot,
+            strike_gap=strike_gap,
+        )
+        max_pain_strike = _safe_int(max_pain_metrics.get("max_pain_strike"), 0) or None
+        max_pain_confidence = _safe_float(max_pain_metrics.get("max_pain_confidence"), 0.0)
+        max_pain_strength = _non_empty_text(max_pain_metrics.get("max_pain_strength"), "Weak")
         max_pain_distance, max_pain_pull = _compute_max_pain_pull(spot, max_pain_strike, strike_gap)
         magnet_result = _compute_price_magnet(
             liquidity_map=liquidity_map,
             spot=spot,
             strike_gap=strike_gap,
+            previous_direction=previous_magnet_pull_direction,
         )
         pe_wall = _find_wall_strike(liquidity_map, "PE", spot=spot)
         ce_wall = _find_wall_strike(liquidity_map, "CE", spot=spot)
@@ -1328,6 +1439,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "stop_description": chosen["stop_description"],
             "target_description": chosen["target_description"],
             "max_pain_strike": max_pain_strike,
+            "max_pain_confidence": max_pain_confidence,
+            "max_pain_strength": max_pain_strength,
             "max_pain_distance": max_pain_distance,
             "max_pain_pull": max_pain_pull,
             "price_magnet_strike": magnet_result.get("price_magnet_strike"),
@@ -1339,6 +1452,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "magnet_ce_pct": magnet_result.get("magnet_ce_pct"),
             "magnet_pe_pct": magnet_result.get("magnet_pe_pct"),
             "magnet_character": magnet_result.get("magnet_character"),
+            "magnet_strength": magnet_result.get("magnet_strength"),
+            "magnet_dominance_ratio": magnet_result.get("magnet_dominance_ratio"),
             "compression_zone": bool(magnet_result.get("compression_zone", False)),
             "iv_skew": iv_skew,
             "iv_skew_magnitude": iv_skew_magnitude,
@@ -1377,6 +1492,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "stop_description": "Wait for valid data",
             "target_description": "No target while waiting",
             "max_pain_strike": None,
+            "max_pain_confidence": 0.0,
+            "max_pain_strength": "Weak",
             "max_pain_distance": None,
             "max_pain_pull": "unknown",
             "price_magnet_strike": None,
@@ -1388,6 +1505,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,
             "magnet_character": "unknown",
+            "magnet_strength": 0.0,
+            "magnet_dominance_ratio": 0.0,
             "compression_zone": False,
             "iv_skew": "neutral",
             "iv_skew_magnitude": 0.0,

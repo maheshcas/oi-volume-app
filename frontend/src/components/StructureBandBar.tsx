@@ -201,40 +201,53 @@ export default function StructureBandBar({
         : best,
     ).strike
     : null;
+  const displaySpotStrike =
+    Number.isFinite(spot) && strikeGap > 0
+      ? Math.round(spot / strikeGap) * strikeGap
+      : nearestStrike;
+  const spotStrikeForLadder =
+    typeof displaySpotStrike === "number" && Number.isFinite(displaySpotStrike)
+      ? displaySpotStrike
+      : (typeof nearestStrike === "number" ? nearestStrike : null);
 
   const ladderStrikes = useMemo(() => {
-    if (allSortedStrikes.length === 0) return [];
+    if (spotStrikeForLadder == null || !Number.isFinite(strikeGap) || strikeGap <= 0) return [];
 
-    const inRange = allSortedStrikes.filter(
-      (s) => s.strike >= support && s.strike <= resistance,
-    );
-    if (inRange.length === 0) return allSortedStrikes.slice(0, 3);
-
-    const shouldShowLowerNeighbor = spot <= support + strikeGap;
-    const shouldShowUpperNeighbor = spot >= resistance - strikeGap;
-
-    const belowSupport = shouldShowLowerNeighbor
-      ? [...allSortedStrikes]
-        .filter((s) => s.strike < support)
-        .sort((a, b) => b.strike - a.strike)[0]
-      : undefined;
-
-    const aboveResistance = shouldShowUpperNeighbor
-      ? allSortedStrikes.find((s) => s.strike > resistance)
-      : undefined;
-
-    const merged = [
-      ...(belowSupport ? [belowSupport] : []),
-      ...inRange,
-      ...(aboveResistance ? [aboveResistance] : []),
-    ];
-
-    const dedup = new Map<number, StrikePoint>();
-    for (const s of merged) {
-      dedup.set(s.strike, s);
+    const byStrike = new Map<number, StrikePoint>();
+    for (const s of allSortedStrikes) {
+      byStrike.set(s.strike, s);
     }
-    return [...dedup.values()].sort((a, b) => a.strike - b.strike);
-  }, [allSortedStrikes, support, resistance, spot, strikeGap]);
+
+    const rangeStart = Math.floor(Math.min(support, resistance) / strikeGap) * strikeGap;
+    const rangeEnd = Math.ceil(Math.max(support, resistance) / strikeGap) * strikeGap;
+    const required = new Set<number>();
+    for (let k = rangeStart; k <= rangeEnd; k += strikeGap) required.add(k);
+    // Always include spot strike and one strike on each side.
+    required.add(spotStrikeForLadder);
+    required.add(spotStrikeForLadder - strikeGap);
+    required.add(spotStrikeForLadder + strikeGap);
+
+    const resolveTag = (strike: number): StrikePoint["tag"] => {
+      if (typeof peWall === "number" && strike === peWall) return "pe_wall";
+      if (typeof ceWall === "number" && strike === ceWall) return "ce_wall";
+      if (typeof magnet === "number" && strike === Math.round(magnet / strikeGap) * strikeGap) return "magnet";
+      if (typeof maxPain === "number" && strike === Math.round(maxPain / strikeGap) * strikeGap) return "maxpain";
+      return null;
+    };
+
+    const built: StrikePoint[] = [...required]
+      .sort((a, b) => a - b)
+      .map((strike) => {
+        const row = byStrike.get(strike);
+        return {
+          strike,
+          oi_ce: row?.oi_ce ?? 0,
+          oi_pe: row?.oi_pe ?? 0,
+          tag: row?.tag ?? resolveTag(strike),
+        };
+      });
+    return built;
+  }, [allSortedStrikes, support, resistance, spotStrikeForLadder, strikeGap, peWall, ceWall, magnet, maxPain]);
 
   const maxOi = ladderStrikes.reduce(
     (m, s) => Math.max(m, s.oi_ce || 0, s.oi_pe || 0),
@@ -586,7 +599,7 @@ export default function StructureBandBar({
         <div className="sbb-strikes sbb-strikes-v2">
           {ladderStrikes.map((s) => {
             const d = strikeOiDefenseMap[s.strike];
-            const isSpot = nearestStrike === s.strike;
+            const isSpot = spotStrikeForLadder === s.strike;
             const hasWallTag =
               s.tag === "pe_wall" || s.tag === "ce_wall" || s.tag === "magnet" || s.tag === "maxpain";
             return (

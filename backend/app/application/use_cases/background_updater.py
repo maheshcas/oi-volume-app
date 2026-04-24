@@ -96,7 +96,7 @@ _DEFAULT_EVENT_LOG_PATH = Path(__file__).resolve().parents[3] / "logs" / "option
 EVENT_LOG_PATH = Path(os.getenv("OPTIONLENS_EVENT_LOG_PATH", str(_DEFAULT_EVENT_LOG_PATH)))
 _DEFAULT_EVENT_STREAM_PATH = Path(__file__).resolve().parents[3] / "logs" / "optionlens_market_events.jsonl"
 EVENT_STREAM_PATH = Path(os.getenv("OPTIONLENS_EVENT_STREAM_PATH", str(_DEFAULT_EVENT_STREAM_PATH)))
-ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "true").strip().lower() in {
+ENABLE_EVENT_LOG = os.getenv("OPTIONLENS_ENABLE_EVENT_LOG", "false").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -878,6 +878,8 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "stop_description",
         "target_description",
         "max_pain_strike",
+        "max_pain_confidence",
+        "max_pain_strength",
         "price_magnet_strike",
         "price_magnet_combined",
         "magnet_pull_direction",
@@ -969,6 +971,9 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
         "absorption_reason": trap.get("absorption_reason"),
         "absorption_level": trap.get("absorption_level"),
         "absorption_confirmed": trap.get("absorption_confirmed"),
+        "support_absorption_strength": trap.get("support_absorption_strength"),
+        "resistance_absorption_strength": trap.get("resistance_absorption_strength"),
+        "trap_telemetry": trap.get("trap_telemetry"),
     }
 
     material_breach = (
@@ -988,6 +993,7 @@ def _sanitize_public_signals(signals: dict[str, Any]) -> dict[str, Any]:
     )
     sanitized["support_absorption"] = {
         "absorption_detected": support_absorption.get("absorption_detected"),
+        "absorption_score": support_absorption.get("absorption_score"),
         "level": support_absorption.get("level"),
         "message": support_absorption.get("message"),
         "strength": support_absorption.get("strength"),
@@ -3820,6 +3826,34 @@ def _apply_stabilized_trap(trap: dict[str, Any], payload: dict[str, Any]) -> Non
     trap["trap_hysteresis_applied"] = bool(payload.get("hysteresis_applied", False))
 
 
+def _ensure_trap_telemetry(trap: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(trap, dict):
+        return {}
+    current = trap.get("trap_telemetry")
+    if isinstance(current, dict):
+        return current
+    trap["trap_telemetry"] = {}
+    return trap["trap_telemetry"]
+
+
+def _set_trap_telemetry_stage(
+    trap: dict[str, Any] | None,
+    *,
+    stage: str,
+    probability_pct: float | int | None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    telemetry = _ensure_trap_telemetry(trap)
+    if not isinstance(telemetry, dict):
+        return
+    pct = max(0.0, min(95.0, float(probability_pct or 0.0)))
+    telemetry[f"{stage}_pct"] = round(pct, 2)
+    telemetry[f"{stage}"] = round(pct / 100.0, 4)
+    telemetry["stage_last"] = stage
+    if isinstance(extra, dict):
+        telemetry.update(extra)
+
+
 def _classify_day_trend(
     *,
     spot: float | None,
@@ -4040,6 +4074,18 @@ def _build_v2_intelligence(
     trap["trap_probability_pct"] = trap_probability_pct
     trap["trap_probability"] = trap_probability_pct
     trap["trap_level"] = _trap_level_from_probability(trap_probability_pct)
+    _set_trap_telemetry_stage(
+        trap,
+        stage="trap_after_updater_alignment",
+        probability_pct=trap_probability_pct,
+        extra={
+            "updater_alignment_adjustment_pts": round(
+                float(trap_probability_pct)
+                - float((_ensure_trap_telemetry(trap).get("trap_after_matrix_pct", trap_probability_pct)) or trap_probability_pct),
+                2,
+            ),
+        },
+    )
     trap_penalty = max(0.0, min(1.0, float(trap_probability_pct) / 100.0))
     sr_breach_state = check_sr_breach(
         spot=spot,
@@ -4464,6 +4510,16 @@ def _build_v2_intelligence(
     trap["stale_resistance_discount_points"] = float(stale_resistance_discount_points)
     trap["seconds_above_resistance"] = int(seconds_above_resistance)
     trap["stale_break_window_met"] = bool(stale_break_window_met)
+    _set_trap_telemetry_stage(
+        trap,
+        stage="trap_after_stale_discount",
+        probability_pct=trap_probability,
+        extra={
+            "stale_resistance_discount_applied": bool(stale_resistance_discount_applied),
+            "stale_resistance_discount_points": round(float(stale_resistance_discount_points), 2),
+            "seconds_above_resistance": int(seconds_above_resistance),
+        },
+    )
 
     oi_buildup_type = str(oi.get("buildup_type") or "")
     pinning_active = oi_buildup_type.strip().lower() == "two-sided writing"
@@ -4475,6 +4531,15 @@ def _build_v2_intelligence(
         trap["trap_risk"] = int(round(trap_probability))
     trap["pinning_active"] = bool(pinning_active)
     trap["pinning_trap_modifier_points"] = float(pinning_trap_modifier_points)
+    _set_trap_telemetry_stage(
+        trap,
+        stage="trap_after_pinning_modifier",
+        probability_pct=trap_probability,
+        extra={
+            "pinning_active": bool(pinning_active),
+            "pinning_trap_modifier_points": round(float(pinning_trap_modifier_points), 2),
+        },
+    )
 
     breakout_strength = breakout_strength_adjusted
     mss = _compute_market_structure_score(
@@ -4620,6 +4685,22 @@ def _build_v2_intelligence(
             trap.get("resistance_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
         ),
     }
+    # Telemetry-only A/B compare between trap-engine absorption and legacy absorption helper.
+    primary_support_strength = float(
+        trap.get("support_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
+    )
+    primary_support_confirmed = bool(
+        trap_absorption_confirmed and trap_absorption_signal == "SUPPORT_ABSORPTION"
+    )
+    legacy_support_score = float(support_absorption.get("absorption_score", 0.0) or 0.0)
+    legacy_support_triggered = bool(support_absorption.get("absorption_detected"))
+    absorption_telemetry = {
+        "primary_strength": round(primary_support_strength, 2),
+        "primary_confirmed": primary_support_confirmed,
+        "legacy_score": round(legacy_support_score, 4),
+        "legacy_triggered": legacy_support_triggered,
+        "disagree": bool(primary_support_confirmed != legacy_support_triggered),
+    }
     confirmation_type = str(material_breach.get("confirmation_type") or "")
     material_breach_confirmed = bool(material_breach.get("material_breach_confirmed"))
     absorption_detected = bool(support_absorption_detected or resistance_absorption_detected)
@@ -4694,6 +4775,19 @@ def _build_v2_intelligence(
         )
         _apply_stabilized_trap(trap, trap_stability_payload)
         trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+        _set_trap_telemetry_stage(
+            trap,
+            stage="trap_after_pre_readiness_stabilizer",
+            probability_pct=trap_probability,
+            extra={
+                "pre_readiness_cap_applied": True,
+                "pre_readiness_cap_level": 72.0,
+            },
+        )
+        logger.info(
+            "TRAP_FORENSICS pre_readiness_stabilizer: pct=%.2f",
+            float(trap_probability or 0.0),
+        )
         range_trap_cap_applied = True
         range_trap_cap_reason = "range_family_cap"
         range_trap_cap_stage = "pre_readiness"
@@ -4959,6 +5053,19 @@ def _build_v2_intelligence(
         _apply_stabilized_trap(trap, trap_stability_payload)
         trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
         trap["trap_trend_adjustment_applied"] = True
+        _set_trap_telemetry_stage(
+            trap,
+            stage="trap_after_trend_confidence_adjustment",
+            probability_pct=float(trap.get("trap_probability_pct", 0.0) or 0.0),
+            extra={
+                "confidence_factor": round(float(trap_conf_adj.get("confidence_factor", 1.0) or 1.0), 4),
+            },
+        )
+        logger.info(
+            "TRAP_FORENSICS trend_confidence_adjustment: pct=%.2f factor=%.4f",
+            float(trap.get("trap_probability_pct", 0.0) or 0.0),
+            float(trap_conf_adj.get("confidence_factor", 1.0) or 1.0),
+        )
     else:
         trap["confidence_factor"] = 1.0
     trap["is_trap"] = bool(trap["trap_probability_pct"] >= 60)
@@ -5150,6 +5257,19 @@ def _build_v2_intelligence(
         previous_state=previous_state,
     )
     _apply_stabilized_trap(trap, trap_stability_payload)
+    _set_trap_telemetry_stage(
+        trap,
+        stage="trap_after_expiry_stabilizer",
+        probability_pct=float(trap.get("trap_probability_pct", 0.0) or 0.0),
+        extra={
+            "expiry_trap_risk_input": round(float(expiry_trap_risk or 0.0), 2),
+        },
+    )
+    logger.info(
+        "TRAP_FORENSICS expiry_stabilizer: input=%.2f pct=%.2f",
+        float(expiry_trap_risk or 0.0),
+        float(trap.get("trap_probability_pct", 0.0) or 0.0),
+    )
     expiry_adaptive["trap_risk"] = round(float(trap.get("trap_probability_pct", 0.0) or 0.0), 2)
     reversal_prob = compute_early_reversal_probability(
         momentum_exhaustion=bool(momentum_exhaustion.get("momentum_exhaustion")),
@@ -5307,6 +5427,34 @@ def _build_v2_intelligence(
     )
     _apply_stabilized_trap(trap, trap_stability_payload)
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
+    _set_trap_telemetry_stage(
+        trap,
+        stage="trap_after_final_stabilizer",
+        probability_pct=trap_probability,
+        extra={
+            "trap_published_probability_pct": round(float(trap_probability or 0.0), 2),
+        },
+    )
+    logger.info(
+        "TRAP_FORENSICS final_publish: pct=%.2f",
+        float(trap_probability or 0.0),
+    )
+    _trap_tm = _ensure_trap_telemetry(trap)
+    _tm_final_pct = float(
+        _trap_tm.get("trap_after_final_stabilizer_pct")
+        or _trap_tm.get("trap_after_expiry_stabilizer_pct")
+        or _trap_tm.get("trap_after_matrix_pct")
+        or 0.0
+    )
+    _published = float(trap_probability or 0.0)
+    _tm_gap = abs(_tm_final_pct - _published)
+    if _tm_gap > 1.0:
+        logger.warning(
+            "TRAP TELEMETRY DRIFT: telemetry says %.2f, published %.2f (gap %.2f)",
+            _tm_final_pct,
+            _published,
+            _tm_gap,
+        )
     blocking_reason = _determine_blocking_reason(
         trade_action=str(decision.get("trade_action", "WAIT")),
         readiness_active=bool(decision.get("readiness_active", False)),
@@ -5786,6 +5934,11 @@ def _build_v2_intelligence(
             "oi_scenario": str(decision.get("oi_scenario") or ""),
             "defense_ratio_ce": float((sr.get("resistance", {}) or {}).get("defense_score") or 0.0),
             "defense_ratio_pe": float((sr.get("support", {}) or {}).get("defense_score") or 0.0),
+            "previous_magnet_pull_direction": (
+                ((previous_state or {}).get("strike_intelligence") or {}).get("magnet_pull_direction")
+                if isinstance((previous_state or {}).get("strike_intelligence"), dict)
+                else None
+            ),
         }
     )
     directional_entry_signal = strike_intelligence.get("directional_signal", "WAIT")
@@ -6007,6 +6160,8 @@ def _build_v2_intelligence(
         "liquidity_map": liquidity_map,
         "support_absorption": support_absorption,
         "resistance_absorption": resistance_absorption,
+        "tm_trap_decomp": trap.get("trap_telemetry") or {},
+        "tm_absorption": absorption_telemetry,
         "session_phase": session_phase_payload.get("session_phase"),
         "session_phase_confidence": session_phase_payload.get("confidence"),
     }
@@ -6137,6 +6292,8 @@ def _build_v2_intelligence(
             "stop_description": strike_intelligence.get("stop_description"),
             "target_description": strike_intelligence.get("target_description"),
             "max_pain_strike": strike_intelligence.get("max_pain_strike"),
+            "max_pain_confidence": strike_intelligence.get("max_pain_confidence"),
+            "max_pain_strength": strike_intelligence.get("max_pain_strength"),
             "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
             "price_magnet_combined": strike_intelligence.get("price_magnet_combined"),
             "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),

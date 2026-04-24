@@ -46,10 +46,23 @@ function magnetInline(
       ? Math.round(distance)
       : null;
   const dir = String(direction || "").toLowerCase();
-  const charText = String(character || "")
+  const rawCharacter = String(character || "")
     .trim()
     .toLowerCase()
-    .replace(/[_-]+/g, " ");
+    .replace(/[_-]+/g, "_");
+  const charLabelMap: Record<string, string> = {
+    strong_support: "Strong support magnet",
+    support: "Support magnet",
+    balanced: "Neutral magnet",
+    resistance: "Resistance magnet",
+    strong_resistance: "Strong resistance magnet",
+  };
+  const charText =
+    charLabelMap[rawCharacter] ??
+    String(character || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]+/g, " ");
   const arrow = dir === "up" ? "↑" : dir === "down" ? "↓" : dir === "at" ? "◉" : "";
   const parts: string[] = [];
   if (arrow && d !== null) parts.push(`${arrow} ${d}pts`);
