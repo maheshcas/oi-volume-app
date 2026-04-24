@@ -5,3 +5,13 @@ backend/VALIDATION_LOGIC_OVERVIEW.txt
 __pycache__/
 *.pyc
 resorces/
+ENGINE_LOGIC.md
+
+# ── Local-only analytics (dev tool, not for production) ─────────────────────
+backend/app/presentation/routers/local_analytics.py
+backend/app/services/signal_logger.py
+backend/app/services/signal_outcome_tracker.py
+frontend/src/pages/
+frontend/src/styles/analytics.css
+backend_restart_out.log
+backend_restart_err.log
