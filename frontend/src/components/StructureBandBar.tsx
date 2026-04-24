@@ -7,6 +7,23 @@ type StrikePoint = {
   tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
 };
 
+type LadderPressure =
+  | "strong_support"
+  | "support"
+  | "balanced"
+  | "resistance"
+  | "strong_resistance";
+
+type NextMoveBias = "UP" | "DOWN" | "PINNED" | "NO_EDGE";
+
+type StrikePressure = {
+  pePct: number;
+  cePct: number;
+  peCe: number;
+  cePe: number;
+  state: LadderPressure;
+};
+
 type ChainRow = {
   strike: number;
   ce?: { delta?: number; ltp?: number };
@@ -42,6 +59,136 @@ const fmt = (value?: number | null) =>
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
+
+function resolveLadderPressure(ceOi: number, peOi: number): LadderPressure {
+  const ce = Math.max(0, Number(ceOi) || 0);
+  const pe = Math.max(0, Number(peOi) || 0);
+  const total = ce + pe;
+  if (total <= 0) return "balanced";
+  const pePct = pe / total;
+  const cePct = ce / total;
+  if (pePct >= 0.65) return "strong_support";
+  if (pePct >= 0.55) return "support";
+  if (cePct >= 0.65) return "strong_resistance";
+  if (cePct >= 0.55) return "resistance";
+  return "balanced";
+}
+
+function computeStrikePressure(ceOi: number, peOi: number): StrikePressure {
+  const ce = Math.max(0, Number(ceOi) || 0);
+  const pe = Math.max(0, Number(peOi) || 0);
+  const total = ce + pe;
+  const pePct = total > 0 ? pe / total : 0.5;
+  const cePct = total > 0 ? ce / total : 0.5;
+  return {
+    pePct,
+    cePct,
+    peCe: pe / Math.max(ce, 1),
+    cePe: ce / Math.max(pe, 1),
+    state: resolveLadderPressure(ce, pe),
+  };
+}
+
+function hasSupport(state: LadderPressure) {
+  return state === "support" || state === "strong_support";
+}
+
+function hasResistance(state: LadderPressure) {
+  return state === "resistance" || state === "strong_resistance";
+}
+
+function isStrong(state: LadderPressure) {
+  return state === "strong_support" || state === "strong_resistance";
+}
+
+function resolveNextMoveBias(
+  below: StrikePressure | null,
+  center: StrikePressure | null,
+  above: StrikePressure | null,
+): { bias: NextMoveBias; confidence: number; reason: string } {
+  if (!below || !center || !above) {
+    return {
+      bias: "NO_EDGE",
+      confidence: 40,
+      reason: "Nearby PE/CE and CE/PE pressure does not show a clean next move.",
+    };
+  }
+
+  const centerSupport = hasSupport(center.state);
+  const centerResistance = hasResistance(center.state);
+  const centerBalanced = center.state === "balanced";
+  const belowSupport = hasSupport(below.state);
+  const belowResistance = hasResistance(below.state);
+  const aboveSupport = hasSupport(above.state);
+  const aboveResistance = hasResistance(above.state);
+  const aboveStrongResistance = above.state === "strong_resistance";
+
+  let base = 50;
+  let reason = "Nearby PE/CE and CE/PE pressure does not show a clean next move.";
+
+  // 1) PINNED
+  if (
+    belowSupport &&
+    aboveResistance &&
+    (centerBalanced || center.state === "support" || center.state === "resistance")
+  ) {
+    base = 55;
+    if (isStrong(below.state)) base += 8;
+    if (isStrong(above.state)) base += 8;
+    reason = "Spot is trapped between nearby support and resistance pressure.";
+    return { bias: "PINNED", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+
+  // 2) UP
+  if (centerSupport && belowSupport && !aboveStrongResistance) {
+    base = 55;
+    if (isStrong(center.state)) base += 15;
+    else base += 8;
+    if (isStrong(below.state)) base += 15;
+    else base += 8;
+    if (aboveResistance) base -= 10;
+    reason = "Put-side support is defending near spot and overhead call pressure is not dominant.";
+    return { bias: "UP", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+  if ((above.state === "balanced" || aboveSupport) && center.pePct >= 0.55 && below.pePct >= 0.55) {
+    base = 58;
+    if (center.pePct >= 0.65) base += 10;
+    if (below.pePct >= 0.65) base += 10;
+    reason = "Put-side pressure dominates around spot with limited overhead resistance.";
+    return { bias: "UP", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+
+  // 3) DOWN
+  if (centerResistance) {
+    base = 56;
+    if (isStrong(center.state)) base += 15;
+    else base += 8;
+    if (belowSupport) base -= 10;
+    reason = "Call-side pressure is active at the spot strike.";
+    return { bias: "DOWN", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+  if ((below.state === "balanced" || belowResistance) && (centerBalanced || centerResistance)) {
+    base = 57;
+    if (isStrong(below.state)) base += 15;
+    else if (belowResistance) base += 8;
+    if (aboveSupport) base -= 10;
+    reason = "Support below spot is weak, allowing downside drift.";
+    return { bias: "DOWN", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+  if (aboveStrongResistance && center.state !== "strong_support") {
+    base = 60;
+    if (centerSupport) base -= 10;
+    reason = "Strong call-side pressure overhead may reject spot lower.";
+    return { bias: "DOWN", confidence: clamp(Math.round(base), 0, 100), reason };
+  }
+
+  // 4) NO_EDGE
+  return {
+    bias: "NO_EDGE",
+    confidence: 40,
+    reason,
+  };
+}
 
 const resolveMagnetSub = (
   magnet: number | null | undefined,
@@ -284,6 +431,71 @@ export default function StructureBandBar({
     nearS || belowS ? "sbb-metric-warn-s" : "sbb-metric-neutral";
   const metricToResistanceTone =
     nearR || aboveR ? "sbb-metric-warn-r" : "sbb-metric-neutral";
+
+  const nextMove = useMemo(() => {
+    if (spotStrikeForLadder == null || ladderStrikes.length === 0) {
+      return {
+        bias: "NO_EDGE" as NextMoveBias,
+        confidence: 40,
+        reason: "Nearby PE/CE and CE/PE pressure does not show a clean next move.",
+      };
+    }
+    const centerIdx = ladderStrikes.findIndex((s) => s.strike === spotStrikeForLadder);
+    if (centerIdx < 0) {
+      return {
+        bias: "NO_EDGE" as NextMoveBias,
+        confidence: 40,
+        reason: "Nearby PE/CE and CE/PE pressure does not show a clean next move.",
+      };
+    }
+    const below = centerIdx > 0 ? ladderStrikes[centerIdx - 1] : null;
+    const center = ladderStrikes[centerIdx];
+    const above = centerIdx < ladderStrikes.length - 1 ? ladderStrikes[centerIdx + 1] : null;
+    return resolveNextMoveBias(
+      below ? computeStrikePressure(below.oi_ce || 0, below.oi_pe || 0) : null,
+      center ? computeStrikePressure(center.oi_ce || 0, center.oi_pe || 0) : null,
+      above ? computeStrikePressure(above.oi_ce || 0, above.oi_pe || 0) : null,
+    );
+  }, [ladderStrikes, spotStrikeForLadder]);
+
+  const nextMoveToneClass =
+    nextMove.bias === "UP"
+      ? "sbb-next-bias--up"
+      : nextMove.bias === "DOWN"
+        ? "sbb-next-bias--down"
+        : nextMove.bias === "PINNED"
+          ? "sbb-next-bias--pinned"
+          : "sbb-next-bias--noedge";
+  const nextMoveSymbol =
+    nextMove.bias === "UP" ? "↑" : nextMove.bias === "DOWN" ? "↓" : nextMove.bias === "PINNED" ? "↔" : "·";
+  const spotArrow = useMemo(() => {
+    if (nextMove.bias === "UP") {
+      return {
+        symbol: "▲",
+        cls: "ladder-pressure-arrow--strong-support",
+        title: `Next move bias UP (${nextMove.confidence}%)`,
+      };
+    }
+    if (nextMove.bias === "DOWN") {
+      return {
+        symbol: "▼",
+        cls: "ladder-pressure-arrow--strong-resistance",
+        title: `Next move bias DOWN (${nextMove.confidence}%)`,
+      };
+    }
+    if (nextMove.bias === "PINNED") {
+      return {
+        symbol: "↔",
+        cls: "ladder-pressure-arrow--balanced",
+        title: `Next move bias PINNED (${nextMove.confidence}%)`,
+      };
+    }
+    return {
+      symbol: "·",
+      cls: "ladder-pressure-arrow--balanced",
+      title: "Next move bias NO_EDGE",
+    };
+  }, [nextMove.bias, nextMove.confidence]);
 
   const topLabelStyle = (
     markerPct: number,
@@ -528,6 +740,17 @@ export default function StructureBandBar({
       </div>
 
       <div className="sbb-metrics-strip">
+        <div
+          className={`sbb-next-bias ${nextMoveToneClass}`}
+          title={nextMove.reason}
+          aria-label={nextMove.reason}
+        >
+          <span className="sbb-next-bias-label">Next bias</span>
+          <span className="sbb-next-bias-value">
+            {nextMoveSymbol} {nextMove.bias}
+            {nextMove.bias !== "NO_EDGE" ? ` ${nextMove.confidence}%` : ""}
+          </span>
+        </div>
         <div className="sbb-metric-item sbb-metric-magnet">
           <span className="sbb-metric-lbl">
             Magnet
@@ -607,6 +830,15 @@ export default function StructureBandBar({
                 key={s.strike}
                 className={`sbb-strike-cell${isSpot ? " sbb-strike-cell-spot" : ""}${hasWallTag ? ` sbb-strike-cell-${s.tag}` : ""}`}
               >
+                {isSpot ? (
+                  <span
+                    className={`ladder-pressure-arrow ${spotArrow.cls}`}
+                    title={spotArrow.title}
+                    aria-label={spotArrow.title}
+                  >
+                    {spotArrow.symbol}
+                  </span>
+                ) : null}
                 <span className={`sbb-strike-num ${isSpot ? "sbb-strike-num-active" : ""}`}>
                   {fmt(s.strike)}
                 </span>
