@@ -6,7 +6,7 @@ import LandingPage from "./LandingPage";
 import "./styles.css";
 
 const LocalAnalytics = import.meta.env.DEV
-  ? lazy(() => import("./pages/LocalAnalytics"))
+  ? lazy(() => import(/* @vite-ignore */ ("./pages/" + "LocalAnalytics")))
   : null;
 
 type RootErrorBoundaryState = {
