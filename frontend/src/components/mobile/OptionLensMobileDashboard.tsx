@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useMarketAwareRefresh } from "../../hooks/useMarketAwareRefresh";
 import MobileHeader from "./MobileHeader";
 import SpotHeroCard from "./SpotHeroCard";
 import PrimarySignalCard from "./PrimarySignalCard";
@@ -26,10 +27,15 @@ export default function OptionLensMobileDashboard({
   onSelectExpiry: _onSelectExpiry,
 }: OptionLensMobileDashboardProps) {
   const [activeNav, setActiveNav] = useState<MobileNavKey>("overview");
+  const marketRefresh = useMarketAwareRefresh();
 
   return (
     <div className="mx-auto flex h-dvh max-w-[480px] flex-col overflow-hidden bg-[#080f18] text-slate-100">
-      <MobileHeader liveStatus={data.liveStatus} updatedAt={data.updatedAt} />
+      <MobileHeader
+        liveStatus={data.liveStatus}
+        updatedAt={data.updatedAt}
+        scheduleLabel={marketRefresh.label}
+      />
 
       <div className="flex-1 overflow-y-auto px-0 pb-[68px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <SpotHeroCard
@@ -73,6 +79,10 @@ export default function OptionLensMobileDashboard({
           regime={data.regime}
           supportTransitionBadge={data.supportTransitionBadge}
           resistanceTransitionBadge={data.resistanceTransitionBadge}
+          trapProbability={data.trapProbability}
+          spot={data.spot}
+          support={data.support}
+          resistance={data.resistance}
         />
 
         <TrapCardMobile
@@ -82,6 +92,8 @@ export default function OptionLensMobileDashboard({
           explanation={data.trapExplanation}
           severity={data.trapSeverity}
           affectedLevel={data.trapDirection === "downside" ? data.support : data.trapDirection === "upside" ? data.resistance : null}
+          spot={data.spot}
+          resistance={data.resistance}
         />
 
         <KeyLevelsCard

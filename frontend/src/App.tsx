@@ -297,6 +297,13 @@ type IntelligenceResponse = {
       rr_brief?: string;
       call_wall_used?: number | null;
       put_wall_used?: number | null;
+      price_magnet_strike?: number | null;
+      magnet_pull_direction?: string | null;
+      magnet_distance_pts?: number | null;
+      secondary_magnet?: number | null;
+      magnet_character?: string | null;
+      magnet_interpretation?: string | null;
+      compression_zone?: boolean;
       straddle_entry_premium?: number | null;
       straddle_target_premium?: number | null;
     };
@@ -304,7 +311,9 @@ type IntelligenceResponse = {
     magnet_pull_direction?: string | null;
     magnet_distance_pts?: number | null;
     secondary_magnet?: number | null;
+    secondary_magnet_distance_pts?: number | null;
     magnet_character?: string | null;
+    magnet_interpretation?: string | null;
     compression_zone?: boolean;
     max_pain_strike?: number | null;
     session_phase_confidence?: number;
@@ -2486,10 +2495,71 @@ export default function App() {
           ? "Reduce size on downside continuation and wait for one more confirmation candle."
           : "Reduce size on upside continuation and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
-  const dailyPerformancePreview = dailyPerformance
-    ? `${Math.round((dailyPerformance.bias_accuracy_percent / 100) * dailyPerformance.total_signals_logged)}/${dailyPerformance.total_signals_logged} setups valid today, trap risk ${String(displayTrapLevel).toLowerCase()}.`
-    : "";
-  const advancedAnalysisPreview = `Engine view: MSS ${Math.round(structureScore)} · Pressure ${pressureStateLabel} · Conflict ${conflictState}`;
+  const dailyPerformancePreview = dailyPerformance ? (
+    <div className="aac-preview-chips">
+      <span className="aac-chip aac-chip-mid">
+        <span className="aac-chip-key">Signals</span>
+        <span className="aac-chip-val">{dailyPerformance.total_signals_logged} logged</span>
+      </span>
+      <span className={`aac-chip aac-chip-${dailyPerformance.bias_accuracy_percent >= 65 ? "good" : dailyPerformance.bias_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+        <span className="aac-chip-key">Bias</span>
+        <span className="aac-chip-val">{Math.round(dailyPerformance.bias_accuracy_percent)}%</span>
+      </span>
+      <span className={`aac-chip aac-chip-${dailyPerformance.trap_accuracy_percent >= 65 ? "good" : dailyPerformance.trap_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+        <span className="aac-chip-key">Trap</span>
+        <span className="aac-chip-val">{Math.round(dailyPerformance.trap_accuracy_percent)}%</span>
+      </span>
+      <span className={`aac-chip aac-chip-${dailyPerformance.exit_accuracy_percent >= 65 ? "good" : dailyPerformance.exit_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+        <span className="aac-chip-key">Exit</span>
+        <span className="aac-chip-val">{Math.round(dailyPerformance.exit_accuracy_percent)}%</span>
+      </span>
+    </div>
+  ) : null;
+  const mssScore = Math.round(structureScore);
+  const mssTone: "good" | "mid" | "bad" =
+    mssScore >= 70 ? "good" : mssScore >= 50 ? "mid" : "bad";
+  const mssLabel =
+    mssScore >= 70 ? "Strong" : mssScore >= 50 ? "Balanced" : "Weak";
+  const pressureTone: "good" | "mid" | "bad" =
+    pressureStateLabel.toLowerCase().includes("buy") || pressureStateLabel.toLowerCase().includes("bull")
+      ? "good"
+      : pressureStateLabel.toLowerCase().includes("sell") || pressureStateLabel.toLowerCase().includes("bear")
+        ? "bad"
+        : "mid";
+  const conflictClean = String(conflictState || "").replace(/\bConflict\b/gi, "").trim() || conflictState;
+  const conflictTone: "good" | "mid" | "bad" =
+    String(conflictState).toLowerCase().includes("conflict")
+      ? "bad"
+      : String(conflictState).toLowerCase().includes("compression")
+        ? "mid"
+        : "good";
+  const sessionPhaseTone: "good" | "mid" | "bad" =
+    String(displaySessionPhase).toLowerCase().includes("drive") ||
+    String(displaySessionPhase).toLowerCase().includes("trend")
+      ? "good"
+      : String(displaySessionPhase).toLowerCase().includes("close")
+        ? "mid"
+        : "mid";
+  const advancedAnalysisPreview = (
+    <div className="aac-preview-chips">
+      <span className={`aac-chip aac-chip-${mssTone}`}>
+        <span className="aac-chip-key">MSS</span>
+        <span className="aac-chip-val">{mssScore} · {mssLabel}</span>
+      </span>
+      <span className={`aac-chip aac-chip-${pressureTone}`}>
+        <span className="aac-chip-key">Pressure</span>
+        <span className="aac-chip-val">{pressureStateLabel}</span>
+      </span>
+      <span className={`aac-chip aac-chip-${conflictTone}`}>
+        <span className="aac-chip-key">Structure</span>
+        <span className="aac-chip-val">{conflictClean || "Balanced"}</span>
+      </span>
+      <span className={`aac-chip aac-chip-${sessionPhaseTone}`}>
+        <span className="aac-chip-key">Phase</span>
+        <span className="aac-chip-val">{displaySessionPhase || "—"}</span>
+      </span>
+    </div>
+  );
   const institutionalStructure = intelligence?.institutional_structure as
     | { put_wall?: number | null; call_wall?: number | null }
     | undefined;
@@ -3335,6 +3405,9 @@ export default function App() {
         magnet_character: typeof intelligence?.market_state?.magnet_character === "string"
           ? intelligence.market_state.magnet_character
           : null,
+        magnet_interpretation: typeof intelligence?.market_state?.magnet_interpretation === "string"
+          ? intelligence.market_state.magnet_interpretation
+          : null,
         compression_zone: Boolean(intelligence?.market_state?.compression_zone),
       };
     })(),
@@ -3612,6 +3685,18 @@ export default function App() {
               typeof intelligence?.market_state?.price_magnet_strike === "number"
                 ? intelligence.market_state.price_magnet_strike
                 : null,
+            magnetCharacter:
+              typeof intelligence?.market_state?.magnet_character === "string"
+                ? intelligence.market_state.magnet_character
+                : null,
+            magnetPullDirection:
+              typeof intelligence?.market_state?.magnet_pull_direction === "string"
+                ? intelligence.market_state.magnet_pull_direction
+                : null,
+            magnetInterpretation:
+              typeof intelligence?.market_state?.magnet_interpretation === "string"
+                ? intelligence.market_state.magnet_interpretation
+                : null,
             maxPain:
               typeof intelligence?.market_state?.max_pain_strike === "number"
                 ? intelligence.market_state.max_pain_strike
@@ -3689,14 +3774,17 @@ export default function App() {
                 else if (callWall !== null && strike === callWall) tag = "ce_wall";
                 else if (magnetStrike !== null && strike === magnetStrike) tag = "magnet";
                 else if (maxPainStrike !== null && strike === maxPainStrike) tag = "maxpain";
+                const r = row as Record<string, unknown>;
                 return {
                   strike,
-                  oi_ce: toSafeNumber((row as Record<string, unknown>).CE_OI ?? (row as Record<string, unknown>).oi_ce ?? 0),
-                  oi_pe: toSafeNumber((row as Record<string, unknown>).PE_OI ?? (row as Record<string, unknown>).oi_pe ?? 0),
+                  oi_ce: toSafeNumber(r.CE_OI ?? r.oi_ce ?? 0),
+                  oi_pe: toSafeNumber(r.PE_OI ?? r.oi_pe ?? 0),
+                  oi_ce_change: typeof r.CE_DeltaOI === "number" ? r.CE_DeltaOI : null,
+                  oi_pe_change: typeof r.PE_DeltaOI === "number" ? r.PE_DeltaOI : null,
                   tag,
                 };
               })
-              .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
+              .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; oi_ce_change: number | null; oi_pe_change: number | null; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
           }}
           trap={{
             trap_probability: displayTrapRiskPct,
@@ -3850,7 +3938,7 @@ export default function App() {
                 </button>
               </div>
               {!showDailyPerformance ? (
-                <div className="ia-preview-line">{dailyPerformancePreview}</div>
+                <div className="ia-preview-chips-wrap">{dailyPerformancePreview}</div>
               ) : (
                 MARKETING_MODE ? (
                   dailyPerformance.total_signals_logged < 5 ? (
@@ -3873,24 +3961,40 @@ export default function App() {
                     </div>
                   )
                 ) : (
+                  <>
                   <div className="ia-kpi-grid">
                     <div>
                       <div className="ia-kpi-label">Bias Accuracy</div>
-                      <div className="ia-kpi-value">{Math.round(dailyPerformance.bias_accuracy_percent)}%</div>
+                      <div className={`ia-kpi-value ${dailyPerformance.bias_accuracy_percent >= 65 ? "ia-text-bull" : dailyPerformance.bias_accuracy_percent < 50 ? "ia-text-bear" : ""}`}>
+                        {Math.round(dailyPerformance.bias_accuracy_percent)}%
+                      </div>
                     </div>
                     <div>
                       <div className="ia-kpi-label">Trap Accuracy</div>
-                      <div className="ia-kpi-value">{Math.round(dailyPerformance.trap_accuracy_percent)}%</div>
+                      <div className={`ia-kpi-value ${dailyPerformance.trap_accuracy_percent >= 65 ? "ia-text-bull" : dailyPerformance.trap_accuracy_percent < 50 ? "ia-text-bear" : ""}`}>
+                        {Math.round(dailyPerformance.trap_accuracy_percent)}%
+                      </div>
                     </div>
                     <div>
                       <div className="ia-kpi-label">Exit Accuracy</div>
-                      <div className="ia-kpi-value">{Math.round(dailyPerformance.exit_accuracy_percent)}%</div>
+                      <div className={`ia-kpi-value ${dailyPerformance.exit_accuracy_percent >= 65 ? "ia-text-bull" : dailyPerformance.exit_accuracy_percent < 50 ? "ia-text-bear" : ""}`}>
+                        {Math.round(dailyPerformance.exit_accuracy_percent)}%
+                      </div>
                     </div>
                     <div>
                       <div className="ia-kpi-label">Signals Logged</div>
                       <div className="ia-kpi-value">{dailyPerformance.total_signals_logged}</div>
                     </div>
                   </div>
+                  <div className="dp-interp">
+                    {(() => {
+                      const avg = (dailyPerformance.bias_accuracy_percent + dailyPerformance.trap_accuracy_percent + dailyPerformance.exit_accuracy_percent) / 3;
+                      if (avg >= 65) return "Engine performing well today — all three signals above threshold.";
+                      if (avg >= 50) return "Mixed session — some signals reliable, review before trading.";
+                      return "Below-threshold session — treat all signals with extra caution today.";
+                    })()}
+                  </div>
+                  </>
                 )
               )}
             </div>

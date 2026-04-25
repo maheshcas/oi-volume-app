@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 type AdvancedAnalysisCardProps = {
   open: boolean;
   onToggle: () => void;
-  preview: string;
+  preview: ReactNode;
   children: ReactNode;
 };
 

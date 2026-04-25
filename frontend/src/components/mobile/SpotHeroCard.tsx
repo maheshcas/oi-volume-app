@@ -27,10 +27,18 @@ function signedText(value: string, pct: string) {
   return `${value.replace("+", "▲ ").replace("-", "▼ ")} ${pct}`.replace("  ", " ").trim();
 }
 
-function pillTone(kind: "neutral" | "up" | "phase") {
+function pillTone(kind: "neutral" | "up" | "down" | "phase") {
   if (kind === "up") return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+  if (kind === "down") return "border-rose-400/20 bg-rose-400/10 text-rose-300";
   if (kind === "phase") return "border-amber-300/20 bg-amber-300/10 text-amber-200";
   return "border-white/8 bg-white/[0.04] text-slate-400";
+}
+
+function trendKind(trend: string): "up" | "down" | "neutral" {
+  const t = String(trend || "").toLowerCase();
+  if (t.includes("up") || t.includes("bull") || t.includes("breakout")) return "up";
+  if (t.includes("down") || t.includes("bear") || t.includes("breakdown")) return "down";
+  return "neutral";
 }
 
 export default function SpotHeroCard({
@@ -80,11 +88,11 @@ export default function SpotHeroCard({
           <span className="opacity-60">Proj.</span>
           <span>{projection || "-"}</span>
         </div>
-        <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] ${pillTone("up")}`}>
+        <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] ${pillTone(trendKind(dayTrend))}`}>
           <span className="opacity-60">Day</span>
           <span>{dayTrend || "-"}</span>
         </div>
-        <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] ${pillTone("up")}`}>
+        <div className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] ${pillTone(trendKind(longTrend))}`}>
           <span className="opacity-60">Long</span>
           <span>{longTrend || "-"}</span>
         </div>

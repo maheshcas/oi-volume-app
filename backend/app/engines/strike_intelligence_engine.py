@@ -190,6 +190,24 @@ def _compute_max_pain_pull(spot: float, max_pain_strike: int | None, strike_gap:
     return distance, "at"
 
 
+def _resolve_magnet_interpretation(pull: str, character: str) -> str:
+    if pull == "at":
+        return "at_magnet"
+    if pull == "up" and character in {"support", "strong_support"}:
+        return "ascending_toward_floor"
+    if pull == "up" and character in {"resistance", "strong_resistance"}:
+        return "approaching_ceiling"
+    if pull == "down" and character in {"resistance", "strong_resistance"}:
+        return "descending_from_ceiling"
+    if pull == "down" and character in {"support", "strong_support"}:
+        return "approaching_floor"
+    if pull == "up":
+        return "drifting_up_to_neutral_magnet"
+    if pull == "down":
+        return "drifting_down_to_neutral_magnet"
+    return "unknown"
+
+
 def _compute_price_magnet(
     liquidity_map: list[dict[str, Any]],
     spot: float,
@@ -207,8 +225,10 @@ def _compute_price_magnet(
             "price_magnet_strike": None,
             "price_magnet_combined": 0.0,
             "magnet_pull_direction": "unknown",
+            "magnet_interpretation": "unknown",
             "magnet_distance_pts": None,
             "secondary_magnet": None,
+            "secondary_magnet_distance_pts": None,
             "between_magnets": False,
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,
@@ -246,8 +266,10 @@ def _compute_price_magnet(
             "price_magnet_strike": None,
             "price_magnet_combined": 0.0,
             "magnet_pull_direction": "unknown",
+            "magnet_interpretation": "unknown",
             "magnet_distance_pts": None,
             "secondary_magnet": None,
+            "secondary_magnet_distance_pts": None,
             "between_magnets": False,
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,
@@ -308,10 +330,21 @@ def _compute_price_magnet(
         if magnet_combined > 0
         else 0.0
     )
+    interpretation = _resolve_magnet_interpretation(pull, character)
 
     between = False
     compression = False
     sec_strike: int | None = None
+    secondary_distance_pts: float | None = None
+    min_secondary_distance = max(1, int(strike_gap)) * 3
+    secondary = next(
+        (
+            row
+            for row in scored[1:]
+            if abs(int(row["strike"]) - magnet_strike) >= min_secondary_distance
+        ),
+        None,
+    )
     show_secondary_magnet = (
         character not in {"balanced", "unknown"}
         and magnet_strength >= 0.15
@@ -322,16 +355,20 @@ def _compute_price_magnet(
         lo = min(magnet_strike, sec_strike)
         hi = max(magnet_strike, sec_strike)
         between = lo <= spot <= hi
-        dist_primary = abs(spot - magnet_strike)
-        dist_secondary = abs(spot - sec_strike)
-        compression = dist_primary <= 3 * strike_gap and dist_secondary <= 3 * strike_gap
+        secondary_distance_pts = float(abs(sec_strike - magnet_strike))
+        compression = bool(
+            secondary_distance_pts <= (6 * max(1, int(strike_gap)))
+            and between
+        )
 
     return {
         "price_magnet_strike": magnet_strike,
         "price_magnet_combined": round(magnet_combined, 0),
         "magnet_pull_direction": pull,
+        "magnet_interpretation": interpretation,
         "magnet_distance_pts": round(distance, 1) if distance is not None else None,
         "secondary_magnet": sec_strike,
+        "secondary_magnet_distance_pts": secondary_distance_pts,
         "between_magnets": between,
         "magnet_ce_pct": round(ce_pct, 1),
         "magnet_pe_pct": round(pe_pct, 1),
@@ -1446,8 +1483,10 @@ def compute_strike_intelligence(context: dict) -> dict:
             "price_magnet_strike": magnet_result.get("price_magnet_strike"),
             "price_magnet_combined": magnet_result.get("price_magnet_combined"),
             "magnet_pull_direction": magnet_result.get("magnet_pull_direction"),
+            "magnet_interpretation": magnet_result.get("magnet_interpretation"),
             "magnet_distance_pts": magnet_result.get("magnet_distance_pts"),
             "secondary_magnet": magnet_result.get("secondary_magnet"),
+            "secondary_magnet_distance_pts": magnet_result.get("secondary_magnet_distance_pts"),
             "between_magnets": bool(magnet_result.get("between_magnets", False)),
             "magnet_ce_pct": magnet_result.get("magnet_ce_pct"),
             "magnet_pe_pct": magnet_result.get("magnet_pe_pct"),
@@ -1499,8 +1538,10 @@ def compute_strike_intelligence(context: dict) -> dict:
             "price_magnet_strike": None,
             "price_magnet_combined": 0.0,
             "magnet_pull_direction": "unknown",
+            "magnet_interpretation": "unknown",
             "magnet_distance_pts": None,
             "secondary_magnet": None,
+            "secondary_magnet_distance_pts": None,
             "between_magnets": False,
             "magnet_ce_pct": 0.0,
             "magnet_pe_pct": 0.0,

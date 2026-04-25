@@ -4,6 +4,101 @@ import {
   friendlyWinningEngine,
 } from "../decisionUx";
 
+// ── Unlock gate helpers (mirrors desktop Patch B logic) ──────────────────
+
+type MobileGateStatus = "pass" | "near" | "fail" | "unknown";
+
+type MobileGate = {
+  key: string;
+  label: string;
+  status: MobileGateStatus;
+  current: string;
+  gap: string | null;
+};
+
+function resolveGatesMobile(args: {
+  trapPct: number | null | undefined;
+  spot: number | null | undefined;
+  support: number | null | undefined;
+  resistance: number | null | undefined;
+  readinessScore: number | null;
+  decisionConfidence: number | null | undefined;
+}): MobileGate[] {
+  const gates: MobileGate[] = [];
+
+  const trap =
+    typeof args.trapPct === "number" && Number.isFinite(args.trapPct)
+      ? Math.round(args.trapPct)
+      : null;
+  if (trap !== null) {
+    const status: MobileGateStatus =
+      trap < 55 ? "pass" : trap < 60 ? "near" : "fail";
+    gates.push({
+      key: "trap",
+      label: "Trap < 55%",
+      status,
+      current: `${trap}%`,
+      gap: status === "pass" ? null : `drop ${trap - 54}%`,
+    });
+  }
+
+  const spot =
+    typeof args.spot === "number" && Number.isFinite(args.spot) ? args.spot : null;
+  const support =
+    typeof args.support === "number" && Number.isFinite(args.support)
+      ? args.support
+      : null;
+  const resistance =
+    typeof args.resistance === "number" && Number.isFinite(args.resistance)
+      ? args.resistance
+      : null;
+  if (spot !== null && (support !== null || resistance !== null)) {
+    const distToS = support !== null ? Math.abs(spot - support) : Infinity;
+    const distToR = resistance !== null ? Math.abs(spot - resistance) : Infinity;
+    const nearest = Math.min(distToS, distToR);
+    const side = distToS < distToR ? "S" : "R";
+    const status: MobileGateStatus =
+      nearest <= 60 ? "pass" : nearest <= 100 ? "near" : "fail";
+    gates.push({
+      key: "edge",
+      label: "Spot at S/R edge",
+      status,
+      current: `${Math.round(nearest)}pts to ${side}`,
+      gap: status === "pass" ? null : `need ${Math.round(nearest - 60)}pts`,
+    });
+  }
+
+  const readiness = Math.max(0, Math.min(100, Number(args.readinessScore) || 0));
+  const rStatus: MobileGateStatus =
+    readiness >= 60 ? "pass" : readiness >= 50 ? "near" : "fail";
+  gates.push({
+    key: "readiness",
+    label: "Readiness ≥ 60%",
+    status: rStatus,
+    current: `${Math.round(readiness)}%`,
+    gap: rStatus === "pass" ? null : `gain ${Math.round(60 - readiness)}%`,
+  });
+
+  const conf =
+    typeof args.decisionConfidence === "number" &&
+    Number.isFinite(args.decisionConfidence)
+      ? Math.max(0, Math.min(100, args.decisionConfidence))
+      : null;
+  if (conf !== null) {
+    const cStatus: MobileGateStatus =
+      conf >= 50 ? "pass" : conf >= 40 ? "near" : "fail";
+    gates.push({
+      key: "confidence",
+      label: "Confidence ≥ 50%",
+      status: cStatus,
+      current: `${Math.round(conf)}%`,
+      gap: cStatus === "pass" ? null : `gain ${Math.round(50 - conf)}%`,
+    });
+  }
+
+  return gates;
+}
+
 type PrimarySignalCardProps = {
   tradeAction: string;
   resolvedReason: string;
@@ -19,6 +114,10 @@ type PrimarySignalCardProps = {
   decisionConfidence?: number | null;
   supportTransitionBadge?: boolean;
   resistanceTransitionBadge?: boolean;
+  trapProbability?: number | null;
+  spot?: number | null;
+  support?: number | null;
+  resistance?: number | null;
 };
 
 function actionTone(action: string) {
@@ -57,6 +156,10 @@ export default function PrimarySignalCard({
   decisionConfidence = null,
   supportTransitionBadge = false,
   resistanceTransitionBadge = false,
+  trapProbability = null,
+  spot = null,
+  support = null,
+  resistance = null,
 }: PrimarySignalCardProps) {
   const readiness = typeof readinessScore === "number" ? Math.max(0, Math.min(100, readinessScore)) : 0;
   const confidence = typeof decisionConfidence === "number" ? Math.max(0, Math.min(100, decisionConfidence)) : 0;
@@ -66,6 +169,17 @@ export default function PrimarySignalCard({
     : resistanceTransitionBadge
       ? "Resistance Transition Active"
       : null;
+
+  const gates = resolveGatesMobile({
+    trapPct: trapProbability,
+    spot,
+    support,
+    resistance,
+    readinessScore,
+    decisionConfidence,
+  });
+  const passedGates = gates.filter((g) => g.status === "pass").length;
+  const allPassed = passedGates === gates.length && gates.length > 0;
 
   const actionLabel =
     String(tradeAction || "").toUpperCase() === "WAIT" && String(sessionPhase || "").trim()
@@ -129,6 +243,58 @@ export default function PrimarySignalCard({
           <div className="h-full rounded-full bg-[#7be29d] transition-all" style={{ width: `${confidence}%` }} />
         </div>
       </div>
+
+      {/* Unlock gates — compact mobile version */}
+      {gates.length > 0 ? (
+        <div className={`mb-3 rounded-xl border px-3 py-3 ${
+          allPassed
+            ? "border-emerald-400/20 bg-emerald-400/6"
+            : "border-amber-300/15 bg-amber-300/5"
+        }`}>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-[0.07em] text-slate-500">
+              Unlock gates
+            </span>
+            <span className={`text-[11px] font-semibold ${
+              allPassed ? "text-emerald-300" : "text-amber-200"
+            }`}>
+              {passedGates}/{gates.length} cleared
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {gates.map((g) => (
+              <div key={g.key} className="flex items-baseline justify-between gap-2">
+                <div className="flex min-w-0 items-baseline gap-1.5">
+                  <span className={`shrink-0 text-[11px] font-bold ${
+                    g.status === "pass"
+                      ? "text-emerald-400"
+                      : g.status === "near"
+                        ? "text-amber-300"
+                        : "text-rose-400"
+                  }`}>
+                    {g.status === "pass" ? "✓" : "✗"}
+                  </span>
+                  <span className="text-[11px] leading-4 text-slate-400">{g.label}</span>
+                </div>
+                <div className="flex shrink-0 items-baseline gap-1.5 text-right">
+                  <span className={`font-mono text-[11px] font-semibold ${
+                    g.status === "pass"
+                      ? "text-emerald-300"
+                      : g.status === "near"
+                        ? "text-amber-200"
+                        : "text-rose-300"
+                  }`}>
+                    {g.current}
+                  </span>
+                  {g.gap ? (
+                    <span className="text-[10px] italic text-slate-500">{g.gap}</span>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-1.5">
         {[

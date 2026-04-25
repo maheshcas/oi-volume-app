@@ -86,6 +86,9 @@ type DashboardLayoutProps = {
     peWall?: number | null;
     ceWall?: number | null;
     magnet?: number | null;
+    magnetCharacter?: string | null;
+    magnetPullDirection?: string | null;
+    magnetInterpretation?: string | null;
     maxPain?: number | null;
     strikeGap?: number | null;
     strikes?: Array<{
@@ -210,6 +213,7 @@ type DashboardLayoutProps = {
     rr_brief?: string;
     call_wall_used?: number | null;
     put_wall_used?: number | null;
+    magnet_interpretation?: string | null;
   } | null;
 };
 
@@ -283,6 +287,9 @@ export default function DashboardLayout({
             peWall={structure.peWall}
             ceWall={structure.ceWall}
             magnet={structure.magnet}
+            magnetCharacter={structure.magnetCharacter}
+            magnetPullDirection={structure.magnetPullDirection}
+            magnetInterpretation={structure.magnetInterpretation}
             maxPain={structure.maxPain}
             strikeGap={structure.strikeGap}
             strikes={structure.strikes}

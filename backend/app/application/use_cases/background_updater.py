@@ -883,8 +883,10 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "price_magnet_strike",
         "price_magnet_combined",
         "magnet_pull_direction",
+        "magnet_interpretation",
         "magnet_distance_pts",
         "secondary_magnet",
+        "secondary_magnet_distance_pts",
         "between_magnets",
         "magnet_character",
         "compression_zone",
@@ -4068,9 +4070,16 @@ def _build_v2_intelligence(
     resistance_zone_state = str(sr.get("resistance_zone_state", "Stable") or "Stable")
     sr_score = max(-1.0, min(1.0, (support_score - resistance_score) / 100.0))
     trap_raw = max(0.0, min(1.0, float(trap.get("trap_raw", 0.0) or 0.0)))
-    trap_raw = max(0.0, min(1.0, trap_raw + ((1.0 - alignment_score) * 0.15)))
     trap["trap_raw"] = round(trap_raw, 4)
-    trap_probability_pct = int(round(trap_raw * 100.0))
+    trap_probability_pct = int(
+        round(
+            float(
+                (_ensure_trap_telemetry(trap).get("trap_after_matrix_pct"))
+                or trap.get("trap_probability_pct")
+                or (trap_raw * 100.0)
+            )
+        )
+    )
     trap["trap_probability_pct"] = trap_probability_pct
     trap["trap_probability"] = trap_probability_pct
     trap["trap_level"] = _trap_level_from_probability(trap_probability_pct)
@@ -4079,11 +4088,8 @@ def _build_v2_intelligence(
         stage="trap_after_updater_alignment",
         probability_pct=trap_probability_pct,
         extra={
-            "updater_alignment_adjustment_pts": round(
-                float(trap_probability_pct)
-                - float((_ensure_trap_telemetry(trap).get("trap_after_matrix_pct", trap_probability_pct)) or trap_probability_pct),
-                2,
-            ),
+            # 15B: single-source trap model; no post-engine display compression.
+            "updater_alignment_adjustment_pts": 0.0,
         },
     )
     trap_penalty = max(0.0, min(1.0, float(trap_probability_pct) / 100.0))
@@ -4492,20 +4498,8 @@ def _build_v2_intelligence(
     stale_resistance_discount_applied = False
     stale_resistance_discount_points = 0.0
     if stale_break_window_met and resistance_false_break_context:
-        stale_resistance_discount_points = 12.0
-        trap_probability = max(5.0, trap_probability - stale_resistance_discount_points)
-        trap["trap_probability_pct"] = int(round(trap_probability))
-        trap["trap_probability"] = int(round(trap_probability))
-        trap["trap_risk"] = int(round(trap_probability))
-        trap["trap_type"] = "Breakout In Progress"
-        trap["trap_direction"] = ""
-        trap["trap_message"] = (
-            f"Spot has held above resistance {int(float(resistance_level or 0.0))} for 20+ minutes without SR transition; "
-            "discounting stale false-break risk."
-        )
-        trap["trap_affected_level"] = resistance_level
-        trap["show_affected_level"] = True
-        stale_resistance_discount_applied = True
+        # 15B: do not mutate published trap_probability outside analytical chain.
+        stale_resistance_discount_applied = False
     trap["stale_resistance_discount_applied"] = bool(stale_resistance_discount_applied)
     trap["stale_resistance_discount_points"] = float(stale_resistance_discount_points)
     trap["seconds_above_resistance"] = int(seconds_above_resistance)
@@ -4523,12 +4517,7 @@ def _build_v2_intelligence(
 
     oi_buildup_type = str(oi.get("buildup_type") or "")
     pinning_active = oi_buildup_type.strip().lower() == "two-sided writing"
-    pinning_trap_modifier_points = PINNING_TRAP_MODIFIER_POINTS if pinning_active else 0.0
-    if pinning_trap_modifier_points > 0.0:
-        trap_probability = min(95.0, trap_probability + pinning_trap_modifier_points)
-        trap["trap_probability_pct"] = int(round(trap_probability))
-        trap["trap_probability"] = int(round(trap_probability))
-        trap["trap_risk"] = int(round(trap_probability))
+    pinning_trap_modifier_points = 0.0
     trap["pinning_active"] = bool(pinning_active)
     trap["pinning_trap_modifier_points"] = float(pinning_trap_modifier_points)
     _set_trap_telemetry_stage(
@@ -4769,28 +4758,16 @@ def _build_v2_intelligence(
         no_edge=bool((previous_state or {}).get("no_edge", False)),
     )
     if pre_readiness_range_like_session and not material_breach_confirmed:
-        trap_stability_payload = _stabilize_trap_probability(
-            new_trap_probability=min(float(trap_probability or 0.0), 72.0),
-            previous_state=previous_state,
-        )
-        _apply_stabilized_trap(trap, trap_stability_payload)
-        trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
         _set_trap_telemetry_stage(
             trap,
             stage="trap_after_pre_readiness_stabilizer",
             probability_pct=trap_probability,
             extra={
-                "pre_readiness_cap_applied": True,
-                "pre_readiness_cap_level": 72.0,
+                "pre_readiness_cap_applied": False,
+                "pre_readiness_cap_level": None,
+                "note": "15B single-engine mode: pre-readiness trap stabilizer bypassed",
             },
         )
-        logger.info(
-            "TRAP_FORENSICS pre_readiness_stabilizer: pct=%.2f",
-            float(trap_probability or 0.0),
-        )
-        range_trap_cap_applied = True
-        range_trap_cap_reason = "range_family_cap"
-        range_trap_cap_stage = "pre_readiness"
 
     absorption_wait_override = bool(absorption_detected and str(decision.get("trade_action") or "") == "WAIT")
     trade_readiness = _compute_trade_readiness(
@@ -5041,30 +5018,16 @@ def _build_v2_intelligence(
         structure_bias=str(decision.get("structure_bias", stable_bias)),
     )
     if committed_regime in {"Trend Day", "Breakdown Day"}:
-        trap_conf_adj = adjust_trap_by_confidence(
-            base_trap=float(trap.get("trap_probability_pct", 0) or 0),
-            smoothed_score=float(decision.get("weighted_score", 0.0) or 0.0),
-            confidence_percent=float(decision.get("confidence", 0) or 0),
-        )
-        trap_stability_payload = _stabilize_trap_probability(
-            new_trap_probability=float(trap_conf_adj["trap_probability"]),
-            previous_state=previous_state,
-        )
-        _apply_stabilized_trap(trap, trap_stability_payload)
-        trap["confidence_factor"] = float(trap_conf_adj["confidence_factor"])
-        trap["trap_trend_adjustment_applied"] = True
+        trap["confidence_factor"] = 1.0
+        trap["trap_trend_adjustment_applied"] = False
         _set_trap_telemetry_stage(
             trap,
             stage="trap_after_trend_confidence_adjustment",
             probability_pct=float(trap.get("trap_probability_pct", 0.0) or 0.0),
             extra={
-                "confidence_factor": round(float(trap_conf_adj.get("confidence_factor", 1.0) or 1.0), 4),
+                "confidence_factor": 1.0,
+                "note": "15B single-engine mode: trend confidence trap adjuster bypassed",
             },
-        )
-        logger.info(
-            "TRAP_FORENSICS trend_confidence_adjustment: pct=%.2f factor=%.4f",
-            float(trap.get("trap_probability_pct", 0.0) or 0.0),
-            float(trap_conf_adj.get("confidence_factor", 1.0) or 1.0),
         )
     else:
         trap["confidence_factor"] = 1.0
@@ -5240,7 +5203,7 @@ def _build_v2_intelligence(
             }
         )
 
-    expiry_trap_risk = float(expiry_adaptive.get("trap_risk", trap.get("trap_probability_pct", 0)) or 0.0)
+    expiry_trap_risk = float(trap.get("trap_probability_pct", 0) or 0.0)
     post_stabilizer_range_like_session = _is_range_like_session(
         committed_regime=committed_regime,
         stabilized_regime_family=stabilized_regime_family,
@@ -5248,27 +5211,17 @@ def _build_v2_intelligence(
         no_edge=no_edge,
     )
     if post_stabilizer_range_like_session and not material_breach_confirmed:
-        expiry_trap_risk = min(expiry_trap_risk, 72.0)
-        range_trap_cap_applied = True
-        range_trap_cap_reason = "range_family_cap"
-        range_trap_cap_stage = "expiry" if range_trap_cap_stage is None else "pre_readiness+expiry"
-    trap_stability_payload = _stabilize_trap_probability(
-        new_trap_probability=expiry_trap_risk,
-        previous_state=previous_state,
-    )
-    _apply_stabilized_trap(trap, trap_stability_payload)
+        range_trap_cap_applied = False
+        range_trap_cap_reason = None
+        range_trap_cap_stage = None
     _set_trap_telemetry_stage(
         trap,
         stage="trap_after_expiry_stabilizer",
         probability_pct=float(trap.get("trap_probability_pct", 0.0) or 0.0),
         extra={
             "expiry_trap_risk_input": round(float(expiry_trap_risk or 0.0), 2),
+            "note": "15B single-engine mode: expiry trap stabilizer bypassed",
         },
-    )
-    logger.info(
-        "TRAP_FORENSICS expiry_stabilizer: input=%.2f pct=%.2f",
-        float(expiry_trap_risk or 0.0),
-        float(trap.get("trap_probability_pct", 0.0) or 0.0),
     )
     expiry_adaptive["trap_risk"] = round(float(trap.get("trap_probability_pct", 0.0) or 0.0), 2)
     reversal_prob = compute_early_reversal_probability(
@@ -5421,11 +5374,6 @@ def _build_v2_intelligence(
         decision_explanation = f"{decision_explanation} Strong intraday price displacement detected."
     if decision.get("momentum_override_explanation"):
         decision_explanation = f"{decision_explanation} {decision.get('momentum_override_explanation')}"
-    trap_stability_payload = _stabilize_trap_probability(
-        new_trap_probability=float(trap.get("trap_probability_pct", 0.0) or 0.0),
-        previous_state=previous_state,
-    )
-    _apply_stabilized_trap(trap, trap_stability_payload)
     trap_probability = float(trap.get("trap_probability_pct", 0.0) or 0.0)
     _set_trap_telemetry_stage(
         trap,
@@ -5433,6 +5381,8 @@ def _build_v2_intelligence(
         probability_pct=trap_probability,
         extra={
             "trap_published_probability_pct": round(float(trap_probability or 0.0), 2),
+            "trap_final_pct": round(float(trap_probability or 0.0), 2),
+            "note": "15B single-engine mode: final trap stabilizer bypassed",
         },
     )
     logger.info(
@@ -5970,8 +5920,10 @@ def _build_v2_intelligence(
             ),
             "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
             "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),
+            "magnet_interpretation": strike_intelligence.get("magnet_interpretation"),
             "magnet_distance_pts": strike_intelligence.get("magnet_distance_pts"),
             "secondary_magnet": strike_intelligence.get("secondary_magnet"),
+            "secondary_magnet_distance_pts": strike_intelligence.get("secondary_magnet_distance_pts"),
             "magnet_character": strike_intelligence.get("magnet_character"),
             "compression_zone": strike_intelligence.get("compression_zone"),
         }
@@ -6297,8 +6249,10 @@ def _build_v2_intelligence(
             "price_magnet_strike": strike_intelligence.get("price_magnet_strike"),
             "price_magnet_combined": strike_intelligence.get("price_magnet_combined"),
             "magnet_pull_direction": strike_intelligence.get("magnet_pull_direction"),
+            "magnet_interpretation": strike_intelligence.get("magnet_interpretation"),
             "magnet_distance_pts": strike_intelligence.get("magnet_distance_pts"),
             "secondary_magnet": strike_intelligence.get("secondary_magnet"),
+            "secondary_magnet_distance_pts": strike_intelligence.get("secondary_magnet_distance_pts"),
             "between_magnets": strike_intelligence.get("between_magnets"),
             "magnet_character": strike_intelligence.get("magnet_character"),
             "compression_zone": strike_intelligence.get("compression_zone"),

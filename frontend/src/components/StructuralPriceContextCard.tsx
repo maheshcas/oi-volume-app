@@ -60,6 +60,9 @@ type Props = {
   peWall?: number | null;
   ceWall?: number | null;
   magnet?: number | null;
+  magnetCharacter?: string | null;
+  magnetPullDirection?: string | null;
+  magnetInterpretation?: string | null;
   maxPain?: number | null;
   strikeGap?: number | null;
   strikes?: Array<{
@@ -691,6 +694,9 @@ export default function StructuralPriceContextCard(props: Props) {
         peWall={props.peWall}
         ceWall={props.ceWall}
         magnet={props.magnet}
+        magnetCharacter={props.magnetCharacter}
+        magnetPullDirection={props.magnetPullDirection}
+        magnetInterpretation={props.magnetInterpretation}
         maxPain={props.maxPain}
         strikeGap={typeof props.strikeGap === "number" ? props.strikeGap : 50}
         strikes={props.strikes ?? undefined}

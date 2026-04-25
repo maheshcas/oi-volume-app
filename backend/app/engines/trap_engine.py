@@ -559,6 +559,12 @@ def _compute_oi_matrix_trap(
     }
     oi_price_divergence = matrix_signal in ("BULL_TRAP", "BEAR_TRAP")
     breach_oi_confirming = bool(level_oi_confirming) if level_oi_confirming is not None else True
+    boost_pts = 0.0
+    if matrix_signal in ("BULL_TRAP", "BEAR_TRAP"):
+        boost_pts = 15.0 if matrix_confidence == "High" else 8.0 if matrix_confidence == "Moderate" else 3.0
+    elif matrix_signal in ("BULL_CONFIRM", "BEAR_CONFIRM"):
+        boost_pts = -15.0 if matrix_confidence == "High" else -8.0 if matrix_confidence == "Moderate" else -3.0
+
     return {
         "oi_trap_signal": matrix_signal,
         "oi_trap_confidence": matrix_confidence,
@@ -566,6 +572,10 @@ def _compute_oi_matrix_trap(
         "breach_level": breach_level,
         "breach_oi_confirming": breach_oi_confirming,
         "oi_price_divergence": oi_price_divergence,
+        # Telemetry-friendly aliases
+        "signal": matrix_signal,
+        "strength": matrix_confidence,
+        "boost_pts": boost_pts,
     }
 
 
@@ -897,6 +907,7 @@ def run_trap_engine(
     trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
     trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
     trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
+    trap_after_multiplier_pct = float(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier))
 
     # OI-price matrix additive layer (does not replace existing path).
     resolved_prev_spot = prev_spot
@@ -915,6 +926,9 @@ def run_trap_engine(
             "breach_level": None,
             "breach_oi_confirming": True,
             "oi_price_divergence": False,
+            "signal": "NEUTRAL",
+            "strength": "Low",
+            "boost_pts": 0.0,
         }
         trap_boost = 0
     else:
@@ -964,6 +978,8 @@ def run_trap_engine(
             trap_boost = 0
 
     trap_risk = int(min(95, max(0, trap_risk + trap_boost)))
+    trap_after_matrix_pct = float(trap_after_multiplier_pct + trap_boost)
+    trap_final_capped = bool(trap_after_matrix_pct > 95.0 or trap_after_matrix_pct < 0.0)
 
     atm_row_data = features.get("atm_row") or {}
     atm_ce_ltp = float(atm_row_data.get("CE_LastPrice") or 0.0)
@@ -1056,4 +1072,21 @@ def run_trap_engine(
         "support_absorption_strength": absorption_result.get("support_absorption_strength"),
         "resistance_absorption_strength": absorption_result.get("resistance_absorption_strength"),
         "total_chain_oi": round(float(current_total_chain_oi), 2),
+        # Read-only telemetry decomposition (Patch 14)
+        "trap_telemetry": {
+            "trap_raw": round(float(trap_raw), 4),
+            "trap_smoothed": round(float(trap_smoothed), 4),
+            "pullback_boost_applied": round(float(pullback_boost), 4) if (pullback_depth > 0.70 and breakout_trigger) else 0.0,
+            "pullback_depth": round(float(pullback_depth or 0.0), 4),
+            "is_trap_flag": bool(is_trap),
+            "multiplier_applied": float(trap_risk_multiplier),
+            "trap_after_multiplier": round(float(trap_after_multiplier_pct) / 100.0, 4),
+            "trap_after_multiplier_pct": round(float(trap_after_multiplier_pct), 2),
+            "oi_matrix_signal": str(oi_matrix_result.get("signal") or oi_matrix_result.get("oi_trap_signal") or "NEUTRAL"),
+            "oi_matrix_strength": str(oi_matrix_result.get("strength") or oi_matrix_result.get("oi_trap_confidence") or "Low"),
+            "oi_matrix_boost_pts": float(trap_boost),
+            "trap_after_matrix": round(float(trap_after_matrix_pct) / 100.0, 4),
+            "trap_after_matrix_pct": round(float(trap_after_matrix_pct), 2),
+            "trap_final_capped": bool(trap_final_capped),
+        },
     }

@@ -1,6 +1,7 @@
 type MobileHeaderProps = {
   liveStatus: "live" | "stale" | "delayed" | "blocked" | "checking";
   updatedAt: string;
+  scheduleLabel?: string | null;
 };
 
 function statusTone(liveStatus: MobileHeaderProps["liveStatus"]) {
@@ -9,7 +10,7 @@ function statusTone(liveStatus: MobileHeaderProps["liveStatus"]) {
   return "text-amber-200 border-amber-300/20 bg-amber-300/10";
 }
 
-export default function MobileHeader({ liveStatus, updatedAt }: MobileHeaderProps) {
+export default function MobileHeader({ liveStatus, updatedAt, scheduleLabel }: MobileHeaderProps) {
   return (
     <header className="shrink-0 border-b border-white/10 bg-[#0d1824] px-4 py-2">
       <div className="flex items-center justify-between text-[11px] font-medium text-slate-500">
@@ -18,7 +19,13 @@ export default function MobileHeader({ liveStatus, updatedAt }: MobileHeaderProp
           <span className="h-1.5 w-1.5 rounded-full bg-current" />
           {liveStatus === "live" ? "Live" : liveStatus.toUpperCase()}
         </div>
-        <span className="font-mono tracking-[0.14em] text-slate-600">●●●</span>
+        {scheduleLabel ? (
+          <span className="text-[10px] font-medium text-slate-500">
+            {scheduleLabel}
+          </span>
+        ) : (
+          <span className="font-mono tracking-[0.14em] text-slate-600">●●●</span>
+        )}
       </div>
     </header>
   );

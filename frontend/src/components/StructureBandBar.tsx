@@ -4,6 +4,8 @@ type StrikePoint = {
   strike: number;
   oi_ce: number;
   oi_pe: number;
+  oi_ce_change?: number | null;
+  oi_pe_change?: number | null;
   tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
 };
 
@@ -40,6 +42,7 @@ type StructureBandBarProps = {
   magnet?: number | null;
   magnetCharacter?: string | null;
   magnetPullDirection?: string | null;
+  magnetInterpretation?: string | null;
   prevMagnetDirection?: string | null;
   maxPain?: number | null;
   strikeGap?: number;
@@ -190,13 +193,313 @@ function resolveNextMoveBias(
   };
 }
 
+type TriggerHint = {
+  direction: "UP" | "DOWN" | "FLAT" | "CONFLICT";
+  confidence: "strong" | "moderate" | "weak";
+  ratioLabel: string;
+  biasLine: string;
+  triggerLine: string;
+  deltaLine: string | null;
+};
+
+function resolveRatioLabel(
+  oi_ce: number,
+  oi_pe: number,
+): { label: string; ratio: number; dominant: "ce" | "pe" | "balanced" } {
+  const ce = Math.max(oi_ce, 1);
+  const pe = Math.max(oi_pe, 1);
+  const ratio = ce / pe;
+  const dominant =
+    ratio > 1.05 ? "ce"
+    : ratio < 0.95 ? "pe"
+    : "balanced";
+  return {
+    label: `CE/PE ${ratio.toFixed(2)}x`,
+    ratio,
+    dominant,
+  };
+}
+
+function resolveDeltaLine(
+  oi_ce_change: number | null | undefined,
+  oi_pe_change: number | null | undefined,
+): string | null {
+  const DELTA_THRESHOLD = 0.02;
+  const ce = typeof oi_ce_change === "number" ? oi_ce_change : null;
+  const pe = typeof oi_pe_change === "number" ? oi_pe_change : null;
+  if (ce === null && pe === null) return null;
+  if (Math.abs(pe ?? 0) < DELTA_THRESHOLD && Math.abs(ce ?? 0) < DELTA_THRESHOLD) return null;
+  const sign = (v: number) => (v > 0 ? "+" : "");
+  const parts: string[] = [];
+  if (pe !== null) parts.push(`PE Δ${sign(pe)}${(pe * 100).toFixed(1)}%`);
+  if (ce !== null) parts.push(`CE Δ${sign(ce)}${(ce * 100).toFixed(1)}%`);
+  return parts.join(" / ");
+}
+
+function resolveSpotTrigger(
+  strike: number,
+  spot: number,
+  spotStrike: number,
+  oi_ce: number,
+  oi_pe: number,
+  oi_ce_change: number | null | undefined,
+  oi_pe_change: number | null | undefined,
+  strikeGap: number,
+): TriggerHint {
+  void strikeGap;
+  void spot;
+  const { label, ratio, dominant } = resolveRatioLabel(oi_ce, oi_pe);
+  const deltaLine = resolveDeltaLine(oi_ce_change, oi_pe_change);
+
+  const ceDelta = typeof oi_ce_change === "number" ? oi_ce_change : 0;
+  const peDelta = typeof oi_pe_change === "number" ? oi_pe_change : 0;
+
+  const ceBuilding = ceDelta > 0.02;
+  const peBuilding = peDelta > 0.02;
+  const ceUnwinding = ceDelta < -0.02;
+  const peUnwinding = peDelta < -0.02;
+
+  // Use strike-aligned spot reference — not raw price — to avoid
+  // boundary errors (e.g. strike 23,900 > raw spot 23,898.xx)
+  const isAboveSpot = strike > spotStrike;
+  const isBelowSpot = strike < spotStrike;
+
+  if (isBelowSpot) {
+    if (dominant === "pe") {
+      const floorStrength = ratio < 0.5 ? "strong" : ratio < 0.8 ? "moderate" : "weak";
+      const flipRatio = ratio < 0.5 ? "0.75" : "1.0";
+      if (peUnwinding) {
+        return {
+          direction: "DOWN",
+          confidence: "moderate",
+          ratioLabel: label,
+          biasLine: "PE exiting below spot · floor weakening",
+          triggerLine: "Breakdown risk if CE/PE rises above 1.0x",
+          deltaLine,
+        };
+      }
+      return {
+        direction: "UP",
+        confidence: floorStrength,
+        ratioLabel: label,
+        biasLine: "PE defending below spot · floor holding",
+        triggerLine: `Floor breaks if CE/PE rises above ${flipRatio}x`,
+        deltaLine,
+      };
+    }
+    if (dominant === "ce") {
+      const flipRatio = ratio > 2.0 ? (ratio * 0.6).toFixed(1) : "1.0";
+      if (ceUnwinding) {
+        return {
+          direction: "UP",
+          confidence: "moderate",
+          ratioLabel: label,
+          biasLine: "CE exiting below spot · bearish pressure easing",
+          triggerLine: "Recovery if CE/PE drops below 1.0x",
+          deltaLine,
+        };
+      }
+      return {
+        direction: "DOWN",
+        confidence: ratio > 1.5 ? "strong" : "moderate",
+        ratioLabel: label,
+        biasLine: "CE dominant below spot · no floor defense",
+        triggerLine: `Recovery only if CE/PE drops below ${flipRatio}x`,
+        deltaLine,
+      };
+    }
+    const signal = peBuilding
+      ? "PE building · floor may strengthen"
+      : ceBuilding
+        ? "CE building below · watch for floor failure"
+        : "Balanced below spot · no clear pressure";
+    return {
+      direction: peBuilding ? "UP" : ceBuilding ? "DOWN" : "FLAT",
+      confidence: "weak",
+      ratioLabel: label,
+      biasLine: signal,
+      triggerLine: "Watch for CE/PE to diverge from 1.0x",
+      deltaLine,
+    };
+  }
+
+  if (isAboveSpot) {
+    if (dominant === "ce") {
+      const ceilStrength = ratio > 3.0 ? "strong" : ratio > 1.5 ? "moderate" : "weak";
+      const flipRatio = ratio > 3.0 ? (ratio * 0.5).toFixed(1) : "1.0";
+      if (ceUnwinding) {
+        return {
+          direction: "UP",
+          confidence: "moderate",
+          ratioLabel: label,
+          biasLine: "CE exiting above spot · ceiling cracking",
+          triggerLine: `Breakout if CE/PE drops below ${flipRatio}x`,
+          deltaLine,
+        };
+      }
+      return {
+        direction: "DOWN",
+        confidence: ceilStrength,
+        ratioLabel: label,
+        biasLine: "CE defending above spot · ceiling holds",
+        triggerLine: `Breakout only if CE/PE drops below ${flipRatio}x`,
+        deltaLine,
+      };
+    }
+    if (dominant === "pe") {
+      const flipRatio = "1.0";
+      if (peUnwinding) {
+        return {
+          direction: "DOWN",
+          confidence: "weak",
+          ratioLabel: label,
+          biasLine: "PE exiting above spot · bullish case weakening",
+          triggerLine: "Watch: if CE/PE rises above 1.0x, ceiling reasserts",
+          deltaLine,
+        };
+      }
+      return {
+        direction: "UP",
+        confidence: ratio < 0.6 ? "moderate" : "weak",
+        ratioLabel: label,
+        biasLine: "PE dominant above spot · ceiling thin",
+        triggerLine: `Bullish case fails if CE/PE rises above ${flipRatio}x`,
+        deltaLine,
+      };
+    }
+    const signal = ceBuilding
+      ? "CE building above · ceiling may strengthen"
+      : peBuilding
+        ? "PE building above · ceiling thinning"
+        : "Balanced above spot · ceiling not clearly defined";
+    return {
+      direction: ceBuilding ? "DOWN" : peBuilding ? "UP" : "FLAT",
+      confidence: "weak",
+      ratioLabel: label,
+      biasLine: signal,
+      triggerLine: "Watch for CE/PE to diverge from 1.0x",
+      deltaLine,
+    };
+  }
+
+  // At spot strike
+  if (dominant === "pe") {
+    const strength = ratio < 0.5 ? "strong" : ratio < 0.8 ? "moderate" : "weak";
+    if (peUnwinding) {
+      return {
+        direction: "DOWN",
+        confidence: "moderate",
+        ratioLabel: label,
+        biasLine: "PE unwinding at spot · buyers exiting",
+        triggerLine: "Watch: CE/PE rising toward 1.0x signals reversal",
+        deltaLine,
+      };
+    }
+    if (ceBuilding) {
+      return {
+        direction: "CONFLICT",
+        confidence: "weak",
+        ratioLabel: label,
+        biasLine: "PE dominant but CE building · tug of war at spot",
+        triggerLine: "CE/PE must stay below 0.9x to keep bullish bias",
+        deltaLine,
+      };
+    }
+    return {
+      direction: "UP",
+      confidence: strength,
+      ratioLabel: label,
+      biasLine: "PE dominant at spot · buyers in control",
+      triggerLine: "Bias flips bearish if CE/PE rises above 1.0x",
+      deltaLine,
+    };
+  }
+
+  if (dominant === "ce") {
+    const strength = ratio > 2.5 ? "strong" : ratio > 1.5 ? "moderate" : "weak";
+    if (ceUnwinding) {
+      return {
+        direction: "UP",
+        confidence: "moderate",
+        ratioLabel: label,
+        biasLine: "CE unwinding at spot · sellers exiting",
+        triggerLine: "Bullish if CE/PE drops below 1.0x",
+        deltaLine,
+      };
+    }
+    if (peBuilding) {
+      return {
+        direction: "CONFLICT",
+        confidence: "weak",
+        ratioLabel: label,
+        biasLine: "CE dominant but PE building · tug of war at spot",
+        triggerLine: "CE/PE must stay above 1.1x to keep bearish bias",
+        deltaLine,
+      };
+    }
+    return {
+      direction: "DOWN",
+      confidence: strength,
+      ratioLabel: label,
+      biasLine: "CE dominant at spot · sellers in control",
+      triggerLine: "Bias flips bullish if CE/PE drops below 1.0x",
+      deltaLine,
+    };
+  }
+
+  if (ceBuilding && peBuilding) {
+    return {
+      direction: "CONFLICT",
+      confidence: "weak",
+      ratioLabel: label,
+      biasLine: "Both sides building at spot · compression",
+      triggerLine: "Wait — whichever stops building first loses",
+      deltaLine,
+    };
+  }
+  if (ceBuilding) {
+    return {
+      direction: "DOWN",
+      confidence: "weak",
+      ratioLabel: label,
+      biasLine: "CE adding at balanced spot · sellers probing",
+      triggerLine: "Watch CE/PE rise above 1.1x to confirm bearish",
+      deltaLine,
+    };
+  }
+  if (peBuilding) {
+    return {
+      direction: "UP",
+      confidence: "weak",
+      ratioLabel: label,
+      biasLine: "PE adding at balanced spot · buyers probing",
+      triggerLine: "Watch CE/PE drop below 0.9x to confirm bullish",
+      deltaLine,
+    };
+  }
+  return {
+    direction: "FLAT",
+    confidence: "weak",
+    ratioLabel: label,
+    biasLine: "Balanced at spot · no pressure from either side",
+    triggerLine: "Wait for CE/PE to diverge from 1.0x",
+    deltaLine,
+  };
+}
+
 const resolveMagnetSub = (
   magnet: number | null | undefined,
   spot: number,
   strikeGap: number,
+  magnetInterpretation: string | null | undefined,
   magnetCharacter: string | null | undefined,
 ): string | null => {
   if (typeof magnet !== "number" || !Number.isFinite(magnet)) return null;
+  const interpretationText = String(magnetInterpretation || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ");
+  if (interpretationText) return interpretationText;
   const delta = Math.round(magnet - spot);
   if (delta === 0) return "at spot";
   const arrow = delta < 0 ? "down" : "up";
@@ -234,6 +537,7 @@ export default function StructureBandBar({
   magnet,
   magnetCharacter,
   magnetPullDirection,
+  magnetInterpretation,
   prevMagnetDirection,
   maxPain,
   strikeGap = 50,
@@ -259,22 +563,6 @@ export default function StructureBandBar({
   const nearR = distToR < nearThreshold;
   const spotInsideRange = !aboveR && !belowS;
 
-  const pct = (value: number) =>
-    clamp(((value - support) / bandWidth) * 100, 2, 98);
-
-  const supportPct = pct(support);
-  const resistancePct = pct(resistance);
-  const spotPct = clamp(((spot - support) / bandWidth) * 100, 2, 98);
-  const prevResistancePct =
-    typeof previousResistance === "number" ? pct(previousResistance) : null;
-  const peWallPct = typeof peWall === "number" ? pct(peWall) : null;
-  const ceWallPct = typeof ceWall === "number" ? pct(ceWall) : null;
-  const magnetPct = typeof magnet === "number" ? pct(magnet) : null;
-  const maxPainPct = typeof maxPain === "number" ? pct(maxPain) : null;
-  const overRFillWidthPct = aboveR
-    ? clamp(((spot - resistance) / bandWidth) * 100, 2, 10)
-    : 0;
-
   const rubberBandActive = aboveR || belowS;
   const brokenLevel = aboveR ? resistance : belowS ? support : null;
   const tensionPx =
@@ -282,17 +570,49 @@ export default function StructureBandBar({
   const tensionScale = Math.max(50, strikeGap * 2);
   const tension = clamp(tensionPx / tensionScale, 0, 1);
 
-  const rubberSnapAnchorPct = rubberBandActive
-    ? aboveR
-      ? 72
-      : 28
+  // Rubber-band geometry v2 — honest outside-band dot position.
+  const dangerExtMaxPct = 30;
+  const dangerExtWidthPct = rubberBandActive
+    ? clamp(tension * dangerExtMaxPct, 4, dangerExtMaxPct)
+    : 0;
+  const srRailWidthPct = 100 - (rubberBandActive ? dangerExtWidthPct : 0);
+
+  const combinedPct = (value: number): number => {
+    if (!rubberBandActive) {
+      return clamp(((value - support) / bandWidth) * 100, 2, 98);
+    }
+    if (belowS) {
+      const srPct = clamp(((value - support) / bandWidth) * srRailWidthPct, 0, srRailWidthPct);
+      return dangerExtWidthPct + srPct;
+    }
+    const srPct = clamp(((value - support) / bandWidth) * srRailWidthPct, 0, srRailWidthPct);
+    return srPct;
+  };
+
+  const dotCombinedPct: number = rubberBandActive
+    ? belowS
+      ? clamp(dangerExtWidthPct * (1 - tension) * 0.95, 2, Math.max(3, dangerExtWidthPct - 1))
+      : clamp(srRailWidthPct + dangerExtWidthPct * tension * 0.95, srRailWidthPct + 1, 98)
+    : combinedPct(spot);
+
+  const snapPct: number | null = rubberBandActive
+    ? belowS
+      ? dangerExtWidthPct
+      : srRailWidthPct
     : null;
 
-  const rubberSpotPct = rubberBandActive
-    ? aboveR
-      ? 72 + tension * 26
-      : 28 - tension * 26
-    : spotPct;
+  const supportPct = combinedPct(support);
+  const resistancePct = combinedPct(resistance);
+  const spotPct = rubberBandActive
+    ? dotCombinedPct
+    : clamp(((spot - support) / bandWidth) * 100, 2, 98);
+  const prevResistancePct =
+    typeof previousResistance === "number" ? combinedPct(previousResistance) : null;
+  const peWallPct = typeof peWall === "number" ? combinedPct(peWall) : null;
+  const ceWallPct = typeof ceWall === "number" ? combinedPct(ceWall) : null;
+  const magnetPct = typeof magnet === "number" ? combinedPct(magnet) : null;
+  const maxPainPct = typeof maxPain === "number" ? combinedPct(maxPain) : null;
+  const overRFillWidthPct = 0;
 
   const rejectionRisk =
     rubberBandActive &&
@@ -326,7 +646,6 @@ export default function StructureBandBar({
   const showAbsorptionPill = absorptionScore > 25;
 
   const haloOpacity = rubberBandActive ? 0.4 + tension * 0.5 : 0.25;
-  const markerWidthPx = rubberBandActive ? 1 + Math.round(tension * 2) : 1;
 
   const normalizedMagnetDirection =
     String(magnetPullDirection || "").trim().toLowerCase();
@@ -427,6 +746,29 @@ export default function StructureBandBar({
     return map;
   }, [allSortedStrikes, spot]);
 
+  const strikePressureMap = useMemo(() => {
+    const map: Record<number, StrikePressure> = {};
+    for (const s of ladderStrikes) {
+      map[s.strike] = computeStrikePressure(s.oi_ce || 0, s.oi_pe || 0);
+    }
+    return map;
+  }, [ladderStrikes]);
+
+  const spotZoneTriggers = useMemo(() => {
+    const result: Record<number, TriggerHint> = {};
+    if (spotStrikeForLadder == null) return result;
+    const minus1 = spotStrikeForLadder - strikeGap;
+    const plus1 = spotStrikeForLadder + strikeGap;
+    for (const s of ladderStrikes) {
+      if (s.strike === minus1 || s.strike === spotStrikeForLadder || s.strike === plus1) {
+        result[s.strike] = resolveSpotTrigger(
+          s.strike, spot, spotStrikeForLadder, s.oi_ce, s.oi_pe, s.oi_ce_change, s.oi_pe_change, strikeGap,
+        );
+      }
+    }
+    return result;
+  }, [ladderStrikes, spotStrikeForLadder, strikeGap, spot]);
+
   const metricToSupportTone =
     nearS || belowS ? "sbb-metric-warn-s" : "sbb-metric-neutral";
   const metricToResistanceTone =
@@ -452,11 +794,11 @@ export default function StructureBandBar({
     const center = ladderStrikes[centerIdx];
     const above = centerIdx < ladderStrikes.length - 1 ? ladderStrikes[centerIdx + 1] : null;
     return resolveNextMoveBias(
-      below ? computeStrikePressure(below.oi_ce || 0, below.oi_pe || 0) : null,
-      center ? computeStrikePressure(center.oi_ce || 0, center.oi_pe || 0) : null,
-      above ? computeStrikePressure(above.oi_ce || 0, above.oi_pe || 0) : null,
+      below ? (strikePressureMap[below.strike] ?? null) : null,
+      center ? (strikePressureMap[center.strike] ?? null) : null,
+      above ? (strikePressureMap[above.strike] ?? null) : null,
     );
-  }, [ladderStrikes, spotStrikeForLadder]);
+  }, [ladderStrikes, spotStrikeForLadder, strikePressureMap]);
 
   const nextMoveToneClass =
     nextMove.bias === "UP"
@@ -465,7 +807,7 @@ export default function StructureBandBar({
         ? "sbb-next-bias--down"
         : nextMove.bias === "PINNED"
           ? "sbb-next-bias--pinned"
-          : "sbb-next-bias--noedge";
+          : "sbb-next-bias--no_edge";
   const nextMoveSymbol =
     nextMove.bias === "UP" ? "↑" : nextMove.bias === "DOWN" ? "↓" : nextMove.bias === "PINNED" ? "↔" : "·";
   const spotArrow = useMemo(() => {
@@ -496,6 +838,7 @@ export default function StructureBandBar({
       title: "Next move bias NO_EDGE",
     };
   }, [nextMove.bias, nextMove.confidence]);
+  void spotArrow;
 
   const topLabelStyle = (
     markerPct: number,
@@ -520,7 +863,7 @@ export default function StructureBandBar({
     const baseBottom = -16 - stackIndex * 13;
     if (markerPct >= 94) {
       return {
-        right: "0px",
+        right: `${stackIndex * 44}px`,
         left: "auto",
         transform: "none",
         color,
@@ -529,7 +872,7 @@ export default function StructureBandBar({
     }
     if (markerPct <= 6) {
       return {
-        left: "0px",
+        left: `${stackIndex * 44}px`,
         transform: "none",
         color,
         bottom: `${baseBottom}px`,
@@ -581,49 +924,91 @@ export default function StructureBandBar({
           <div className="sbb-sr-inside-note">SPOT INSIDE S/R BAND</div>
         ) : null}
         {rubberBandActive ? (
-          <div className={`sbb-rubber-status${rejectionRisk ? " sbb-rubber-status-risk" : ""}`}>
-            <span className="sbb-rubber-state">
+          <div className={`sbb-rubber-v2${rejectionRisk ? " sbb-rubber-v2-risk" : ""}${materialBreachConfirmed ? " sbb-rubber-v2-accept" : ""}`}>
+            <span className="sbb-rubber-v2-state">
               {aboveR ? "Above R" : "Below S"}
             </span>
-            <span className="sbb-rubber-tension">
-              tension {tension.toFixed(2)}
+            <span className="sbb-rubber-v2-distance">
+              {Math.abs(Math.round(aboveR ? spot - resistance : support - spot))} pts
+            </span>
+            <span className="sbb-rubber-v2-tension">
+              tension {Math.round(tension * 100)}%
             </span>
             {materialBreachConfirmed ? (
-              <span className="sbb-rubber-badge sbb-rubber-badge-accept">Acceptance</span>
+              <span className="sbb-rubber-v2-badge sbb-rubber-v2-badge-accept">Acceptance</span>
             ) : rejectionRisk ? (
-              <span className="sbb-rubber-badge sbb-rubber-badge-reject">Rejection risk</span>
-            ) : null}
+              <span className="sbb-rubber-v2-badge sbb-rubber-v2-badge-reject">Rejection risk</span>
+            ) : (
+              <span className="sbb-rubber-v2-badge sbb-rubber-v2-badge-watch">Watch for snap</span>
+            )}
           </div>
         ) : null}
         <div className="band-outer sbb-track-wrap">
-          <div className="band-track sbb-track" />
-          {rubberBandActive && brokenLevel !== null && rubberSnapAnchorPct !== null ? (
+          {rubberBandActive ? (
+            <div className="sbb-track-rb-wrap">
+              {belowS ? (
+                <>
+                  <div
+                    className="sbb-track-rb-danger"
+                    style={{
+                      width: `${dangerExtWidthPct}%`,
+                      opacity: 0.4 + tension * 0.5,
+                    }}
+                  />
+                  <div
+                    className="sbb-track-rb-sr"
+                    style={{ width: `${srRailWidthPct}%`, opacity: 0.45 }}
+                  />
+                </>
+              ) : (
+                <>
+                  <div
+                    className="sbb-track-rb-sr"
+                    style={{ width: `${srRailWidthPct}%`, opacity: 0.45 }}
+                  />
+                  <div
+                    className="sbb-track-rb-danger"
+                    style={{
+                      width: `${dangerExtWidthPct}%`,
+                      opacity: 0.4 + tension * 0.5,
+                    }}
+                  />
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="band-track sbb-track" />
+          )}
+          {rubberBandActive && snapPct !== null ? (
             <>
               <div
-                className={`sbb-tether sbb-tether-${aboveR ? "right" : "left"}`}
+                className="sbb-snap-v2-marker"
                 style={{
-                  left: aboveR ? `${rubberSnapAnchorPct}%` : `${rubberSpotPct}%`,
-                  right: aboveR ? `${100 - rubberSpotPct}%` : undefined,
-                  width: aboveR ? undefined : `${rubberSnapAnchorPct - rubberSpotPct}%`,
-                  opacity: 0.3 + tension * 0.55,
+                  left: `${snapPct}%`,
+                  boxShadow:
+                    tension >= 0.6
+                      ? `0 0 ${6 + tension * 8}px rgba(239,83,80,0.7)`
+                      : undefined,
                 }}
                 aria-hidden="true"
               />
               <div
-                className={`sbb-snap-marker sbb-snap-marker-${aboveR ? "right" : "left"}`}
-                style={{
-                  left: `${rubberSnapAnchorPct}%`,
-                  width: `${markerWidthPx}px`,
-                  boxShadow: tension >= 0.6 ? "0 0 8px rgba(239,83,80,0.6)" : undefined,
-                }}
-                aria-hidden="true"
-              />
-              <div
-                className={`sbb-snap-label sbb-snap-label-${aboveR ? "right" : "left"}`}
-                style={{ left: `${rubberSnapAnchorPct}%` }}
+                className="sbb-snap-v2-label"
+                style={{ left: `${snapPct}%` }}
               >
-                SNAP
+                {belowS ? `S ${fmt(support)}` : `R ${fmt(resistance)}`}
               </div>
+              <div
+                className={`sbb-tether-v2 sbb-tether-v2-${belowS ? "left" : "right"}`}
+                style={{
+                  left: belowS ? `${dotCombinedPct}%` : `${snapPct}%`,
+                  width: belowS
+                    ? `${snapPct - dotCombinedPct}%`
+                    : `${dotCombinedPct - snapPct}%`,
+                  opacity: 0.25 + tension * 0.5,
+                }}
+                aria-hidden="true"
+              />
             </>
           ) : null}
           {typeof peWall === "number" && peWall >= support ? (
@@ -695,18 +1080,23 @@ export default function StructureBandBar({
           <div
             className={`sbb-dot ${nearR || aboveR ? "sbb-dot-near-r" : nearS || belowS ? "sbb-dot-near-s" : ""}`}
             style={{
-              left: `${rubberBandActive ? rubberSpotPct : spotPct}%`,
+              left: `${rubberBandActive ? dotCombinedPct : spotPct}%`,
               boxShadow: rubberBandActive
                 ? `0 0 ${10 + tension * 14}px rgba(${aboveR ? "239,83,80" : "38,166,154"},${haloOpacity})${rejectionRisk ? ", 0 0 0 4px rgba(239,83,80,0.25), 0 0 0 8px rgba(239,83,80,0.12)" : ""}`
                 : undefined,
             }}
           />
-          <div className="sbb-lbl-above" style={topLabelStyle(supportPct, "#26a69a")}>
-            S {fmt(support)}
-          </div>
-          <div className="sbb-lbl-above" style={topLabelStyle(resistancePct, "#ef5350")}>
-            R {fmt(resistance)}
-          </div>
+          {/* Suppress level label for the broken side — snap-v2-label already shows it */}
+          {!belowS ? (
+            <div className="sbb-lbl-above" style={topLabelStyle(supportPct, "#26a69a")}>
+              S {fmt(support)}
+            </div>
+          ) : null}
+          {!aboveR ? (
+            <div className="sbb-lbl-above" style={topLabelStyle(resistancePct, "#ef5350")}>
+              R {fmt(resistance)}
+            </div>
+          ) : null}
           {prevResistancePct !== null ? (
             <div className="sbb-lbl-above" style={topLabelStyle(prevResistancePct, "#9ca3af")}>
               Prev R {fmt(previousResistance)}
@@ -746,10 +1136,11 @@ export default function StructureBandBar({
           aria-label={nextMove.reason}
         >
           <span className="sbb-next-bias-label">Next bias</span>
-          <span className="sbb-next-bias-value">
-            {nextMoveSymbol} {nextMove.bias}
-            {nextMove.bias !== "NO_EDGE" ? ` ${nextMove.confidence}%` : ""}
-          </span>
+          <span className="sbb-next-bias-arrow">{nextMoveSymbol}</span>
+          <span className="sbb-next-bias-dir">{nextMove.bias}</span>
+          {nextMove.bias !== "NO_EDGE" ? (
+            <span className="sbb-next-bias-conf">{nextMove.confidence}%</span>
+          ) : null}
         </div>
         <div className="sbb-metric-item sbb-metric-magnet">
           <span className="sbb-metric-lbl">
@@ -767,7 +1158,13 @@ export default function StructureBandBar({
             {typeof magnet === "number" ? fmt(magnet) : "-"}
           </span>
           {(() => {
-            const sub = resolveMagnetSub(magnet, spot, strikeGap, magnetCharacter);
+            const sub = resolveMagnetSub(
+              magnet,
+              spot,
+              strikeGap,
+              magnetInterpretation,
+              magnetCharacter,
+            );
             return sub ? <span className="sbb-metric-sub">{sub}</span> : null;
           })()}
         </div>
@@ -822,21 +1219,48 @@ export default function StructureBandBar({
         <div className="sbb-strikes sbb-strikes-v2">
           {ladderStrikes.map((s) => {
             const d = strikeOiDefenseMap[s.strike];
+            const pressure = strikePressureMap[s.strike];
             const isSpot = spotStrikeForLadder === s.strike;
+            const isSpotMinus1 = spotStrikeForLadder != null && s.strike === spotStrikeForLadder - strikeGap;
+            const isSpotPlus1 = spotStrikeForLadder != null && s.strike === spotStrikeForLadder + strikeGap;
+            const isSpotZone = isSpot || isSpotMinus1 || isSpotPlus1;
+            const trigger = spotZoneTriggers[s.strike] ?? null;
+            const triggerCssDir = trigger
+              ? trigger.direction === "UP" ? "bull"
+                : trigger.direction === "DOWN" ? "bear"
+                : "neutral"
+              : null;
+            const triggerDirClass = triggerCssDir ? ` sbb-trigger-${triggerCssDir}` : "";
             const hasWallTag =
               s.tag === "pe_wall" || s.tag === "ce_wall" || s.tag === "magnet" || s.tag === "maxpain";
+            const showArrow = Boolean(
+              pressure &&
+              pressure.state !== "balanced" &&
+              !hasWallTag,
+            );
+            const arrowUp =
+              pressure?.state === "strong_support" ||
+              pressure?.state === "support";
             return (
               <div
                 key={s.strike}
-                className={`sbb-strike-cell${isSpot ? " sbb-strike-cell-spot" : ""}${hasWallTag ? ` sbb-strike-cell-${s.tag}` : ""}`}
+                className={`sbb-strike-cell${isSpot ? " sbb-strike-cell-spot" : ""}${isSpotZone ? " sbb-strike-cell-focus" : " sbb-strike-cell-context"}${hasWallTag ? ` sbb-strike-cell-${s.tag}` : ""}${triggerDirClass}`}
               >
-                {isSpot ? (
+                {showArrow ? (
                   <span
-                    className={`ladder-pressure-arrow ${spotArrow.cls}`}
-                    title={spotArrow.title}
-                    aria-label={spotArrow.title}
+                    className={`sbb-pressure-arrow sbb-pressure-arrow-${pressure?.state}`}
+                    title={
+                      pressure?.state === "strong_support"
+                        ? "Strong support pressure"
+                        : pressure?.state === "support"
+                          ? "Support pressure"
+                          : pressure?.state === "strong_resistance"
+                            ? "Strong resistance pressure"
+                            : "Resistance pressure"
+                    }
+                    aria-hidden="true"
                   >
-                    {spotArrow.symbol}
+                    {arrowUp ? "▲" : "▼"}
                   </span>
                 ) : null}
                 <span className={`sbb-strike-num ${isSpot ? "sbb-strike-num-active" : ""}`}>
@@ -857,6 +1281,16 @@ export default function StructureBandBar({
                 {s.tag === "ce_wall" ? <span className="sbb-tag sbb-tag-ce sbb-tag-v2">CE WALL</span> : null}
                 {s.tag === "magnet" ? <span className="sbb-tag sbb-tag-magnet sbb-tag-v2">MAGNET</span> : null}
                 {s.tag === "maxpain" ? <span className="sbb-tag sbb-tag-maxpain sbb-tag-v2">MAX PAIN</span> : null}
+                {isSpotZone && trigger ? (
+                  <div className={`sbb-trigger sbb-trigger-${triggerCssDir ?? "neutral"}`}>
+                    <span className="sbb-trigger-ratio">{trigger.ratioLabel}</span>
+                    <span className="sbb-trigger-cond">{trigger.biasLine}</span>
+                    <span className="sbb-trigger-cond sbb-trigger-hint">{trigger.triggerLine}</span>
+                    {trigger.deltaLine ? (
+                      <span className="sbb-trigger-delta">{trigger.deltaLine}</span>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             );
           })}

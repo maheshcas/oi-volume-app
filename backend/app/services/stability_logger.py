@@ -118,7 +118,7 @@ class _StreamState:
 class StabilityLoggerService:
     def __init__(self) -> None:
         self.logger = logging.getLogger(LOGGER_NAME)
-        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "true").strip().lower() in {
+        self.enabled = os.getenv("OPTIONLENS_ENABLE_STABILITY_LOGGER", "false").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -202,6 +202,7 @@ class StabilityLoggerService:
         internal_state = payload.get("_state", {}) or {}
         trap = signals.get("trap", {}) or {}
         breach = signals.get("material_breach", {}) or {}
+        support_absorption = signals.get("support_absorption", {}) or {}
         meta = payload.get("meta", {}) or {}
         symbol = str(meta.get("symbol") or self.symbol).upper()
         expiry = str(meta.get("expiry") or self.expiry or "")
@@ -278,6 +279,26 @@ class StabilityLoggerService:
             "trap_affected_level": trap.get("trap_affected_level"),
             "breach_confirmed": breach.get("material_breach_confirmed"),
             "confirmation_type": breach.get("confirmation_type"),
+            # Patch 14 telemetry
+            "tm_trap_decomp": trap.get("trap_telemetry") if isinstance(trap.get("trap_telemetry"), dict) else {},
+            "tm_absorption": {
+                "primary_strength": float(
+                    trap.get("support_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
+                ),
+                "primary_confirmed": bool(
+                    bool(trap.get("absorption_confirmed"))
+                    and str(trap.get("absorption_signal") or "NONE") == "SUPPORT_ABSORPTION"
+                ),
+                "legacy_score": float(support_absorption.get("absorption_score", 0.0) or 0.0),
+                "legacy_triggered": bool(support_absorption.get("absorption_detected")),
+                "disagree": bool(
+                    (
+                        bool(trap.get("absorption_confirmed"))
+                        and str(trap.get("absorption_signal") or "NONE") == "SUPPORT_ABSORPTION"
+                    )
+                    != bool(support_absorption.get("absorption_detected"))
+                ),
+            },
         }
         record["has_market_state"] = bool(market_state)
         record["has_signals"] = bool(signals)

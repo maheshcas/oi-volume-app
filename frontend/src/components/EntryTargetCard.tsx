@@ -24,6 +24,7 @@ type EntryTarget = {
   magnet_distance_pts?: number | null;
   secondary_magnet?: number | null;
   magnet_character?: string | null;
+  magnet_interpretation?: string | null;
   compression_zone?: boolean;
 };
 
@@ -39,8 +40,14 @@ function fmt(v: number | null | undefined) {
 function magnetInline(
   direction?: string | null,
   distance?: number | null,
+  interpretation?: string | null,
   character?: string | null,
 ) {
+  const interpretationText = String(interpretation || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .toLowerCase();
+  if (interpretationText) return interpretationText;
   const d =
     typeof distance === "number" && Number.isFinite(distance)
       ? Math.round(distance)
@@ -128,6 +135,7 @@ const EntryTargetCard: FC<EntryTargetCardProps> = ({ entryTarget }) => {
   const magnetSub = magnetInline(
     entryTarget.magnet_pull_direction,
     entryTarget.magnet_distance_pts,
+    entryTarget.magnet_interpretation,
     entryTarget.magnet_character,
   );
 
