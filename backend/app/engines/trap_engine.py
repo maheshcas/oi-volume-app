@@ -664,18 +664,21 @@ def _compute_absorption_signal(
         + 0.10 * trap_score
     )
 
+    # Absorption = writers defending a level = LOW trap condition.
+    # trap_v < 45 means market is stable and writers are in control,
+    # not in a breakout/uncertain state (which is trap_v > 55).
     support_confirmed = bool(
         near_support
         and support_price_failure
         and pe_chg > 0.03
-        and trap_v > 55.0
+        and trap_v < 45.0
         and support_strength >= 55.0
     )
     resistance_confirmed = bool(
         near_resistance
         and resistance_price_failure
         and ce_chg > 0.03
-        and trap_v > 55.0
+        and trap_v < 45.0
         and resistance_strength >= 55.0
     )
 
@@ -685,7 +688,7 @@ def _compute_absorption_signal(
             "absorption_strength": round(support_strength, 1),
             "absorption_reason": (
                 f"Support absorption: price failed to break {int(round(support_v))} while PE OI built ({pe_chg:.2f}) "
-                f"with trap {int(round(trap_v))}%."
+                f"with trap low at {int(round(trap_v))}%."
             ),
             "absorption_level": support_v,
             "absorption_confirmed": True,
@@ -698,7 +701,7 @@ def _compute_absorption_signal(
             "absorption_strength": round(resistance_strength, 1),
             "absorption_reason": (
                 f"Resistance absorption: price failed to hold above {int(round(resistance_v))} while CE OI built ({ce_chg:.2f}) "
-                f"with trap {int(round(trap_v))}%."
+                f"with trap low at {int(round(trap_v))}%."
             ),
             "absorption_level": resistance_v,
             "absorption_confirmed": True,
@@ -887,29 +890,13 @@ def run_trap_engine(
     trap_raw = float(trap_v2.get("trap_raw", 0.0) or 0.0)
 
     # Deep pullback (> 70%) after a breakout is strong evidence of a trap.
-    # Boost trap_raw proportionally when pullback depth is significant.
+    pullback_boost = 0.0
     if pullback_depth > 0.70 and breakout_trigger:
         pullback_boost = (pullback_depth - 0.70) * 0.30  # max +0.09 at full pullback
         trap_raw = _clamp01(trap_raw + pullback_boost)
 
-    prev_trap_smoothed = trap_raw
-    if isinstance(previous_state, dict):
-        prev_trap_smoothed = float(
-            previous_state.get(
-                "trap_smoothed_prev",
-                previous_state.get("trap_smoothed", previous_state.get("trap_raw_prev", trap_raw)),
-            )
-            or trap_raw
-        )
-    prev_trap_smoothed = _clamp01(prev_trap_smoothed)
-    trap_smoothed = _clamp01((0.7 * prev_trap_smoothed) + (0.3 * trap_raw))
-
-    trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
-    trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
-    trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
-    trap_after_multiplier_pct = float(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier))
-
-    # OI-price matrix additive layer (does not replace existing path).
+    # E2: OI-price matrix computed BEFORE smoothing so its boost is applied
+    # to trap_raw rather than compounding on top of the is_trap multiplier.
     resolved_prev_spot = prev_spot
     if resolved_prev_spot is None and isinstance(previous_state, dict):
         resolved_prev_spot = float(previous_state.get("spot", 0.0) or 0.0) if previous_state.get("spot") is not None else None
@@ -930,7 +917,7 @@ def run_trap_engine(
             "strength": "Low",
             "boost_pts": 0.0,
         }
-        trap_boost = 0
+        oi_boost_frac = 0.0
     else:
         if isinstance(spot, (int, float)) and float(spot) > float(resolved_prev_spot) + 10.0:
             price_direction = "up"
@@ -967,19 +954,37 @@ def run_trap_engine(
             prev_oi_total=resolved_prev_oi_total,
             oi_velocity_score=float(oi.get("oi_velocity_score", 0.0) or 0.0),
         )
+        oi_boost_frac = float(oi_matrix_result.get("boost_pts", 0.0)) / 100.0
 
-        sig = str(oi_matrix_result.get("oi_trap_signal", "NEUTRAL"))
-        conf = str(oi_matrix_result.get("oi_trap_confidence", "Low"))
-        if sig in ("BULL_TRAP", "BEAR_TRAP"):
-            trap_boost = 15 if conf == "High" else 8 if conf == "Moderate" else 3
-        elif sig in ("BULL_CONFIRM", "BEAR_CONFIRM"):
-            trap_boost = -15 if conf == "High" else -8 if conf == "Moderate" else -3
-        else:
-            trap_boost = 0
+    # Apply OI boost to raw BEFORE smoothing — prevents compounding with multiplier.
+    trap_raw_pre_oi = trap_raw
+    trap_raw_boosted = _clamp01(trap_raw + oi_boost_frac)
 
-    trap_risk = int(min(95, max(0, trap_risk + trap_boost)))
-    trap_after_matrix_pct = float(trap_after_multiplier_pct + trap_boost)
-    trap_final_capped = bool(trap_after_matrix_pct > 95.0 or trap_after_matrix_pct < 0.0)
+    prev_trap_smoothed = trap_raw_boosted
+    if isinstance(previous_state, dict):
+        prev_trap_smoothed = float(
+            previous_state.get(
+                "trap_smoothed_prev",
+                previous_state.get("trap_smoothed", previous_state.get("trap_raw_prev", trap_raw_boosted)),
+            )
+            or trap_raw_boosted
+        )
+    prev_trap_smoothed = _clamp01(prev_trap_smoothed)
+
+    # E3: Asymmetric smoothing — react faster to rising trap, decay slower on falling.
+    if trap_raw_boosted > prev_trap_smoothed:
+        trap_smoothed = _clamp01(0.6 * prev_trap_smoothed + 0.4 * trap_raw_boosted)
+    else:
+        trap_smoothed = _clamp01(0.75 * prev_trap_smoothed + 0.25 * trap_raw_boosted)
+
+    trap_risk_multiplier = 1.25 if is_trap else (1.10 if breakout_trigger and (weak_atm_oi or weak_volume) else 1.0)
+    trap_trend_adjustment_applied = trap_risk_multiplier > 1.0
+    trap_risk = int(round(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier)))
+    trap_after_multiplier_pct = float(min(95.0, trap_smoothed * 100.0 * trap_risk_multiplier))
+
+    # OI boost is now pre-smoothing; no additive adjustment to trap_risk here.
+    trap_after_matrix_pct = trap_after_multiplier_pct
+    trap_final_capped = bool(trap_after_matrix_pct > 95.0)
 
     atm_row_data = features.get("atm_row") or {}
     atm_ce_ltp = float(atm_row_data.get("CE_LastPrice") or 0.0)
@@ -1072,11 +1077,13 @@ def run_trap_engine(
         "support_absorption_strength": absorption_result.get("support_absorption_strength"),
         "resistance_absorption_strength": absorption_result.get("resistance_absorption_strength"),
         "total_chain_oi": round(float(current_total_chain_oi), 2),
-        # Read-only telemetry decomposition (Patch 14)
+        # Read-only telemetry decomposition (Patch 14, updated E2/E3)
+        # Stage order: raw → oi_boost (pre-smooth) → smoothed → multiplier → final
         "trap_telemetry": {
-            "trap_raw": round(float(trap_raw), 4),
+            "trap_raw_pre_oi": round(float(trap_raw_pre_oi), 4),
+            "trap_raw_post_oi": round(float(trap_raw_boosted), 4),
             "trap_smoothed": round(float(trap_smoothed), 4),
-            "pullback_boost_applied": round(float(pullback_boost), 4) if (pullback_depth > 0.70 and breakout_trigger) else 0.0,
+            "pullback_boost_applied": round(float(pullback_boost), 4),
             "pullback_depth": round(float(pullback_depth or 0.0), 4),
             "is_trap_flag": bool(is_trap),
             "multiplier_applied": float(trap_risk_multiplier),
@@ -1084,7 +1091,7 @@ def run_trap_engine(
             "trap_after_multiplier_pct": round(float(trap_after_multiplier_pct), 2),
             "oi_matrix_signal": str(oi_matrix_result.get("signal") or oi_matrix_result.get("oi_trap_signal") or "NEUTRAL"),
             "oi_matrix_strength": str(oi_matrix_result.get("strength") or oi_matrix_result.get("oi_trap_confidence") or "Low"),
-            "oi_matrix_boost_pts": float(trap_boost),
+            "oi_matrix_boost_pts": round(float(oi_boost_frac) * 100.0, 2),
             "trap_after_matrix": round(float(trap_after_matrix_pct) / 100.0, 4),
             "trap_after_matrix_pct": round(float(trap_after_matrix_pct), 2),
             "trap_final_capped": bool(trap_final_capped),

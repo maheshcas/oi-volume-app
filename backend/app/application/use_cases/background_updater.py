@@ -1228,64 +1228,6 @@ def _should_emit_response_warning(
     return True
 
 
-def _detect_support_absorption(
-    *,
-    spot: float | None,
-    support: float | None,
-    strike_gap: float | None,
-    pe_oi_change_pct: float | None,
-    volume_expansion_score: float,
-    breakout_strength: float,
-    trap_probability: float,
-) -> dict[str, Any]:
-    spot_value = _safe_float(spot)
-    support_value = _safe_float(support)
-    strike_step = max(1.0, float(strike_gap or 50.0))
-    absorption_offset = strike_step * 0.4
-    pe_change = float(pe_oi_change_pct or 0.0)
-    volume_score = float(volume_expansion_score or 0.0)
-    breakout_score = float(breakout_strength or 0.0)
-    trap_prob = float(trap_probability or 0.0)
-
-    # Proximity check: price must still be near (or below) support — hard prerequisite.
-    near_support = (
-        spot_value is not None
-        and support_value is not None
-        and spot_value < (support_value + absorption_offset)
-    )
-    if not near_support:
-        return {
-            "absorption_detected": False,
-            "absorption_score": 0.0,
-            "level": support_value,
-            "offset": round(absorption_offset, 2),
-            "message": None,
-        }
-
-    # Weighted scoring replaces the hard AND gate.
-    # Each signal contributes a partial score; any two strong signals can fire.
-    pe_score = min(1.0, max(0.0, pe_change / 20.0))           # 10%→0.5, 20%→1.0
-    vol_score = min(1.0, max(0.0, (volume_score - 0.4) / 0.6)) # 0.4→0, 1.0→1.0
-    no_breakout_score = min(1.0, max(0.0, 1.0 - breakout_score / 0.5))  # <0.25→high
-    trap_score = min(1.0, max(0.0, (trap_prob - 40.0) / 40.0))  # 40→0, 80→1.0
-
-    absorption_score = (
-        (pe_score * 0.35)
-        + (vol_score * 0.25)
-        + (no_breakout_score * 0.20)
-        + (trap_score * 0.20)
-    )
-
-    # Trigger at 0.45 (replaces requiring all four conditions).
-    absorption_detected = absorption_score >= 0.45
-
-    return {
-        "absorption_detected": absorption_detected,
-        "absorption_score": round(absorption_score, 4),
-        "level": support_value,
-        "offset": round(absorption_offset, 2),
-        "message": "Support absorption detected — breakdown likely fake" if absorption_detected else None,
-    }
 
 
 def _resolve_absorption_reference_level(
@@ -4624,44 +4566,19 @@ def _build_v2_intelligence(
         directional_force=dict(decision.get("directional_force") or {}),
         day_trend=day_trend,
     )
-    support_row_for_absorption = next(
-        (
-            row
-            for row in rows
-            if _safe_float(row.get("strike")) is not None
-            and absorption_reference_level is not None
-            and abs(float(row.get("strike")) - float(absorption_reference_level)) < 1e-6
-        ),
-        None,
-    )
-    support_absorption = _detect_support_absorption(
-        spot=spot,
-        support=absorption_reference_level,
-        strike_gap=features.get("strike_gap"),
-        pe_oi_change_pct=(support_row_for_absorption or {}).get("PE_OIChangePct"),
-        volume_expansion_score=volume_expansion_score,
-        breakout_strength=breakout_strength_adjusted,
-        trap_probability=trap_probability,
-    )
+    # E8: absorption signals sourced exclusively from trap engine.
+    # _detect_support_absorption() (legacy helper) removed — trap engine is authoritative.
     trap_absorption_signal = str(trap.get("absorption_signal") or "NONE")
     trap_absorption_confirmed = bool(trap.get("absorption_confirmed"))
-    support_absorption_detected = bool(support_absorption.get("absorption_detected")) or (
-        trap_absorption_signal == "SUPPORT_ABSORPTION" and trap_absorption_confirmed
-    )
-    resistance_absorption_detected = (
-        trap_absorption_signal == "RESISTANCE_ABSORPTION" and trap_absorption_confirmed
-    )
-    if support_absorption_detected:
-        support_absorption["absorption_detected"] = True
-        support_absorption.setdefault("level", trap.get("absorption_level") or absorption_reference_level)
-        support_absorption["message"] = str(
-            support_absorption.get("message")
-            or trap.get("absorption_reason")
-            or "Support absorption detected."
-        )
-        support_absorption["strength"] = float(
-            trap.get("support_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0
-        )
+    support_absorption_detected = trap_absorption_signal == "SUPPORT_ABSORPTION" and trap_absorption_confirmed
+    resistance_absorption_detected = trap_absorption_signal == "RESISTANCE_ABSORPTION" and trap_absorption_confirmed
+    support_absorption = {
+        "absorption_detected": bool(support_absorption_detected),
+        "level": trap.get("absorption_level") if support_absorption_detected else absorption_reference_level,
+        "message": str(trap.get("absorption_reason") or "Support absorption detected.") if support_absorption_detected else None,
+        "strength": float(trap.get("support_absorption_strength", trap.get("absorption_strength", 0.0)) or 0.0),
+        "absorption_score": float(trap.get("support_absorption_strength", 0.0) or 0.0) / 100.0,
+    }
     resistance_absorption = {
         "absorption_detected": bool(resistance_absorption_detected),
         "level": trap.get("absorption_level") if resistance_absorption_detected else resistance_level,
