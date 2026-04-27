@@ -161,11 +161,21 @@ def _compute_max_pain_metrics(
             if best_strike is None or abs(k - spot) < abs(best_strike - spot):
                 best_strike = k
 
-    avg_loss = statistics.mean(loss_values) if loss_values else 0.0
+    if not loss_values or len(loss_values) < 2:
+        return {
+            "max_pain_strike": None,
+            "max_pain_confidence": 0.0,
+            "max_pain_strength": "Weak",
+        }
+
+    avg_loss = statistics.mean(loss_values)
     min_loss = float(best_loss or 0.0)
     confidence = 0.0
     if avg_loss > 0:
         confidence = max(0.0, min(100.0, (1.0 - (min_loss / avg_loss)) * 100.0))
+    # Cap confidence when very few strikes survived the noise filter.
+    if len(loss_values) < 4:
+        confidence = min(confidence, 40.0)
     if confidence >= 70:
         strength = "Strong"
     elif confidence >= 45:
@@ -390,13 +400,33 @@ def _compute_level_pcr(level_row: dict[str, Any] | None) -> float | None:
 
 
 def _compute_wall_holding(level_row: dict[str, Any] | None, side: str) -> bool:
+    """
+    Returns True when the wall is holding (writers steady — not adding or exiting).
+    Strengthening (>+2%) and weakening (<-1%) are separate states not captured here;
+    callers that need the full 3-state picture should call _compute_wall_state().
+    """
     if not level_row:
         return False
     if side == "resistance":
         chg = _safe_float(level_row.get("oi_ce_change"), 1e9)
-        return -0.03 <= chg < 0.05
-    chg = _safe_float(level_row.get("oi_pe_change"), 1e9)
-    return -0.03 <= chg < 0.05
+    else:
+        chg = _safe_float(level_row.get("oi_pe_change"), 1e9)
+    return -0.01 <= chg < 0.02
+
+
+def _compute_wall_state(level_row: dict[str, Any] | None, side: str) -> str:
+    """3-state wall status: 'strengthening' | 'holding' | 'weakening'."""
+    if not level_row:
+        return "weakening"
+    if side == "resistance":
+        chg = _safe_float(level_row.get("oi_ce_change"), 1e9)
+    else:
+        chg = _safe_float(level_row.get("oi_pe_change"), 1e9)
+    if chg >= 0.02:
+        return "strengthening"
+    if chg <= -0.01:
+        return "weakening"
+    return "holding"
 
 
 def _compute_defense_ratio(level_row: dict[str, Any] | None, side: str) -> float:
@@ -413,9 +443,12 @@ def _find_wall_strike(
     liquidity_map: list[dict[str, Any]],
     side: str,
     spot: float = 0.0,
+    strike_gap: int = 50,
 ) -> int | None:
     if not liquidity_map:
         return None
+    # Buffer scales with strike gap: ~0.75 gaps (37.5 for NIFTY, 75 for BANKNIFTY).
+    buffer = max(25.0, float(strike_gap) * 0.75)
     best_row: dict[str, Any] | None = None
     best_oi = -1.0
     for row in liquidity_map:
@@ -423,9 +456,9 @@ def _find_wall_strike(
         if strike <= 0:
             continue
         if spot > 0:
-            if side == "PE" and strike > spot + 25:
+            if side == "PE" and strike > spot + buffer:
                 continue
-            if side == "CE" and strike < spot - 25:
+            if side == "CE" and strike < spot - buffer:
                 continue
         oi_key = "oi_pe" if side == "PE" else "oi_ce"
         oi_value = _safe_float(row.get(oi_key), 0.0)
@@ -985,8 +1018,8 @@ def compute_strike_intelligence(context: dict) -> dict:
             strike_gap=strike_gap,
             previous_direction=previous_magnet_pull_direction,
         )
-        pe_wall = _find_wall_strike(liquidity_map, "PE", spot=spot)
-        ce_wall = _find_wall_strike(liquidity_map, "CE", spot=spot)
+        pe_wall = _find_wall_strike(liquidity_map, "PE", spot=spot, strike_gap=strike_gap)
+        ce_wall = _find_wall_strike(liquidity_map, "CE", spot=spot, strike_gap=strike_gap)
 
         resistance_row = _closest_row_by_strike(liquidity_map, resistance)
         support_row = _closest_row_by_strike(liquidity_map, support)
