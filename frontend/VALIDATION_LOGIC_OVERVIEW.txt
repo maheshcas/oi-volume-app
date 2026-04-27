@@ -97,3 +97,12 @@ Validation Checklist (Frontend)
 - Trap chip/labels align with trap direction and level.
 - Readiness block reflects primary readiness keys and does not regress to stale fallback values.
 - Symbol switch (including SENSEX) updates data and keeps UI stable.
+
+Build / Deploy Validation (Netlify)
+- Dev-only pages must not be statically imported by `tsc` in production builds.
+- `frontend/src/main.tsx` uses a non-static dynamic import path for Local Analytics:
+  - `lazy(() => import(/* @vite-ignore */ ("./pages/" + "LocalAnalytics")))`
+- This prevents CI failures when `frontend/src/pages/LocalAnalytics.tsx` is intentionally omitted from production pushes.
+- Validation target:
+  - Netlify `npm run build` must not fail with:
+    - `TS2307: Cannot find module './pages/LocalAnalytics'`

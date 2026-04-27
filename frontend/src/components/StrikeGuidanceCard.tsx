@@ -259,8 +259,6 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
     spotNum !== null && atmStraddle !== null ? spotNum - atmStraddle : null;
   const breakevenUpper =
     spotNum !== null && atmStraddle !== null ? spotNum + atmStraddle : null;
-  const breakevenRange =
-    atmStraddle !== null ? Math.round(atmStraddle * 2) : null;
   const atmGreeks = resolveAtmGreeks(chainGreeks ?? null, strikeIntelligence?.atm_strike);
   const atmGammaCe = atmGreeks?.gammaCe;
   const atmThetaCe = atmGreeks?.thetaCe;
@@ -356,63 +354,74 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
       {/* Tier 3: Metric chips — context at a glance */}
       <div className="sgc-v2-chips">
         <div className="sgc-v2-chip">
-          <span className="sgc-v2-chip-label">IV Rank</span>
+          <span className="sgc-v2-chip-label">Options cost</span>
           <span className={`sgc-v2-chip-value ${ivRankTone ? `sgc-v2-iv-${ivRankTone}` : ""}`}>
             {clampedIvRank !== null && !ivHistoryBuilding
-              ? `${clampedIvRank.toFixed(0)}%`
+              ? clampedIvRank <= 30
+                ? `Cheap (${clampedIvRank.toFixed(0)}%)`
+                : clampedIvRank >= 70
+                  ? `Expensive (${clampedIvRank.toFixed(0)}%)`
+                  : `Normal (${clampedIvRank.toFixed(0)}%)`
               : ivHistoryBuilding
                 ? "Building"
                 : "-"}
           </span>
         </div>
         <div className="sgc-v2-chip">
-          <span className="sgc-v2-chip-label">Max Pain</span>
+          <span className="sgc-v2-chip-label">Expiry target</span>
           <span className="sgc-v2-chip-value sgc-v2-chip-maxpain">
             {strikeIntelligence?.max_pain_strike != null
-              ? formatNumber(strikeIntelligence.max_pain_strike)
+              ? `${formatNumber(strikeIntelligence.max_pain_strike)} · writers want it here`
               : "-"}
-            {strikeIntelligence?.max_pain_pull ? (
-              <span className="sgc-v2-chip-sub">{` ${strikeIntelligence.max_pain_pull}`}</span>
-            ) : null}
           </span>
         </div>
         <div className="sgc-v2-chip">
-          <span className="sgc-v2-chip-label">Straddle</span>
+          <span className="sgc-v2-chip-label">Move needed</span>
           <span className="sgc-v2-chip-value">
-            ₹{strikeIntelligence?.atm_straddle_premium != null ? Number(strikeIntelligence.atm_straddle_premium).toFixed(1) : "-"}
-            {strikeIntelligence?.straddle_trend ? (
-              <span className="sgc-v2-chip-sub">{` ${strikeIntelligence.straddle_trend}`}</span>
-            ) : null}
+            {strikeIntelligence?.atm_straddle_premium != null
+              ? `±${Number(strikeIntelligence.atm_straddle_premium).toFixed(0)}pts to profit`
+              : "-"}
           </span>
         </div>
         <div className="sgc-v2-chip">
-          <span className="sgc-v2-chip-label">IV Skew</span>
-          <span className="sgc-v2-chip-value">{compactValue(strikeIntelligence?.iv_skew, "-")}</span>
+          <span className="sgc-v2-chip-label">Options bias</span>
+          <span className="sgc-v2-chip-value">
+            {(() => {
+              const skew = String(strikeIntelligence?.iv_skew || "").toLowerCase();
+              if (skew.includes("call") || skew.includes("ce") || skew.includes("bear")) return "CE pricier · market fears drop";
+              if (skew.includes("put") || skew.includes("pe") || skew.includes("bull")) return "PE pricier · market fears rise";
+              if (skew === "neutral" || skew === "") return "Balanced · no side favoured";
+              return compactValue(strikeIntelligence?.iv_skew, "-");
+            })()}
+          </span>
         </div>
       </div>
 
       {(breakevenLower !== null || thetaBurn !== null || gammaToneValue !== null || ivPercentile !== null) ? (
         <div className="sgc-v2-greeks">
           <div className="sgc-v2-greeks-head">
-            <span className="sgc-v2-greeks-label">Greeks Context</span>
-            <span className="sgc-v2-greeks-tag">ATM</span>
+            <span className="sgc-v2-greeks-label">Options market reading</span>
+            <span className="sgc-v2-greeks-tag">ATM strike</span>
           </div>
 
           {breakevenLower !== null && breakevenUpper !== null && atmStraddle !== null ? (
             <div className="sgc-v2-breakeven">
-              <div className="sgc-v2-breakeven-row">
-                <span className="sgc-v2-breakeven-label">Breakeven band</span>
-                <span className="sgc-v2-breakeven-range">+/-{breakevenRange}pts</span>
+              <div className="sgc-v2-breakeven-hero">
+                Price needs to move <strong>±{Math.round(atmStraddle)}pts</strong> for straddle buyers to profit
               </div>
-              <div className="sgc-v2-breakeven-values">
-                <span className="sgc-v2-breakeven-low">{fmtNumber(breakevenLower)}</span>
+              <div className="sgc-v2-breakeven-row">
+                <span className="sgc-v2-breakeven-label">Safe zone</span>
+                <span className="sgc-v2-breakeven-range">
+                  {fmtNumber(breakevenLower)} – {fmtNumber(breakevenUpper)}
+                </span>
+              </div>
+              <div className="sgc-v2-breakeven-track-wrap">
                 <div className="sgc-v2-breakeven-track">
                   <div className="sgc-v2-breakeven-fill" />
                 </div>
-                <span className="sgc-v2-breakeven-high">{fmtNumber(breakevenUpper)}</span>
               </div>
-              <div className="sgc-v2-breakeven-note">
-                Straddle buyer needs move &gt;= ₹{atmStraddle.toFixed(0)} to break even
+              <div className="sgc-v2-breakeven-sub">
+                Straddle writers profit if price stays inside this band
               </div>
             </div>
           ) : null}
@@ -420,30 +429,30 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
           <div className="sgc-v2-greeks-grid">
             {gammaToneValue ? (
               <div className={`sgc-v2-greek-cell sgc-v2-greek-cell-${gammaToneValue}`}>
-                <span className="sgc-v2-greek-key">Gamma</span>
+                <span className="sgc-v2-greek-key">Premium sensitivity</span>
                 <span className="sgc-v2-greek-val">
-                  {gammaToneValue === "high" ? "High" : gammaToneValue === "mid" ? "Normal" : "Low"}
+                  {gammaToneValue === "high" ? "Sharp" : gammaToneValue === "mid" ? "Normal" : "Slow"}
                 </span>
                 <span className="sgc-v2-greek-sub">
                   {gammaToneValue === "high"
-                    ? "premium swings sharp"
+                    ? "₹50 spot move → big premium swing"
                     : gammaToneValue === "mid"
-                      ? "moderate acceleration"
-                      : "slow reaction"}
+                      ? "₹50 spot move → normal premium swing"
+                      : "₹50 spot move → small premium change"}
                 </span>
               </div>
             ) : null}
 
             {thetaBurn !== null && thetaBurnToneValue ? (
               <div className={`sgc-v2-greek-cell sgc-v2-greek-cell-${thetaBurnToneValue}`}>
-                <span className="sgc-v2-greek-key">Theta / day</span>
-                <span className="sgc-v2-greek-val">₹{Math.round(thetaBurn)}</span>
+                <span className="sgc-v2-greek-key">Daily time cost</span>
+                <span className="sgc-v2-greek-val">₹{Math.round(thetaBurn)}/day</span>
                 <span className="sgc-v2-greek-sub">
                   {thetaBurnToneValue === "severe"
-                    ? "severe burn - sellers win"
+                    ? "heavy · option loses this per day"
                     : thetaBurnToneValue === "elevated"
-                      ? "elevated burn"
-                      : "manageable decay"}
+                      ? "option loses this per day — watch"
+                      : "low · time is not a big factor"}
                 </span>
               </div>
             ) : null}
@@ -454,14 +463,14 @@ const StrikeGuidanceCard: FC<StrikeGuidanceProps> = ({
                   ivPercentile >= 70 ? "high" : ivPercentile <= 30 ? "low" : "mid"
                 }`}
               >
-                <span className="sgc-v2-greek-key">IV Percentile</span>
+                <span className="sgc-v2-greek-key">Options vs history</span>
                 <span className="sgc-v2-greek-val">{ivPercentile.toFixed(0)}%</span>
                 <span className="sgc-v2-greek-sub">
                   {ivPercentile >= 70
-                    ? "rich - sell favoured"
+                    ? `pricier than ${ivPercentile.toFixed(0)}% of past sessions`
                     : ivPercentile <= 30
-                      ? "cheap - buy favoured"
-                      : "neutral zone"}
+                      ? `cheaper than ${(100 - ivPercentile).toFixed(0)}% of past sessions`
+                      : `mid-range · ${(100 - ivPercentile).toFixed(0)}% of past sessions were costlier`}
                 </span>
               </div>
             ) : null}

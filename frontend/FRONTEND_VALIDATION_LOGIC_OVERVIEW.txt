@@ -233,6 +233,15 @@ Validation Checklist
 - Mobile structural track appears before the primary signal card.
 - `npm run build` remains green after frontend changes.
 
+Build / Deploy Validation (Netlify)
+- Dev-only pages must not be statically imported by `tsc` in production builds.
+- `frontend/src/main.tsx` uses a non-static dynamic import path for Local Analytics:
+  - `lazy(() => import(/* @vite-ignore */ ("./pages/" + "LocalAnalytics")))`
+- This prevents CI failures when `frontend/src/pages/LocalAnalytics.tsx` is intentionally omitted from production pushes.
+- Validation target:
+  - Netlify `npm run build` must not fail with:
+    - `TS2307: Cannot find module './pages/LocalAnalytics'`
+
 Current Deployment Status
 - Confirmed fixed in code:
   - SENSEX symbol toggle support

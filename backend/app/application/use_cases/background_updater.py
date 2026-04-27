@@ -109,6 +109,7 @@ ENABLE_HZC = os.getenv("OPTIONLENS_ENABLE_HZC", "false").strip().lower() in {
     "on",
 }
 STATE_SNAPSHOT_DIR = Path(__file__).resolve().parents[3] / "logs" / "state_snapshots"
+STABILITY_LOG_DIR = Path(__file__).resolve().parents[3] / "logs" / "stability"
 LOG_ROTATION_MAX_BYTES = max(1024, int(os.getenv("OPTIONLENS_LOG_ROTATION_MAX_BYTES", str(10 * 1024 * 1024))))
 LOG_ROTATION_BACKUP_COUNT = max(0, int(os.getenv("OPTIONLENS_LOG_ROTATION_BACKUP_COUNT", "2")))
 MAX_STATE_SNAPSHOTS_PER_SERIES = max(1, int(os.getenv("OPTIONLENS_MAX_STATE_SNAPSHOTS_PER_SERIES", "10")))
@@ -404,6 +405,29 @@ def _load_persisted_state(kind: str, key: str) -> dict[str, Any]:
         return {}
 
 
+def _load_last_sr_anchors() -> dict[str, float | None]:
+    """Read the most recent stability JSONL and return the last recorded S/R strikes."""
+    try:
+        candidates = sorted(STABILITY_LOG_DIR.glob("stability_*.jsonl"), reverse=True)
+        for log_path in candidates[:3]:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                sup = _safe_float(row.get("support_strike"))
+                res = _safe_float(row.get("resistance_strike"))
+                if sup and res:
+                    return {"support": sup, "resistance": res}
+    except Exception as exc:
+        logger.debug("_load_last_sr_anchors skipped: %s", exc)
+    return {"support": None, "resistance": None}
+
+
 def _persist_state_snapshot(kind: str, key: str, state: dict[str, Any]) -> None:
     path = _state_snapshot_path(kind, key)
     try:
@@ -502,6 +526,10 @@ def _reset_state_for_new_session(
     reset_state["regime_family"] = None
     reset_state["range_locked"] = False
     reset_state["no_edge"] = False
+    reset_state["sr_support_candidate"] = None
+    reset_state["sr_support_candidate_count"] = 0
+    reset_state["sr_resistance_candidate"] = None
+    reset_state["sr_resistance_candidate_count"] = 0
     reset_levels = dict(reset_state.get("levels") or {})
     reset_support_levels = dict(reset_levels.get("support") or {})
     reset_resistance_levels = dict(reset_levels.get("resistance") or {})
@@ -3920,6 +3948,32 @@ def _build_v2_intelligence(
         previous_state,
         timestamp=session_eval_time,
     )
+
+    # Part B: cold-start seeding — inject last known S/R anchors when no prior state exists.
+    if not isinstance(previous_state, dict):
+        previous_state = {}
+    if not _safe_float(previous_state.get("current_support")) and not _safe_float(
+        (previous_state.get("levels") or {}).get("support", {}).get("immediate")
+    ):
+        seeded = _load_last_sr_anchors()
+        if seeded.get("support") and seeded.get("resistance"):
+            previous_state = dict(previous_state)
+            previous_state.setdefault("levels", {})
+            previous_state["levels"] = dict(previous_state["levels"])
+            previous_state["levels"].setdefault("support", {})
+            previous_state["levels"]["support"] = dict(previous_state["levels"]["support"])
+            previous_state["levels"].setdefault("resistance", {})
+            previous_state["levels"]["resistance"] = dict(previous_state["levels"]["resistance"])
+            previous_state["levels"]["support"]["immediate"] = seeded["support"]
+            previous_state["levels"]["resistance"]["immediate"] = seeded["resistance"]
+            previous_state["current_support"] = seeded["support"]
+            previous_state["current_resistance"] = seeded["resistance"]
+            previous_state["sr_first_cycle_after_reset"] = True
+            logger.info(
+                "Cold-start SR seed injected: support=%s resistance=%s",
+                seeded["support"], seeded["resistance"],
+            )
+
     normalized = normalize_chain(rows)
     features = build_feature_frame(
         normalized,
@@ -6500,6 +6554,10 @@ def _build_v2_intelligence(
             "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
             "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
             "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
+            "sr_support_candidate": sr.get("sr_support_candidate"),
+            "sr_support_candidate_count": int(sr.get("sr_support_candidate_count", 0) or 0),
+            "sr_resistance_candidate": sr.get("sr_resistance_candidate"),
+            "sr_resistance_candidate_count": int(sr.get("sr_resistance_candidate_count", 0) or 0),
             "sr_anchor_started_at_utc": support_reference_state.get("sr_anchor_started_at_utc"),
             "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
             "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,

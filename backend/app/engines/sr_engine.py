@@ -390,7 +390,25 @@ def _apply_level_hysteresis(
 
     if side in {"CE", "PE"}:
         if current_oi_gain >= oi_margin:
-            return immediate
+            # 2-cycle confirmation: require the same challenger strike in two consecutive cycles.
+            side_prefix = "resistance" if side == "CE" else "support"
+            cand_key = f"sr_{side_prefix}_candidate"
+            count_key = f"sr_{side_prefix}_candidate_count"
+            prev_cand_strike = _to_float((previous_state or {}).get(cand_key), 0.0)
+            prev_cand_count = int((previous_state or {}).get(count_key, 0) or 0)
+            new_count = (prev_cand_count + 1) if abs(immediate.strike - prev_cand_strike) < 1e-6 else 1
+            if isinstance(debug_state, dict):
+                debug_state[cand_key] = float(immediate.strike)
+                debug_state[count_key] = new_count
+            if new_count >= 2:
+                return immediate
+            if isinstance(debug_state, dict):
+                debug_state["guard_applied"] = True
+            logger.debug(
+                "SRTrace[%s][oi_hysteresis_hold] candidate=%s count=%d oi_gain=%.4f",
+                side, immediate.strike, new_count, current_oi_gain,
+            )
+            return prev_candidate
     elif current_score_gain >= score_margin or current_oi_gain >= oi_margin:
         return immediate
 
@@ -954,5 +972,9 @@ def run_sr_engine(
         "sr_previous_resistance_anchor_used": resistance_hysteresis_debug.get("anchor_used"),
         "sr_support_buffer_blocked": bool(support_hysteresis_debug.get("buffer_blocked")),
         "sr_resistance_buffer_blocked": bool(resistance_hysteresis_debug.get("buffer_blocked")),
+        "sr_support_candidate": support_hysteresis_debug.get("sr_support_candidate"),
+        "sr_support_candidate_count": int(support_hysteresis_debug.get("sr_support_candidate_count", 0) or 0),
+        "sr_resistance_candidate": resistance_hysteresis_debug.get("sr_resistance_candidate"),
+        "sr_resistance_candidate_count": int(resistance_hysteresis_debug.get("sr_resistance_candidate_count", 0) or 0),
         "alerts": alerts,
     }

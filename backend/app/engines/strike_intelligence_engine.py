@@ -447,8 +447,8 @@ def _find_wall_strike(
 ) -> int | None:
     if not liquidity_map:
         return None
-    # Buffer scales with strike gap: ~0.75 gaps (37.5 for NIFTY, 75 for BANKNIFTY).
-    buffer = max(25.0, float(strike_gap) * 0.75)
+    # Search window: 10 strike gaps in the relevant direction.
+    search_window = 10 * strike_gap
     best_row: dict[str, Any] | None = None
     best_oi = -1.0
     for row in liquidity_map:
@@ -456,10 +456,18 @@ def _find_wall_strike(
         if strike <= 0:
             continue
         if spot > 0:
-            if side == "PE" and strike > spot + buffer:
-                continue
-            if side == "CE" and strike < spot - buffer:
-                continue
+            if side == "PE":
+                # PE wall = put writer floor = must be at or below spot.
+                if strike > spot:
+                    continue
+                if strike < spot - search_window:
+                    continue
+            elif side == "CE":
+                # CE wall = call writer ceiling = must be at or above spot.
+                if strike < spot:
+                    continue
+                if strike > spot + search_window:
+                    continue
         oi_key = "oi_pe" if side == "PE" else "oi_ce"
         oi_value = _safe_float(row.get(oi_key), 0.0)
         if oi_value > best_oi:

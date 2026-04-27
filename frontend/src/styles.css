@@ -4260,21 +4260,22 @@ input[type="number"] {
   border-top: 0.5px solid var(--ia-border);
   border-bottom: 0.5px solid var(--ia-border);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: 1.05fr repeat(5, minmax(0, 1fr));
   gap: 0;
 }
 .sbb-metric-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 9px 10px;
+  gap: 1px;
+  padding: 7px 8px;
   border-left: 0.5px solid var(--ia-border);
+  min-width: 0;
 }
 .sbb-metric-item:first-child {
   border-left: none;
 }
 .sbb-metric-lbl {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--ia-text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -4292,14 +4293,15 @@ input[type="number"] {
   letter-spacing: 0.03em;
 }
 .sbb-metric-val {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--ia-text-primary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 .sbb-metric-sub {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 9px;
   color: var(--ia-text-tertiary);
   text-transform: capitalize;
 }
@@ -5003,39 +5005,44 @@ input[type="number"] {
 }
 
 .sbb-next-bias {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.25);
   background: rgba(15, 23, 42, 0.35);
-  margin-right: 8px;
+  margin-right: 0;
   align-self: center;
+  width: 100%;
+  min-width: 0;
 }
 
 .sbb-next-bias-label {
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: rgba(226, 232, 240, 0.7);
 }
 
 .sbb-next-bias-arrow {
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
 }
 
 .sbb-next-bias-dir {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .sbb-next-bias-conf {
-  font-size: 10px;
+  font-size: 9px;
   opacity: 0.8;
   font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .sbb-next-bias--up {
@@ -8919,4 +8926,34 @@ input[type="number"] {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 2px;
   overflow: hidden;
+}
+
+/* ── Patch 21: breakeven hero + sub-line ─────────────────────────────────── */
+
+.sgc-v2-breakeven-hero {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ia-text-primary);
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.sgc-v2-breakeven-hero strong {
+  font-weight: 700;
+  color: #a78bfa;
+  font-variant-numeric: tabular-nums;
+}
+
+.sgc-v2-breakeven-track-wrap {
+  margin: 6px 0;
+}
+
+.sgc-v2-breakeven-sub {
+  font-size: 10px;
+  color: var(--ia-text-tertiary);
+  margin-top: 2px;
+}
+
+.sgc-v2-breakeven-note {
+  display: none;
 }
