@@ -53,10 +53,20 @@ from app.infrastructure.persistence.daily_context import get_daily_context
 from app.services.intraday_performance_tracker import tracker
 
 try:
-    from app.services.signal_logger import maybe_log_signal
+    from app.services.signal_logger import (
+        maybe_log_signal,
+        reset_signal_cooldowns,
+        reset_signal_cooldowns_for_symbol,
+    )
 except Exception:
     def maybe_log_signal(*args: Any, **kwargs: Any) -> None:  # type: ignore[no-redef]
         return None
+
+    def reset_signal_cooldowns() -> None:  # type: ignore[no-redef]
+        pass
+
+    def reset_signal_cooldowns_for_symbol(_sym: str) -> None:  # type: ignore[no-redef]
+        pass
 
 try:
     from app.services.signal_outcome_tracker import run_eod_outcome_computation
@@ -530,6 +540,7 @@ def _reset_state_for_new_session(
     reset_state["sr_support_candidate_count"] = 0
     reset_state["sr_resistance_candidate"] = None
     reset_state["sr_resistance_candidate_count"] = 0
+    reset_signal_cooldowns()
     reset_levels = dict(reset_state.get("levels") or {})
     reset_support_levels = dict(reset_levels.get("support") or {})
     reset_resistance_levels = dict(reset_levels.get("resistance") or {})
@@ -1339,12 +1350,12 @@ def _resolve_absorption_reference_level(
         "current_support": current_support_value,
         "previous_resistance": previous_resistance,
         "current_resistance": current_resistance_value,
-        # Absorption should be computed against the active committed support.
-        # Keep transition telemetry separately via previous_support/support_shift_cycle.
         "absorption_reference_level": current_support_value,
         "support_shift_cycle": int(support_shift_cycle),
         "sr_anchor_started_at_utc": _utc_iso(anchor_started_utc),
         "sr_anchor_age_seconds": sr_anchor_age_seconds,
+        "support_shift_detected": bool(support_shift_detected),
+        "resistance_shift_detected": bool(resistance_shift_detected),
     }
     logger.debug(
         "Support reference resolved: previous_support=%s current_support=%s previous_resistance=%s current_resistance=%s shift_cycle=%s",
@@ -4399,6 +4410,8 @@ def _build_v2_intelligence(
         else None,
         previous_state=previous_state,
     )
+    if support_reference_state.get("support_shift_detected") or support_reference_state.get("resistance_shift_detected"):
+        reset_signal_cooldowns_for_symbol(symbol)
     absorption_reference_level = support_reference_state.get("absorption_reference_level")
     oi_imbalance_trap = _detect_oi_imbalance_trap(
         rows=rows,
@@ -6112,6 +6125,9 @@ def _build_v2_intelligence(
             readiness=float(decision.get("trade_readiness_v2") or decision.get("trade_readiness") or 0),
             directional_rr=cycle_log_entry.get("directional_rr"),
             bias=cycle_log_entry.get("primary_bias"),
+            trade_action=str(decision.get("trade_action") or "WAIT"),
+            strike_gap=int(float(features.get("strike_gap", 50) or 50)),
+            atm_straddle_premium=strike_intelligence.get("atm_straddle_premium"),
         )
     except Exception as _sig_exc:
         logger.debug("Signal logging error (non-fatal): %s", _sig_exc)
