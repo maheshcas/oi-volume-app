@@ -86,7 +86,16 @@ logger = logging.getLogger("optionlens.background_updater")
 
 REFRESH_SECONDS = int(os.getenv("OPTIONLENS_REFRESH_SECONDS", "15"))
 STALE_AFTER_SECONDS = int(os.getenv("OPTIONLENS_STALE_AFTER_SECONDS", "60"))
-SYMBOLS = [s.strip().upper() for s in os.getenv("OPTIONLENS_SYMBOLS", "NIFTY,BANKNIFTY,FINNIFTY").split(",") if s.strip()]
+_raw_symbols = [
+    s.strip().upper()
+    for s in os.getenv("OPTIONLENS_SYMBOLS", "NIFTY,BANKNIFTY,FINNIFTY,SENSEX").split(",")
+    if s.strip()
+]
+# Always include SENSEX so dashboard + API support remains available even when
+# OPTIONLENS_SYMBOLS is customized without it.
+if "SENSEX" not in _raw_symbols:
+    _raw_symbols.append("SENSEX")
+SYMBOLS = _raw_symbols
 BSE_SYMBOLS: frozenset[str] = frozenset({"SENSEX"})
 INSTRUMENT_TYPE = os.getenv("OPTIONLENS_INSTRUMENT_TYPE", "Indices")
 MAX_EXPIRIES_PER_SYMBOL = max(1, int(os.getenv("OPTIONLENS_PREFETCH_EXPIRIES", "3")))
@@ -5849,6 +5858,7 @@ def _build_v2_intelligence(
         atm_pe_iv = 0.0
     strike_intelligence = compute_strike_intelligence(
         {
+            "symbol": str(symbol or ""),
             "spot": float(spot or 0.0),
             "support": float(support_level or 0.0),
             "resistance": float(resistance_level or 0.0),
