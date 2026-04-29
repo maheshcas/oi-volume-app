@@ -354,6 +354,7 @@ def _apply_level_hysteresis(
     scored: list[_ScoredStrike],
     previous_state: dict[str, Any] | None,
     spot: float | None,
+    symbol: str | None = None,
     debug_state: dict[str, Any] | None = None,
     score_margin: float = 0.18,
     oi_margin: float = 0.15,
@@ -440,9 +441,18 @@ def _apply_level_hysteresis(
     baseline_score = max(prev_score, prev_candidate.score)
     current_score_gain = (immediate.score / max(1e-9, baseline_score)) - 1.0
     current_oi_gain = (immediate.oi / max(1.0, prev_candidate.oi)) - 1.0
+    cap_pct_limit = _immediate_distance_pct_limit(symbol)
+    cap_pts = (spot * cap_pct_limit) if (spot is not None and spot > 0 and cap_pct_limit > 0) else None
+    incumbent_outside_cap = False
+    if cap_pts is not None:
+        if side == "CE":
+            incumbent_outside_cap = prev_candidate.strike > (spot + cap_pts)
+        else:
+            incumbent_outside_cap = prev_candidate.strike < (spot - cap_pts)
 
     if side in {"CE", "PE"}:
-        if current_oi_gain >= oi_margin:
+        oi_margin_passes = incumbent_outside_cap or (current_oi_gain >= oi_margin)
+        if oi_margin_passes:
             side_prefix = "resistance" if side == "CE" else "support"
             cand_key = f"sr_{side_prefix}_candidate"
             count_key = f"sr_{side_prefix}_candidate_count"
@@ -468,15 +478,15 @@ def _apply_level_hysteresis(
                 wrong_side_dominant = anchor_oi_ce > anchor_oi_pe and anchor_oi_pe > 0
             else:
                 wrong_side_dominant = anchor_oi_pe > anchor_oi_ce and anchor_oi_ce > 0
-            effective_threshold = 1 if wrong_side_dominant else 2
+            effective_threshold = 1 if (wrong_side_dominant or incumbent_outside_cap) else 2
 
             if new_count >= effective_threshold:
                 return immediate
             if isinstance(debug_state, dict):
                 debug_state["guard_applied"] = True
             logger.debug(
-                "SRTrace[%s][oi_hysteresis_hold] candidate=%s count=%d oi_gain=%.4f wrong_side=%s threshold=%d",
-                side, immediate.strike, new_count, current_oi_gain, wrong_side_dominant, effective_threshold,
+                "SRTrace[%s][oi_hysteresis_hold] candidate=%s count=%d oi_gain=%.4f wrong_side=%s outside_cap=%s threshold=%d",
+                side, immediate.strike, new_count, current_oi_gain, wrong_side_dominant, incumbent_outside_cap, effective_threshold,
             )
             return prev_candidate
     elif current_score_gain >= score_margin or current_oi_gain >= oi_margin:
@@ -857,6 +867,7 @@ def run_sr_engine(
         scored=ce_scored,
         previous_state=previous_state,
         spot=spot_num,
+        symbol=symbol,
         debug_state=resistance_hysteresis_debug,
     )
     immediate_sup = _apply_level_hysteresis(
@@ -865,6 +876,7 @@ def run_sr_engine(
         scored=pe_scored,
         previous_state=previous_state,
         spot=spot_num,
+        symbol=symbol,
         debug_state=support_hysteresis_debug,
     )
 
