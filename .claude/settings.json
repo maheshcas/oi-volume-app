@@ -16,7 +16,31 @@
       "Bash(npm run *)",
       "Bash(echo \"PID: $!\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:5173/)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(npx vite *)",
+      "Bash(taskkill /F /IM node.exe)",
+      "PowerShell(Stop-Process -Name \"node\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(python -m py_compile backend/app/engines/trap_engine.py)",
+      "Bash(python -m py_compile backend/app/engines/strike_intelligence_engine.py)",
+      "Bash(python -m py_compile backend/app/engines/strike_selector_engine.py)",
+      "Bash(python -m py_compile backend/app/application/use_cases/background_updater.py)",
+      "Bash(python -c \"from app.engines.sr_engine import run_sr_engine; from app.application.use_cases.background_updater import _load_last_sr_anchors; print\\('OK'\\)\")",
+      "Bash(python -c \"from app.engines.strike_intelligence_engine import _find_wall_strike; print\\('OK'\\)\")",
+      "Read(//c/c/Users/Maheswar/OneDrive/Desktop/oi-volume-app/backend/**)",
+      "Bash(awk -F: '$2 > 5900 && $2 < 6120')",
+      "Bash(awk -F: '$2 > 4300 && $2 < 4700')",
+      "Bash(awk -F: 'NR<=30')",
+      "Bash(python -)",
+      "Bash(xxd)",
+      "Bash(grep -E \"\\\\.\\(jsonl|json\\)$\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(/c/Users/Maheswar/OneDrive/Desktop/oi-volume-app/venv/Scripts/python --version)",
+      "Bash(cd /tmp)",
+      "Bash(/c/Users/Maheswar/OneDrive/Desktop/oi-volume-app/venv/Scripts/python)",
+      "Bash(/c/Users/Maheswar/OneDrive/Desktop/oi-volume-app/venv/Scripts/python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/app/engines/sr_engine.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/app/application/use_cases/background_updater.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(xargs grep *)"
     ]
   }
 }

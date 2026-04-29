@@ -96,6 +96,7 @@ def _compute_max_pain_metrics(
     liquidity_map: list[dict[str, Any]],
     spot: float,
     strike_gap: int,
+    symbol: str = "",
 ) -> dict[str, Any]:
     if not liquidity_map:
         return {
@@ -130,7 +131,8 @@ def _compute_max_pain_metrics(
         }
 
     max_oi = max(float(r["combined_oi"]) for r in candidates)
-    oi_cutoff = max_oi * 0.10
+    noise_threshold = 0.15 if str(symbol).upper() == "SENSEX" else 0.10
+    oi_cutoff = max_oi * noise_threshold
     filtered = [r for r in candidates if float(r["combined_oi"]) >= oi_cutoff]
     rows = filtered if filtered else candidates
     strikes = sorted({_safe_int(r.get("strike"), 0) for r in rows if _safe_int(r.get("strike"), 0) > 0})
@@ -973,6 +975,7 @@ def compute_strike_intelligence(context: dict) -> dict:
       E) High trap and no clean wall/break -> WAIT_NO_SETUP
     """
     try:
+        symbol = str(context.get("symbol") or "")
         spot = _safe_float(context.get("spot"), 0.0)
         support = _safe_float(context.get("support"), 0.0)
         resistance = _safe_float(context.get("resistance"), 0.0)
@@ -1015,6 +1018,7 @@ def compute_strike_intelligence(context: dict) -> dict:
             liquidity_map=liquidity_map,
             spot=spot,
             strike_gap=strike_gap,
+            symbol=symbol,
         )
         max_pain_strike = _safe_int(max_pain_metrics.get("max_pain_strike"), 0) or None
         max_pain_confidence = _safe_float(max_pain_metrics.get("max_pain_confidence"), 0.0)

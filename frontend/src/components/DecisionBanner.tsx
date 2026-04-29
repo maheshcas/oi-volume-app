@@ -72,30 +72,7 @@ function resolveHeadline(
   return `${formatDirectionLabel(direction)} - waiting for a clean edge`;
 }
 
-function resolveUnlockHint(
-  blockingReason: string,
-  trapPct: number | null | undefined,
-): string | null {
-  const blocker = String(blockingReason || "").trim().toUpperCase();
-  if (!blocker || blocker === "NONE") return null;
-  if (blocker === "RANGE_CONFLICT")
-    return "Spot reaches S or R edge - readiness holds above 60%";
-  if (blocker === "TRAP_HIGH" && typeof trapPct === "number")
-    return `Trap drops below 55% (now ${Math.round(trapPct)}%)`;
-  if (blocker === "HIGH_TRAP_NO_BREACH_CAP")
-    return "Trap easing + level breach confirmed";
-  if (blocker === "LOW_READINESS")
-    return "Readiness crosses 60% minimum threshold";
-  if (blocker === "NO_BREAK_CONFIRMATION" || blocker === "NO_BREACH_CONFIRMATION")
-    return "Breach confirmed with OI follow-through";
-  if (blocker === "ABSORPTION_ACTIVE")
-    return "Absorption resolves into directional move";
-  if (blocker === "SUPPORT_TRANSITION")
-    return "Support transition settles to a stable level";
-  if (blocker === "RESISTANCE_TRANSITION")
-    return "Resistance transition settles to a stable level";
-  return "Structural conditions align";
-}
+
 
 function confidenceTone(raw: string): "low" | "mid" | "high" {
   const t = raw.toLowerCase();
@@ -111,7 +88,7 @@ function readinessTone(score: number): "below" | "near" | "above" {
   return "below";
 }
 
-type GateStatus = "pass" | "near" | "fail" | "unknown";
+type GateStatus = "pass" | "near" | "fail" | "far" | "unknown";
 
 type Gate = {
   key: string;
@@ -167,7 +144,7 @@ function resolveGates(args: {
     const nearestDist = Math.min(distToS, distToR);
     const nearestSide = distToS < distToR ? "support" : "resistance";
     const status: GateStatus =
-      nearestDist <= 60 ? "pass" : nearestDist <= 100 ? "near" : "fail";
+      nearestDist <= 60 ? "pass" : nearestDist <= 100 ? "near" : nearestDist <= 150 ? "fail" : "far";
     gates.push({
       key: "edge",
       label: "Spot at S/R edge",
@@ -255,7 +232,6 @@ export default function DecisionBanner({
   );
 
   const headline = resolveHeadline(action, direction, explanation, blockingReason);
-  const unlockHint = resolveUnlockHint(blockingReason, trapPct);
   const gates = resolveGates({
     trapPct,
     spot: spotNumeric,
@@ -298,11 +274,30 @@ export default function DecisionBanner({
       ? "Resistance Transition Active"
       : null;
 
-  const engineLabel = formatWinningEngineLabel(winningEngine);
+  const rawEngine = formatWinningEngineLabel(winningEngine);
   const capLabel =
     blockingReason && blockingReason.toUpperCase() !== "NONE"
       ? String(blockingReason).replace(/_/g, " ").toLowerCase()
       : null;
+
+  // FIX 3: dynamic blocker summary for gates sub-header
+  const biggestBlocker = (() => {
+    const failing = gates.filter((g) => g.status !== "pass" && g.status !== "unknown");
+    if (failing.length === 0) return null;
+    const edgeGate = failing.find((g) => g.key === "edge");
+    const trapGate = failing.find((g) => g.key === "trap");
+    if (edgeGate) return `Waiting on: spot near support or resistance (${edgeGate.current})`;
+    if (trapGate) return `Waiting on: trap to ease — currently ${trapGate.current}`;
+    return `${failing.length} gate${failing.length > 1 ? "s" : ""} still needed`;
+  })();
+
+  // FIX 1: confidence bar uses direct thresholds so 50% = amber not red
+  const confidenceBarClass =
+    confidencePct >= 65
+      ? "db-v3-bar-fill-bull"
+      : confidencePct >= 45
+        ? "db-v3-bar-fill-warn"
+        : "db-v3-bar-fill-bear";
 
   return (
     <div className={`ia-card ia-decision-banner-v3 ia-decision-banner-v3-${actionTone}`}>
@@ -334,6 +329,7 @@ export default function DecisionBanner({
       ) : null}
 
       <div className="db-v3-body">
+        {/* FIX 2: readiness bar with visible tick and label */}
         <div className="db-v3-cell">
           <div className="db-v3-cell-head">
             <span className="db-v3-cell-key">Trade Readiness</span>
@@ -346,21 +342,20 @@ export default function DecisionBanner({
               className={`db-v3-bar-fill db-v3-bar-fill-${rTone}`}
               style={{ width: `${readinessPct}%` }}
             />
-            <div className="db-v3-bar-tick" style={{ left: "60%" }} />
+            <div className="db-v3-readiness-tick" style={{ left: "60%" }} />
+            <div className="db-v3-readiness-tick-label" style={{ left: "60%" }}>min 60%</div>
           </div>
           <div className="db-v3-cell-foot">
-            <span
-              className={`db-v3-cell-state db-v3-cell-state-${rTone}`}
-            >
+            <span className={`db-v3-cell-state db-v3-cell-state-${rTone}`}>
               {rStateText}
             </span>
-            <span className="db-v3-cell-threshold">min 60%</span>
           </div>
           {readinessExplainability ? (
             <div className="db-v3-cell-note">{readinessExplainability}</div>
           ) : null}
         </div>
 
+        {/* FIX 1b: confidence bar uses threshold-based classes */}
         <div className="db-v3-cell">
           <div className="db-v3-cell-head">
             <span className="db-v3-cell-key">Decision Confidence</span>
@@ -370,30 +365,29 @@ export default function DecisionBanner({
           </div>
           <div className="db-v3-bar" aria-hidden="true">
             <div
-              className={`db-v3-bar-fill db-v3-bar-fill-${cTone}`}
+              className={`db-v3-bar-fill ${confidenceBarClass}`}
               style={{ width: `${confidencePct}%` }}
             />
           </div>
           <div className="db-v3-cell-foot">
-            <span
-              className={`db-v3-cell-state db-v3-cell-state-${cTone}`}
-            >
+            <span className={`db-v3-cell-state db-v3-cell-state-${cTone}`}>
               {cStateText}
             </span>
             <span className="db-v3-cell-threshold">{cSubText}</span>
           </div>
         </div>
 
-        <div
-          className={`db-v3-gates${action === "READY" ? " db-v3-gates-ready" : ""}`}
-        >
+        {/* FIX 3: dynamic blocker summary replaces static unlockHint */}
+        <div className={`db-v3-gates${action === "READY" ? " db-v3-gates-ready" : ""}`}>
           <div className="db-v3-gates-head">
             <span className="db-v3-gates-label">Unlock gates</span>
             <span className="db-v3-gates-progress">
               {passedGates}/{totalGates} cleared
             </span>
           </div>
-          {unlockHint ? <div className="db-v3-cell-note">{unlockHint}</div> : null}
+          <div className="db-v3-gates-sub">
+            {biggestBlocker ?? "All conditions met — ready to trade"}
+          </div>
           <div className="db-v3-gates-list">
             {gates.map((g) => (
               <div key={g.key} className={`db-v3-gate db-v3-gate-${g.status}`}>
@@ -409,22 +403,24 @@ export default function DecisionBanner({
         </div>
       </div>
 
-      <div className="db-v3-footer">
-        <div className="db-v3-footer-left">
-          <span>Engine: {engineLabel}</span>
-          {capLabel ? (
-            <>
-              <span className="db-v3-footer-sep">-</span>
-              <span>Cap: {capLabel}</span>
-            </>
-          ) : null}
+      {/* FIX 4: footer — suppress "core decision logic", remove State redundancy */}
+      {(rawEngine !== "core decision logic" || capLabel) ? (
+        <div className="db-v3-footer">
+          <div className="db-v3-footer-left">
+            {rawEngine !== "core decision logic" ? (
+              <span>Decision by: {rawEngine}</span>
+            ) : null}
+            {capLabel ? (
+              <>
+                {rawEngine !== "core decision logic" ? (
+                  <span className="db-v3-footer-sep">-</span>
+                ) : null}
+                <span>Blocked by: {capLabel}</span>
+              </>
+            ) : null}
+          </div>
         </div>
-        <div className="db-v3-footer-right">
-          <span>
-            State: <span className="db-v3-footer-state">{rStateText}</span>
-          </span>
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }

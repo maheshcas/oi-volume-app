@@ -671,14 +671,14 @@ def _compute_absorption_signal(
         near_support
         and support_price_failure
         and pe_chg > 0.03
-        and trap_v < 45.0
+        and trap_v < 50.0
         and support_strength >= 55.0
     )
     resistance_confirmed = bool(
         near_resistance
         and resistance_price_failure
         and ce_chg > 0.03
-        and trap_v < 45.0
+        and trap_v < 50.0
         and resistance_strength >= 55.0
     )
 
@@ -1024,7 +1024,7 @@ def run_trap_engine(
         resistance=float(resistance) if isinstance(resistance, (int, float)) else None,
         strike_gap=int(strike_gap or features.get("strike_gap") or 50),
         liquidity_map=liquidity_map if isinstance(liquidity_map, list) else [],
-        trap_probability=float(trap_risk),
+        trap_probability=float(trap_smoothed * 100.0),
         observations=observations,
     )
 

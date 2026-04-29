@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMarketAwareRefresh } from "../../hooks/useMarketAwareRefresh";
+import { useTheme } from "../../hooks/useTheme";
 import MobileHeader from "./MobileHeader";
 import SpotHeroCard from "./SpotHeroCard";
 import PrimarySignalCard from "./PrimarySignalCard";
@@ -28,6 +29,7 @@ export default function OptionLensMobileDashboard({
 }: OptionLensMobileDashboardProps) {
   const [activeNav, setActiveNav] = useState<MobileNavKey>("overview");
   const marketRefresh = useMarketAwareRefresh();
+  const { toggleTheme, isDark } = useTheme();
 
   return (
     <div className="mx-auto flex h-dvh max-w-[480px] flex-col overflow-hidden bg-[#080f18] text-slate-100">
@@ -35,6 +37,8 @@ export default function OptionLensMobileDashboard({
         liveStatus={data.liveStatus}
         updatedAt={data.updatedAt}
         scheduleLabel={marketRefresh.label}
+        onToggleTheme={toggleTheme}
+        isDark={isDark}
       />
 
       <div className="flex-1 overflow-y-auto px-0 pb-[68px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

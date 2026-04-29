@@ -279,6 +279,10 @@ class StabilityLoggerService:
             "trap_affected_level": trap.get("trap_affected_level"),
             "breach_confirmed": breach.get("material_breach_confirmed"),
             "confirmation_type": breach.get("confirmation_type"),
+            "sr_support_buffer_blocked": bool(market_state.get("sr_support_buffer_blocked", False)),
+            "sr_resistance_buffer_blocked": bool(market_state.get("sr_resistance_buffer_blocked", False)),
+            "sr_anchor_age_seconds": market_state.get("sr_anchor_age_seconds"),
+            "sr_first_cycle_after_reset": bool(market_state.get("sr_first_cycle_after_reset", False)),
             # Patch 14 telemetry
             "tm_trap_decomp": trap.get("trap_telemetry") if isinstance(trap.get("trap_telemetry"), dict) else {},
             "tm_absorption": {

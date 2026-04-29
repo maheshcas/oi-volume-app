@@ -80,8 +80,8 @@ export function friendlyWinningEngine(engine: WinningEngine): string {
 
 export function confidenceLabel(value: number | null | undefined): "High" | "Moderate" | "Low" {
   const score = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  if (score >= 75) return "High";
-  if (score >= 55) return "Moderate";
+  if (score >= 70) return "High";
+  if (score >= 50) return "Moderate";
   return "Low";
 }
 

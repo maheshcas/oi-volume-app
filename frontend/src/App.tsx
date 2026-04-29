@@ -8,6 +8,7 @@ import AdvancedAnalysisCard from "./components/AdvancedAnalysisCard";
 import OptionLensMobileDashboard from "./components/mobile/OptionLensMobileDashboard";
 import { MARKETING_MODE } from "./config/uiMode";
 import { useMarketAwareRefresh } from "./hooks/useMarketAwareRefresh";
+import { useTheme } from "./hooks/useTheme";
 
 const TAB_LABELS = {
   overview: "Overview",
@@ -508,6 +509,7 @@ const LIVE_DATA_UNAVAILABLE_MSG =
   "Live data temporarily unavailable. Showing last valid snapshot.";
 const TRAP_BREAK_BUFFER_PCT_DEFAULT = 0.1;
 const TRAP_BREAK_BUFFER_PCT_BANKNIFTY = 0.15;
+const TRAP_BREAK_BUFFER_PCT_SENSEX = 0.08; // 0.08% of spot; at 80,000 ≈ 64pts (~0.6 strike gaps)
 const LOW_OI_CONFIRM_RATIO = 0.6;
 const LOW_VOLUME_CONFIRM_RATIO = 0.8;
 const ATM_BAND_RANGE = 2;
@@ -899,6 +901,7 @@ type TrapMarketContext = {
 
 function getBreakBufferPct(symbol: string) {
   if (symbol === "BANKNIFTY") return TRAP_BREAK_BUFFER_PCT_BANKNIFTY;
+  if (symbol === "SENSEX") return TRAP_BREAK_BUFFER_PCT_SENSEX;
   return TRAP_BREAK_BUFFER_PCT_DEFAULT;
 }
 
@@ -1026,6 +1029,7 @@ export default function App() {
   const [useSample, setUseSample] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(readPersistedAutoRefresh);
   const marketRefresh = useMarketAwareRefresh();
+  const { toggleTheme, isDark } = useTheme();
   const effectiveRefreshMs = marketRefresh?.refreshMs ?? REFRESH_MS;
   const effectiveSpotRefreshMs = marketRefresh?.spotRefreshMs ?? SPOT_REFRESH_MS;
   const [nseStatus, setNseStatus] = useState<"ok" | "blocked" | "checking">("checking");
@@ -2496,24 +2500,33 @@ export default function App() {
           : "Reduce size on upside continuation and wait for one more confirmation candle."
         : "Trap risk low. Follow primary setup with normal risk controls.";
   const dailyPerformancePreview = dailyPerformance ? (
-    <div className="aac-preview-chips">
-      <span className="aac-chip aac-chip-mid">
-        <span className="aac-chip-key">Signals</span>
-        <span className="aac-chip-val">{dailyPerformance.total_signals_logged} logged</span>
-      </span>
-      <span className={`aac-chip aac-chip-${dailyPerformance.bias_accuracy_percent >= 65 ? "good" : dailyPerformance.bias_accuracy_percent >= 50 ? "mid" : "bad"}`}>
-        <span className="aac-chip-key">Bias</span>
-        <span className="aac-chip-val">{Math.round(dailyPerformance.bias_accuracy_percent)}%</span>
-      </span>
-      <span className={`aac-chip aac-chip-${dailyPerformance.trap_accuracy_percent >= 65 ? "good" : dailyPerformance.trap_accuracy_percent >= 50 ? "mid" : "bad"}`}>
-        <span className="aac-chip-key">Trap</span>
-        <span className="aac-chip-val">{Math.round(dailyPerformance.trap_accuracy_percent)}%</span>
-      </span>
-      <span className={`aac-chip aac-chip-${dailyPerformance.exit_accuracy_percent >= 65 ? "good" : dailyPerformance.exit_accuracy_percent >= 50 ? "mid" : "bad"}`}>
-        <span className="aac-chip-key">Exit</span>
-        <span className="aac-chip-val">{Math.round(dailyPerformance.exit_accuracy_percent)}%</span>
-      </span>
-    </div>
+    dailyPerformance.total_signals_logged === 0 ? (
+      <div className="aac-preview-chips">
+        <span className="aac-chip aac-chip-mid">
+          <span className="aac-chip-key">Signals</span>
+          <span className="aac-chip-val">No signals yet today</span>
+        </span>
+      </div>
+    ) : (
+      <div className="aac-preview-chips">
+        <span className="aac-chip aac-chip-mid">
+          <span className="aac-chip-key">Signals</span>
+          <span className="aac-chip-val">{dailyPerformance.total_signals_logged} logged</span>
+        </span>
+        <span className={`aac-chip aac-chip-${dailyPerformance.bias_accuracy_percent >= 65 ? "good" : dailyPerformance.bias_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+          <span className="aac-chip-key">Bias</span>
+          <span className="aac-chip-val">{Math.round(dailyPerformance.bias_accuracy_percent)}%</span>
+        </span>
+        <span className={`aac-chip aac-chip-${dailyPerformance.trap_accuracy_percent >= 65 ? "good" : dailyPerformance.trap_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+          <span className="aac-chip-key">Trap</span>
+          <span className="aac-chip-val">{Math.round(dailyPerformance.trap_accuracy_percent)}%</span>
+        </span>
+        <span className={`aac-chip aac-chip-${dailyPerformance.exit_accuracy_percent >= 65 ? "good" : dailyPerformance.exit_accuracy_percent >= 50 ? "mid" : "bad"}`}>
+          <span className="aac-chip-key">Exit</span>
+          <span className="aac-chip-val">{Math.round(dailyPerformance.exit_accuracy_percent)}%</span>
+        </span>
+      </div>
+    )
   ) : null;
   const mssScore = Math.round(structureScore);
   const mssTone: "good" | "mid" | "bad" =
@@ -3463,6 +3476,31 @@ export default function App() {
             </span>
             <span className="hero-refresh-toggle-label">Auto Refresh</span>
           </label>
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            onClick={toggleTheme}
+            title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {isDark ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="5"/>
+                <line x1="12" y1="1" x2="12" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+              </svg>
+            )}
+          </button>
           <div className="hero-ist-debug" title="Scheduler debug">
             <span className="hero-ist-debug-clock">{marketRefresh.istClock}</span>
             <span className="hero-ist-debug-sep">·</span>

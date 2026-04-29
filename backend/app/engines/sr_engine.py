@@ -246,6 +246,7 @@ def _pick_immediate(
     side: OptionType,
     *,
     symbol: str | None = None,
+    rows: list[dict[str, Any]] | None = None,
 ) -> _ScoredStrike | None:
     if not scored or spot is None or spot <= 0:
         return None
@@ -280,7 +281,59 @@ def _pick_immediate(
 
     _trace_candidates(stage, side, zone, reasons=zone_reasons)
 
-    chosen = max(zone, key=lambda x: x.score) if zone else None
+    # FIX 2: Ratio-weighted selection within cap zone.
+    # For support (PE): pick highest PE/CE ratio among candidates that
+    #   have PE OI >= 20% of zone max AND are PE-dominant.
+    # For resistance (CE): pick nearest CE-dominant candidate.
+    # Falls back to highest score if no qualified candidate found.
+    chosen: _ScoredStrike | None = None
+    if rows and zone:
+        row_lookup: dict[float, dict[str, Any]] = {
+            _to_float(r.get("strike"), 0.0): r for r in rows
+        }
+        oi_floor_pct = 0.10 if str(symbol or "").upper() == "SENSEX" else 0.20
+        if side == "PE":
+            zone_pe_ois = [
+                _to_float((row_lookup.get(s.strike) or {}).get("PE_OI"), 0.0)
+                for s in zone
+            ]
+            max_pe_oi = max(zone_pe_ois) if zone_pe_ois else 0.0
+            oi_floor = max_pe_oi * oi_floor_pct
+            qualified = [
+                s for s in zone
+                if _to_float((row_lookup.get(s.strike) or {}).get("PE_OI"), 0.0) >= oi_floor
+                and _to_float((row_lookup.get(s.strike) or {}).get("PE_OI"), 0.0)
+                > _to_float((row_lookup.get(s.strike) or {}).get("CE_OI"), 0.0)
+            ]
+            if not qualified:
+                qualified = zone
+            chosen = max(
+                qualified,
+                key=lambda s: (
+                    _to_float((row_lookup.get(s.strike) or {}).get("PE_OI"), 0.0)
+                    / max(_to_float((row_lookup.get(s.strike) or {}).get("CE_OI"), 1.0), 1.0)
+                ),
+            )
+        else:
+            zone_ce_ois = [
+                _to_float((row_lookup.get(s.strike) or {}).get("CE_OI"), 0.0)
+                for s in zone
+            ]
+            max_ce_oi = max(zone_ce_ois) if zone_ce_ois else 0.0
+            oi_floor = max_ce_oi * oi_floor_pct
+            qualified = [
+                s for s in zone
+                if _to_float((row_lookup.get(s.strike) or {}).get("CE_OI"), 0.0) >= oi_floor
+                and _to_float((row_lookup.get(s.strike) or {}).get("CE_OI"), 0.0)
+                > _to_float((row_lookup.get(s.strike) or {}).get("PE_OI"), 0.0)
+            ]
+            if not qualified:
+                qualified = zone
+            # Resistance: nearest CE-dominant ceiling, not highest ratio
+            chosen = min(qualified, key=lambda s: abs(s.strike - spot))
+
+    if chosen is None:
+        chosen = max(zone, key=lambda x: x.score) if zone else None
     if chosen is None:
         return None
     logger.debug(
@@ -390,7 +443,6 @@ def _apply_level_hysteresis(
 
     if side in {"CE", "PE"}:
         if current_oi_gain >= oi_margin:
-            # 2-cycle confirmation: require the same challenger strike in two consecutive cycles.
             side_prefix = "resistance" if side == "CE" else "support"
             cand_key = f"sr_{side_prefix}_candidate"
             count_key = f"sr_{side_prefix}_candidate_count"
@@ -400,13 +452,31 @@ def _apply_level_hysteresis(
             if isinstance(debug_state, dict):
                 debug_state[cand_key] = float(immediate.strike)
                 debug_state[count_key] = new_count
-            if new_count >= 2:
+
+            # FIX 1: Wrong-side bypass.
+            # If the incumbent anchor is dominated by the wrong OI type for its role
+            # (CE-dominant at support, PE-dominant at resistance), any correctly-typed
+            # challenger wins in 1 cycle rather than 2. This prevents a stale CE-heavy
+            # anchor from blocking a genuine PE support floor.
+            anchor_oi_ce = _to_float(
+                (previous_state or {}).get(f"sr_{side_prefix}_anchor_oi_ce"), 0.0
+            )
+            anchor_oi_pe = _to_float(
+                (previous_state or {}).get(f"sr_{side_prefix}_anchor_oi_pe"), 0.0
+            )
+            if side == "PE":
+                wrong_side_dominant = anchor_oi_ce > anchor_oi_pe and anchor_oi_pe > 0
+            else:
+                wrong_side_dominant = anchor_oi_pe > anchor_oi_ce and anchor_oi_ce > 0
+            effective_threshold = 1 if wrong_side_dominant else 2
+
+            if new_count >= effective_threshold:
                 return immediate
             if isinstance(debug_state, dict):
                 debug_state["guard_applied"] = True
             logger.debug(
-                "SRTrace[%s][oi_hysteresis_hold] candidate=%s count=%d oi_gain=%.4f",
-                side, immediate.strike, new_count, current_oi_gain,
+                "SRTrace[%s][oi_hysteresis_hold] candidate=%s count=%d oi_gain=%.4f wrong_side=%s threshold=%d",
+                side, immediate.strike, new_count, current_oi_gain, wrong_side_dominant, effective_threshold,
             )
             return prev_candidate
     elif current_score_gain >= score_margin or current_oi_gain >= oi_margin:
@@ -777,8 +847,8 @@ def run_sr_engine(
     major_sup = _pick_major(pe_scored)
     logger.debug("SRTrace[PE][major_support] chosen=%s score=%.6f", major_sup.strike if major_sup else None, major_sup.score if major_sup else 0.0)
     logger.debug("SRTrace[CE][major_resistance] chosen=%s score=%.6f", major_res.strike if major_res else None, major_res.score if major_res else 0.0)
-    immediate_res = _pick_immediate(ce_scored, spot_num, "CE", symbol=symbol)
-    immediate_sup = _pick_immediate(pe_scored, spot_num, "PE", symbol=symbol)
+    immediate_res = _pick_immediate(ce_scored, spot_num, "CE", symbol=symbol, rows=rows)
+    immediate_sup = _pick_immediate(pe_scored, spot_num, "PE", symbol=symbol, rows=rows)
     support_hysteresis_debug: dict[str, Any] = {}
     resistance_hysteresis_debug: dict[str, Any] = {}
     immediate_res = _apply_level_hysteresis(
@@ -869,6 +939,11 @@ def run_sr_engine(
             _to_float(resistance_row.get("CE_OI"), 0.0) / max(_to_float(resistance_row.get("PE_OI"), 0.0), 1.0),
             2,
         )
+    # FIX 1: Store anchor OI breakdown to detect wrong-side dominance next cycle.
+    support_anchor_oi_ce = _to_float((support_row or {}).get("CE_OI"), 0.0)
+    support_anchor_oi_pe = _to_float((support_row or {}).get("PE_OI"), 0.0)
+    resistance_anchor_oi_ce = _to_float((resistance_row or {}).get("CE_OI"), 0.0)
+    resistance_anchor_oi_pe = _to_float((resistance_row or {}).get("PE_OI"), 0.0)
     support_zone = _compute_cluster_zone(rows, side="PE", spot=spot_num, step_window=2)
     resistance_zone = _compute_cluster_zone(rows, side="CE", spot=spot_num, step_window=2)
     sorted_strikes = sorted({_to_float(r.get("strike"), 0.0) for r in rows})
@@ -976,5 +1051,9 @@ def run_sr_engine(
         "sr_support_candidate_count": int(support_hysteresis_debug.get("sr_support_candidate_count", 0) or 0),
         "sr_resistance_candidate": resistance_hysteresis_debug.get("sr_resistance_candidate"),
         "sr_resistance_candidate_count": int(resistance_hysteresis_debug.get("sr_resistance_candidate_count", 0) or 0),
+        "sr_support_anchor_oi_ce": float(support_anchor_oi_ce),
+        "sr_support_anchor_oi_pe": float(support_anchor_oi_pe),
+        "sr_resistance_anchor_oi_ce": float(resistance_anchor_oi_ce),
+        "sr_resistance_anchor_oi_pe": float(resistance_anchor_oi_pe),
         "alerts": alerts,
     }

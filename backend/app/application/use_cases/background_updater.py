@@ -549,6 +549,10 @@ def _reset_state_for_new_session(
     reset_state["sr_support_candidate_count"] = 0
     reset_state["sr_resistance_candidate"] = None
     reset_state["sr_resistance_candidate_count"] = 0
+    reset_state["sr_support_anchor_oi_ce"] = 0.0
+    reset_state["sr_support_anchor_oi_pe"] = 0.0
+    reset_state["sr_resistance_anchor_oi_ce"] = 0.0
+    reset_state["sr_resistance_anchor_oi_pe"] = 0.0
     reset_signal_cooldowns()
     reset_levels = dict(reset_state.get("levels") or {})
     reset_support_levels = dict(reset_levels.get("support") or {})
@@ -4087,13 +4091,13 @@ def _build_v2_intelligence(
     sr_score = max(-1.0, min(1.0, (support_score - resistance_score) / 100.0))
     trap_raw = max(0.0, min(1.0, float(trap.get("trap_raw", 0.0) or 0.0)))
     trap["trap_raw"] = round(trap_raw, 4)
+    _trap_tm_p1 = _ensure_trap_telemetry(trap)
+    _trap_smoothed_val = float(_trap_tm_p1.get("trap_smoothed", 0.0) or 0.0)
     trap_probability_pct = int(
         round(
-            float(
-                (_ensure_trap_telemetry(trap).get("trap_after_matrix_pct"))
-                or trap.get("trap_probability_pct")
-                or (trap_raw * 100.0)
-            )
+            (_trap_smoothed_val * 100.0)
+            if _trap_smoothed_val > 0.0
+            else float(trap_raw * 100.0)
         )
     )
     trap["trap_probability_pct"] = trap_probability_pct
@@ -6584,6 +6588,10 @@ def _build_v2_intelligence(
             "sr_support_candidate_count": int(sr.get("sr_support_candidate_count", 0) or 0),
             "sr_resistance_candidate": sr.get("sr_resistance_candidate"),
             "sr_resistance_candidate_count": int(sr.get("sr_resistance_candidate_count", 0) or 0),
+            "sr_support_anchor_oi_ce": float(sr.get("sr_support_anchor_oi_ce") or 0.0),
+            "sr_support_anchor_oi_pe": float(sr.get("sr_support_anchor_oi_pe") or 0.0),
+            "sr_resistance_anchor_oi_ce": float(sr.get("sr_resistance_anchor_oi_ce") or 0.0),
+            "sr_resistance_anchor_oi_pe": float(sr.get("sr_resistance_anchor_oi_pe") or 0.0),
             "sr_anchor_started_at_utc": support_reference_state.get("sr_anchor_started_at_utc"),
             "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
             "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
