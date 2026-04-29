@@ -441,10 +441,56 @@ def _load_last_sr_anchors() -> dict[str, float | None]:
                 sup = _safe_float(row.get("support_strike"))
                 res = _safe_float(row.get("resistance_strike"))
                 if sup and res:
-                    return {"support": sup, "resistance": res}
+                    return {
+                        "support": sup,
+                        "resistance": res,
+                        "support_oi": _safe_float(row.get("support_oi")) or 0.0,
+                        "resistance_oi": _safe_float(row.get("resistance_oi")) or 0.0,
+                        "support_oi_pe": _safe_float(row.get("support_oi_pe")) or 0.0,
+                        "support_oi_ce": _safe_float(row.get("support_oi_ce")) or 0.0,
+                        "resistance_oi_pe": _safe_float(row.get("resistance_oi_pe")) or 0.0,
+                        "resistance_oi_ce": _safe_float(row.get("resistance_oi_ce")) or 0.0,
+                        "seeded_flush_last_fired_at": row.get("seeded_flush_last_fired_at"),
+                    }
+        # Fallback: cycle log contains the same SR/OI telemetry in this runtime.
+        cycle_log = LOG_DIR / "optionlens_cycle_log.jsonl"
+        if cycle_log.exists():
+            lines = cycle_log.read_text(encoding="utf-8").splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                sup = _safe_float(row.get("support_level") or row.get("current_support") or row.get("support_strike"))
+                res = _safe_float(row.get("resistance_level") or row.get("current_resistance") or row.get("resistance_strike"))
+                if sup and res:
+                    return {
+                        "support": sup,
+                        "resistance": res,
+                        "support_oi": _safe_float(row.get("support_oi")) or 0.0,
+                        "resistance_oi": _safe_float(row.get("resistance_oi")) or 0.0,
+                        "support_oi_pe": _safe_float(row.get("support_oi_pe")) or 0.0,
+                        "support_oi_ce": _safe_float(row.get("support_oi_ce")) or 0.0,
+                        "resistance_oi_pe": _safe_float(row.get("resistance_oi_pe")) or 0.0,
+                        "resistance_oi_ce": _safe_float(row.get("resistance_oi_ce")) or 0.0,
+                        "seeded_flush_last_fired_at": row.get("seeded_flush_last_fired_at"),
+                    }
     except Exception as exc:
         logger.debug("_load_last_sr_anchors skipped: %s", exc)
-    return {"support": None, "resistance": None}
+    return {
+        "support": None,
+        "resistance": None,
+        "support_oi": 0.0,
+        "resistance_oi": 0.0,
+        "support_oi_pe": 0.0,
+        "support_oi_ce": 0.0,
+        "resistance_oi_pe": 0.0,
+        "resistance_oi_ce": 0.0,
+        "seeded_flush_last_fired_at": None,
+    }
 
 
 def _persist_state_snapshot(kind: str, key: str, state: dict[str, Any]) -> None:
@@ -965,6 +1011,12 @@ def _sanitize_public_market_state(market_state: dict[str, Any]) -> dict[str, Any
         "sr_previous_resistance_anchor_source",
         "sr_support_buffer_blocked",
         "sr_resistance_buffer_blocked",
+        "support_oi",
+        "resistance_oi",
+        "support_oi_pe",
+        "support_oi_ce",
+        "resistance_oi_pe",
+        "resistance_oi_ce",
         "sr_anchor_age_seconds",
         "seeded_flush_last_fired_at",
         "cycle_count_since_flush",
@@ -3375,8 +3427,24 @@ def _apply_first_cycle_sr_buffer_guard(
     support_buffer_blocked = False
     resistance_buffer_blocked = False
     guard_applied = False
+    seeded_support_oi = float(
+        _safe_float((previous_state or {}).get("support_oi"))
+        or _safe_float((previous_state or {}).get("sr_support_anchor_oi_pe"))
+        or _safe_float((previous_state or {}).get("sr_support_anchor_oi_ce"))
+        or 0.0
+    )
+    seeded_resistance_oi = float(
+        _safe_float((previous_state or {}).get("resistance_oi"))
+        or _safe_float((previous_state or {}).get("sr_resistance_anchor_oi_ce"))
+        or _safe_float((previous_state or {}).get("sr_resistance_anchor_oi_pe"))
+        or 0.0
+    )
+    seeded_bypass_support = seeded_support_oi > 0 and seeded_support_oi < float("inf")
+    seeded_bypass_resistance = seeded_resistance_oi > 0 and seeded_resistance_oi < float("inf")
 
     if (
+        not seeded_bypass_support
+        and
         spot_value is not None
         and prev_support_anchor is not None
         and (
@@ -3407,6 +3475,8 @@ def _apply_first_cycle_sr_buffer_guard(
             sr_out["support_range"] = guarded_range
 
     if (
+        not seeded_bypass_resistance
+        and
         spot_value is not None
         and prev_resistance_anchor is not None
         and (
@@ -3990,8 +4060,21 @@ def _build_v2_intelligence(
             previous_state["levels"]["resistance"] = dict(previous_state["levels"]["resistance"])
             previous_state["levels"]["support"]["immediate"] = seeded["support"]
             previous_state["levels"]["resistance"]["immediate"] = seeded["resistance"]
+            previous_state["levels"]["support"]["major"] = seeded["support"]
+            previous_state["levels"]["resistance"]["major"] = seeded["resistance"]
             previous_state["current_support"] = seeded["support"]
             previous_state["current_resistance"] = seeded["resistance"]
+            previous_state["previous_support"] = seeded["support"]
+            previous_state["previous_resistance"] = seeded["resistance"]
+            previous_state["sr_support_anchor_oi_pe"] = float(seeded.get("support_oi_pe") or 0.0)
+            previous_state["sr_support_anchor_oi_ce"] = float(seeded.get("support_oi_ce") or 0.0)
+            previous_state["sr_resistance_anchor_oi_pe"] = float(seeded.get("resistance_oi_pe") or 0.0)
+            previous_state["sr_resistance_anchor_oi_ce"] = float(seeded.get("resistance_oi_ce") or 0.0)
+            previous_state["support_oi"] = float(seeded.get("support_oi") or 0.0)
+            previous_state["resistance_oi"] = float(seeded.get("resistance_oi") or 0.0)
+            previous_state["seeded_flush_last_fired_at"] = seeded.get("seeded_flush_last_fired_at")
+            previous_state["sr_previous_support_anchor_source"] = "seeded"
+            previous_state["sr_previous_resistance_anchor_source"] = "seeded"
             previous_state["sr_first_cycle_after_reset"] = True
             logger.info(
                 "Cold-start SR seed injected: support=%s resistance=%s",
@@ -4958,6 +5041,12 @@ def _build_v2_intelligence(
         projection_change_counter = 0
         bias_stability_cycles = int((previous_state or {}).get("bias_stability_cycles", 0) or 0)
         persistence_drift = str((previous_state or {}).get("drift") or decision.get("drift") or "Stable")
+        stability = {
+            "previous_bias": str((previous_state or {}).get("previous_bias") or stable_bias),
+            "new_bias": stable_bias,
+            "previous_projection": str((previous_state or {}).get("previous_projection") or stable_projection),
+            "new_projection": stable_projection,
+        }
     else:
         stability = _apply_signal_stability_layer(
             previous_state=previous_state,
@@ -5955,6 +6044,25 @@ def _build_v2_intelligence(
         previous_state=previous_state,
     )
 
+    support_oi_pe = 0.0
+    support_oi_ce = 0.0
+    resistance_oi_pe = 0.0
+    resistance_oi_ce = 0.0
+    rows_for_sr_oi = features.get("rows") or []
+    if rows_for_sr_oi:
+        for row in rows_for_sr_oi:
+            strike = _safe_float(row.get("strike"))
+            if strike is None:
+                continue
+            if support_level is not None and abs(strike - float(support_level)) < 1e-6:
+                support_oi_pe = float(_safe_float(row.get("PE_OI")) or 0.0)
+                support_oi_ce = float(_safe_float(row.get("CE_OI")) or 0.0)
+            if resistance_level is not None and abs(strike - float(resistance_level)) < 1e-6:
+                resistance_oi_pe = float(_safe_float(row.get("PE_OI")) or 0.0)
+                resistance_oi_ce = float(_safe_float(row.get("CE_OI")) or 0.0)
+    support_oi = support_oi_pe if support_oi_pe > 0 else support_oi_ce
+    resistance_oi = resistance_oi_ce if resistance_oi_ce > 0 else resistance_oi_pe
+
     cycle_log_entry = {
         "timestamp": features.get("meta", {}).get("timestamp"),
         "symbol": symbol,
@@ -6001,6 +6109,12 @@ def _build_v2_intelligence(
         "current_resistance": support_reference_state.get("current_resistance"),
         "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
         "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
+        "support_oi": float(support_oi),
+        "resistance_oi": float(resistance_oi),
+        "support_oi_pe": float(support_oi_pe),
+        "support_oi_ce": float(support_oi_ce),
+        "resistance_oi_pe": float(resistance_oi_pe),
+        "resistance_oi_ce": float(resistance_oi_ce),
         "cycle_count_since_flush": int(_cycle_count_since_flush),
         "absorption_reference_level": support_reference_state.get("absorption_reference_level"),
         "support_shift_cycle": support_reference_state.get("support_shift_cycle"),
@@ -6293,6 +6407,12 @@ def _build_v2_intelligence(
             "sr_previous_resistance_anchor_source": sr_guard.get("sr_previous_resistance_anchor_source"),
             "sr_support_buffer_blocked": bool(sr_guard.get("sr_support_buffer_blocked", False)),
             "sr_resistance_buffer_blocked": bool(sr_guard.get("sr_resistance_buffer_blocked", False)),
+            "support_oi": float(support_oi),
+            "resistance_oi": float(resistance_oi),
+            "support_oi_pe": float(support_oi_pe),
+            "support_oi_ce": float(support_oi_ce),
+            "resistance_oi_pe": float(resistance_oi_pe),
+            "resistance_oi_ce": float(resistance_oi_ce),
             "sr_anchor_age_seconds": support_reference_state.get("sr_anchor_age_seconds"),
             "seeded_flush_last_fired_at": _last_seeded_flush_ist.isoformat() if _last_seeded_flush_ist else None,
             "cycle_count_since_flush": int(_cycle_count_since_flush),
@@ -6588,6 +6708,12 @@ def _build_v2_intelligence(
             "sr_support_candidate_count": int(sr.get("sr_support_candidate_count", 0) or 0),
             "sr_resistance_candidate": sr.get("sr_resistance_candidate"),
             "sr_resistance_candidate_count": int(sr.get("sr_resistance_candidate_count", 0) or 0),
+            "support_oi": float(support_oi),
+            "resistance_oi": float(resistance_oi),
+            "support_oi_pe": float(support_oi_pe),
+            "support_oi_ce": float(support_oi_ce),
+            "resistance_oi_pe": float(resistance_oi_pe),
+            "resistance_oi_ce": float(resistance_oi_ce),
             "sr_support_anchor_oi_ce": float(sr.get("sr_support_anchor_oi_ce") or 0.0),
             "sr_support_anchor_oi_pe": float(sr.get("sr_support_anchor_oi_pe") or 0.0),
             "sr_resistance_anchor_oi_ce": float(sr.get("sr_resistance_anchor_oi_ce") or 0.0),
@@ -6919,8 +7045,19 @@ async def run_update_cycle() -> None:
         cached_interpretations = (cached_summary_data.get("interpretations") or {}) if isinstance(cached_summary_data, dict) else {}
         cached_v2 = (cached_summary_data.get("v2") or {}) if isinstance(cached_summary_data, dict) else {}
 
-        index_raw = await _fetch_index_data_async()
-        option_chain_data["index_data"] = {"data": index_raw.get("data", [])}
+        try:
+            index_raw = await _fetch_index_data_async()
+            option_chain_data["index_data"] = {"data": index_raw.get("data", [])}
+        except Exception as index_exc:
+            cached_option_chain = (cached_data.get("option_chain_data") or {}) if isinstance(cached_data, dict) else {}
+            cached_index_data = (cached_option_chain.get("index_data") or {}) if isinstance(cached_option_chain, dict) else {}
+            fallback_data = cached_index_data.get("data", []) if isinstance(cached_index_data, dict) else []
+            option_chain_data["index_data"] = {"data": fallback_data}
+            logger.warning(
+                "Index data fetch failed; using cached index_data fallback (%d rows): %s",
+                len(fallback_data) if isinstance(fallback_data, list) else 0,
+                index_exc,
+            )
 
         for symbol in SYMBOLS:
             symbol_option_chain, symbol_summaries = await _build_symbol_payloads(symbol, INSTRUMENT_TYPE)

@@ -278,6 +278,8 @@ type IntelligenceResponse = {
       atm_straddle_premium?: number | null;
       ce_wall_holding?: boolean;
       pe_wall_holding?: boolean;
+      ce_wall_strike?: number | null;
+      pe_wall_strike?: number | null;
     };
     entry_target?: {
       trade_type?: string;
@@ -3330,6 +3332,11 @@ export default function App() {
     absorptionDetected: Boolean(intelligence?.market_state?.absorption_detected),
     absorptionLevel: intelligence?.market_state?.absorption_level ?? null,
     absorptionMessage: intelligence?.market_state?.absorption_message ?? null,
+    absorptionPrimaryStrength: (() => {
+      const s = intelligence?.signals?.trap?.support_absorption_strength
+        ?? intelligence?.signals?.trap?.absorption_strength;
+      return typeof s === "number" ? s : 0;
+    })(),
     supportTransitionActive: Boolean(intelligence?.market_state?.support_transition_active),
     supportTransitionBadge: decisionSupportTransitionBadge,
     resistanceTransitionBadge: decisionResistanceTransitionBadge,
@@ -3359,8 +3366,16 @@ export default function App() {
     previousResistance: typeof intelligence?.market_state?.previous_resistance === "number"
       ? intelligence.market_state.previous_resistance
       : null,
-    putWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
-    callWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+    putWall: (() => {
+      const si = intelligence?.market_state?.strike_intelligence?.pe_wall_strike;
+      if (typeof si === "number" && Number.isFinite(si) && si > 0) return si;
+      return typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
+    })(),
+    callWall: (() => {
+      const si = intelligence?.market_state?.strike_intelligence?.ce_wall_strike;
+      if (typeof si === "number" && Number.isFinite(si) && si > 0) return si;
+      return typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
+    })(),
     entryTarget: (() => {
       const et = intelligence?.market_state?.entry_target ?? null;
       const si = intelligence?.market_state?.strike_intelligence ?? null;
@@ -3456,6 +3471,14 @@ export default function App() {
           <div className="brand-logo" aria-label="OptionLens">
             <span className="brand-logo-option">Option</span>
             <span className="brand-logo-lens">Lens</span>
+            <button
+              type="button"
+              className="dashboard-info-icon"
+              title="Dashboard guide: structure, trap, and setup panels update from live option-chain cycles."
+              aria-label="Dashboard info"
+            >
+              i
+            </button>
           </div>
           <p className="subhead">
             Live CE/PE open interest and volume across strikes. Auto refreshes every 15s.
@@ -3717,8 +3740,16 @@ export default function App() {
             invalidation: "Range compression breaks.",
             trapZoneLabel: displayTrapLevel === "High" ? "High Probability" : undefined,
             volumeLabel,
-            peWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null,
-            ceWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null,
+            peWall: (() => {
+              const siPe = intelligence?.market_state?.strike_intelligence?.pe_wall_strike;
+              if (typeof siPe === "number" && Number.isFinite(siPe) && siPe > 0) return siPe;
+              return typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
+            })(),
+            ceWall: (() => {
+              const siCe = intelligence?.market_state?.strike_intelligence?.ce_wall_strike;
+              if (typeof siCe === "number" && Number.isFinite(siCe) && siCe > 0) return siCe;
+              return typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
+            })(),
             magnet:
               typeof intelligence?.market_state?.price_magnet_strike === "number"
                 ? intelligence.market_state.price_magnet_strike
@@ -3797,8 +3828,16 @@ export default function App() {
               .map((row) => {
                 const strike = toSafeNumber(row?.strike);
                 if (!Number.isFinite(strike) || strike <= 0) return null;
-                const putWall = typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
-                const callWall = typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
+                const putWall = (() => {
+                  const si = intelligence?.market_state?.strike_intelligence?.pe_wall_strike;
+                  if (typeof si === "number" && Number.isFinite(si) && si > 0) return si;
+                  return typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : null;
+                })();
+                const callWall = (() => {
+                  const si = intelligence?.market_state?.strike_intelligence?.ce_wall_strike;
+                  if (typeof si === "number" && Number.isFinite(si) && si > 0) return si;
+                  return typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : null;
+                })();
                 const magnetStrike = typeof intelligence?.market_state?.price_magnet_strike === "number"
                   ? intelligence.market_state.price_magnet_strike
                   : null;
@@ -3844,6 +3883,11 @@ export default function App() {
             oi_price_divergence: intelligence?.signals?.trap?.oi_price_divergence ?? undefined,
             absorption_detected: Boolean(intelligence?.market_state?.absorption_detected),
             absorption_message: intelligence?.market_state?.absorption_message ?? null,
+            absorption_primary_strength: (() => {
+              const s = intelligence?.signals?.trap?.support_absorption_strength
+                ?? intelligence?.signals?.trap?.absorption_strength;
+              return typeof s === "number" ? s : 0;
+            })(),
             absorption_signal:
               intelligence?.signals?.trap?.absorption_signal
               ?? intelligence?.market_state?.absorption_signal
@@ -3870,8 +3914,16 @@ export default function App() {
             key_range: displayDecisionText,
             institutional_levels: decisionLayerWalls || null,
             market_insight: decisionLayerInsight,
-            putWall: typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : undefined,
-            callWall: typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : undefined,
+            putWall: (() => {
+              const siPe = intelligence?.market_state?.strike_intelligence?.pe_wall_strike;
+              if (typeof siPe === "number" && Number.isFinite(siPe) && siPe > 0) return siPe;
+              return typeof institutionalStructure?.put_wall === "number" ? institutionalStructure.put_wall : undefined;
+            })(),
+            callWall: (() => {
+              const siCe = intelligence?.market_state?.strike_intelligence?.ce_wall_strike;
+              if (typeof siCe === "number" && Number.isFinite(siCe) && siCe > 0) return siCe;
+              return typeof institutionalStructure?.call_wall === "number" ? institutionalStructure.call_wall : undefined;
+            })(),
             oi_scenario: intelligence?.market_state?.oi_scenario ?? undefined,
           }}
           alerts={displayAlerts}

@@ -35,32 +35,27 @@ def _status(condition_ok: bool) -> str:
     return "ok" if condition_ok else "warning"
 
 
+def _no_data_response(generated_at: str, message: str) -> dict[str, Any]:
+    return {
+        "trap_distribution_status": "no_data",
+        "wick_variation_status": "no_data",
+        "hold_time_status": "no_data",
+        "oi_normalization_status": "no_data",
+        "volume_normalization_status": "no_data",
+        "clarity_status": "no_data",
+        "generated_at": generated_at,
+        "detail": {"message": message, "cycles_analyzed": 0},
+    }
+
+
 def compute_engine_health(log_path: Path, tail_cycles: int = 200) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     if not log_path.exists():
-        return {
-            "trap_distribution_status": "error",
-            "wick_variation_status": "error",
-            "hold_time_status": "error",
-            "oi_normalization_status": "error",
-            "volume_normalization_status": "error",
-            "clarity_status": "error",
-            "generated_at": generated_at,
-            "detail": {"message": f"log file not found: {log_path}"},
-        }
+        return _no_data_response(generated_at, f"log file not found: {log_path}")
 
     lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     if not lines:
-        return {
-            "trap_distribution_status": "error",
-            "wick_variation_status": "error",
-            "hold_time_status": "error",
-            "oi_normalization_status": "error",
-            "volume_normalization_status": "error",
-            "clarity_status": "error",
-            "generated_at": generated_at,
-            "detail": {"message": "no log rows"},
-        }
+        return _no_data_response(generated_at, "no log rows")
 
     rows: list[dict[str, Any]] = []
     for line in lines[-max(1, tail_cycles) :]:
@@ -73,6 +68,9 @@ def compute_engine_health(log_path: Path, tail_cycles: int = 200) -> dict[str, A
                 rows.append(obj)
         except json.JSONDecodeError:
             continue
+
+    if not rows:
+        return _no_data_response(generated_at, "no valid log rows")
 
     trap_values = [v for v in (_extract_float(r, "trap_probability") for r in rows) if v is not None]
     wick_values = [v for v in (_extract_float(r, "rejection_wick_score") for r in rows) if v is not None]

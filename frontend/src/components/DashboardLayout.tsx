@@ -125,6 +125,7 @@ type DashboardLayoutProps = {
     oi_price_divergence?: boolean;
     absorption_detected?: boolean;
     absorption_message?: string | null;
+    absorption_primary_strength?: number | null;
     absorption_signal?: string | null;
     absorption_strength?: number | null;
     support_absorption_strength?: number | null;
@@ -388,6 +389,7 @@ export default function DashboardLayout({
             oi_price_divergence={trap.oi_price_divergence}
             absorption_detected={trap.absorption_detected}
             absorption_message={trap.absorption_message}
+            absorption_primary_strength={trap.absorption_primary_strength}
             absorption_signal={trap.absorption_signal}
             absorption_strength={trap.absorption_strength}
             support_absorption_strength={trap.support_absorption_strength}

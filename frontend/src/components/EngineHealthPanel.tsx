@@ -6,14 +6,15 @@ type EngineHealthDetailStats = {
 };
 
 type EngineHealthResponse = {
-  trap_distribution_status: "ok" | "warning" | "error";
-  wick_variation_status: "ok" | "warning" | "error";
-  hold_time_status: "ok" | "warning" | "error";
-  oi_normalization_status: "ok" | "warning" | "error";
-  volume_normalization_status: "ok" | "warning" | "error";
-  clarity_status: "ok" | "warning" | "error";
+  trap_distribution_status: "ok" | "warning" | "error" | "no_data";
+  wick_variation_status: "ok" | "warning" | "error" | "no_data";
+  hold_time_status: "ok" | "warning" | "error" | "no_data";
+  oi_normalization_status: "ok" | "warning" | "error" | "no_data";
+  volume_normalization_status: "ok" | "warning" | "error" | "no_data";
+  clarity_status: "ok" | "warning" | "error" | "no_data";
   generated_at?: string;
   detail?: {
+    message?: string;
     cycles_analyzed?: number;
     trap_probability?: EngineHealthDetailStats;
     rejection_wick_score?: EngineHealthDetailStats;
@@ -31,6 +32,7 @@ type Props = {
 function statusClass(status?: string) {
   if (status === "ok") return "eh-pill eh-ok";
   if (status === "warning") return "eh-pill eh-warning";
+  if (status === "no_data") return "eh-pill eh-warning";
   return "eh-pill eh-error";
 }
 
@@ -57,7 +59,7 @@ export default function EngineHealthPanel({ data }: Props) {
         {rows.map((row) => (
           <div key={row.label} className="eh-row">
             <span className="eh-label">{row.label}</span>
-            <span className={statusClass(row.value)}>{(row.value ?? "error").toUpperCase()}</span>
+            <span className={statusClass(row.value)}>{(row.value ?? "error").replace("_", " ").toUpperCase()}</span>
           </div>
         ))}
       </div>
@@ -75,6 +77,7 @@ export default function EngineHealthPanel({ data }: Props) {
             <div>Vol avg: {stats.volume_expansion_score?.average ?? 0}</div>
             <div>Clarity avg: {stats.clarity?.average ?? 0}</div>
           </div>
+          {stats.message ? <div className="eh-meta-title">{stats.message}</div> : null}
         </div>
       ) : null}
     </div>

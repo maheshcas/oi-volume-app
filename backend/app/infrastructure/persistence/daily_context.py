@@ -14,6 +14,7 @@ logger = logging.getLogger("optionlens.daily_context")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 LOOKBACK_DAYS = max(60, int(os.getenv("OPTIONLENS_DAILY_CONTEXT_LOOKBACK_DAYS", "90")))
+TRADING_DAYS_LOOKBACK = max(30, int(os.getenv("OPTIONLENS_DAILY_CONTEXT_TRADING_DAYS", "62")))
 # parents[3]: persistence/ -> infrastructure/ -> app/ -> backend root
 DAILY_CONTEXT_DIR = Path(__file__).resolve().parents[3] / "data" / "daily_context"
 
@@ -211,6 +212,13 @@ def _merge_deduplicate_rows(existing_rows: list[dict[str, Any]], new_rows: list[
     return sorted(merged.values(), key=lambda row: row["date"])
 
 
+def _cap_recent_trading_rows(rows: list[dict[str, Any]], max_rows: int) -> list[dict[str, Any]]:
+    if len(rows) <= max_rows:
+        return rows
+    trimmed = sorted(rows, key=lambda row: row["date"], reverse=True)[:max_rows]
+    return sorted(trimmed, key=lambda row: row["date"])
+
+
 def _persist_to_disk(symbol: str, payload: dict[str, Any]) -> None:
     path = _file_path(symbol)
     try:
@@ -241,6 +249,16 @@ def get_daily_context(symbol: str, now_utc: datetime | None = None) -> dict[str,
         disk_payload = _load_from_disk(symbol_key)
         if isinstance(disk_payload, dict) and disk_payload.get("refresh_date") == refresh_date:
             cached_context = disk_payload.get("context") if isinstance(disk_payload.get("context"), dict) else disk_payload
+            # Normalize cached same-day payload to fixed trading-day depth.
+            cached_rows = _cap_recent_trading_rows(_load_existing_rows(disk_payload), TRADING_DAYS_LOOKBACK)
+            if cached_rows:
+                cached_context = _build_payload(
+                    symbol=symbol_key,
+                    index_name=str((cached_context or {}).get("index_name") or index_names[0]),
+                    rows=cached_rows,
+                    now_utc=now_utc,
+                )
+                _persist_to_disk(symbol_key, {"context": cached_context, "rows": cached_rows})
             _MEMORY_CACHE[symbol_key] = cached_context
             return dict(cached_context)
 
@@ -258,6 +276,14 @@ def get_daily_context(symbol: str, now_utc: datetime | None = None) -> dict[str,
                 else disk_payload
             )
             if isinstance(cached_context, dict):
+                existing_rows = _cap_recent_trading_rows(existing_rows, TRADING_DAYS_LOOKBACK)
+                if existing_rows:
+                    cached_context = _build_payload(
+                        symbol=symbol_key,
+                        index_name=str(cached_context.get("index_name") or index_names[0]),
+                        rows=existing_rows,
+                        now_utc=now_utc,
+                    )
                 cached_context = dict(cached_context)
                 cached_context["refresh_date"] = refresh_date
                 cached_context["source"] = "cache"
@@ -287,6 +313,7 @@ def get_daily_context(symbol: str, now_utc: datetime | None = None) -> dict[str,
             if selected_index_name is None:
                 selected_index_name = index_name
         rows = _merge_deduplicate_rows(existing_rows, new_rows)
+        rows = _cap_recent_trading_rows(rows, TRADING_DAYS_LOOKBACK)
         payload = _build_payload(
             symbol=symbol_key,
             index_name=selected_index_name or index_names[0],

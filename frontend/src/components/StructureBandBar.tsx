@@ -850,9 +850,15 @@ export default function StructureBandBar({
     return { left: `${markerPct}%`, color };
   };
 
+  const magnetMaxPainSame =
+    typeof magnet === "number" &&
+    typeof maxPain === "number" &&
+    Math.round(magnet) === Math.round(maxPain);
+
   const magnetMaxPainClose =
     magnetPct !== null &&
     maxPainPct !== null &&
+    !magnetMaxPainSame &&
     Math.abs(magnetPct - maxPainPct) < 4;
 
   const belowLabelStyle = (
@@ -1067,7 +1073,7 @@ export default function StructureBandBar({
               style={{ left: `${magnetPct}%`, top: "8px", height: "28px", background: "#f59e0b" }}
             />
           ) : null}
-          {maxPainPct !== null ? (
+          {maxPainPct !== null && !magnetMaxPainSame ? (
             <div
               className="sbb-marker"
               style={{ left: `${maxPainPct}%`, top: "12px", height: "20px", borderLeft: "2px dashed #a78bfa" }}
@@ -1111,10 +1117,10 @@ export default function StructureBandBar({
                 magnetMaxPainClose && maxPainPct !== null && magnetPct >= maxPainPct ? 1 : 0,
               )}
             >
-              magnet
+              {magnetMaxPainSame ? "magnet = max pain" : "magnet"}
             </div>
           ) : null}
-          {maxPainPct !== null ? (
+          {maxPainPct !== null && !magnetMaxPainSame ? (
             <div
               className="sbb-lbl-below"
               style={belowLabelStyle(

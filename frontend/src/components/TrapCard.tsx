@@ -20,6 +20,7 @@ export type TrapCardProps = {
   oi_price_divergence?: boolean;
   absorption_detected?: boolean;
   absorption_message?: string | null;
+  absorption_primary_strength?: number | null;
   absorption_signal?: string | null;
   absorption_strength?: number | null;
   support_absorption_strength?: number | null;
@@ -171,6 +172,7 @@ export default function TrapCard({
   oi_price_divergence,
   absorption_detected,
   absorption_message,
+  absorption_primary_strength,
   absorption_signal,
   absorption_strength,
   support_absorption_strength,
@@ -212,11 +214,14 @@ export default function TrapCard({
   const absorptionSignalLabel = String(absorption_signal || "").trim()
     ? String(absorption_signal).replace(/[_-]+/g, " ").toLowerCase()
     : "";
+  const primaryStrength =
+    typeof absorption_primary_strength === "number" && Number.isFinite(absorption_primary_strength)
+      ? absorption_primary_strength
+      : absorptionScore;
   const hasAbsorption =
-    absorptionScore > 0 ||
     Boolean(absorption_detected) ||
-    Boolean(absorption_message) ||
-    Boolean(absorptionSignalLabel);
+    primaryStrength >= 2.0 ||
+    absorptionScore > 0;
   const hasContextRows =
     Boolean(key_range) || hasAbsorption || Boolean(supportContext) || Boolean(oiMatrix) || Boolean(trap_reason);
 
