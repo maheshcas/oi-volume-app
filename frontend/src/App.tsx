@@ -350,6 +350,9 @@ type IntelligenceResponse = {
     current_resistance?: number | null;
     historical_context_available?: boolean;
     historical_context_updated_at?: string | null;
+    chain_pcr?: number | null;
+    chain_pcr_bias?: string | null;
+    pcr_trend?: string | null;
     signal_history?: Array<{
       timestamp?: string;
       trade_action?: string;
@@ -3646,6 +3649,9 @@ export default function App() {
           projection={projectionState}
           showProjection={false}
           alerts={intelligence?.signals?.alerts || []}
+          chainPcr={intelligence?.market_state?.chain_pcr ?? null}
+          chainPcrBias={intelligence?.market_state?.chain_pcr_bias ?? null}
+          chainPcrTrend={intelligence?.market_state?.pcr_trend ?? null}
         />
         {/* Entry target card now rendered next to Trade Signal inside DashboardLayout */}
 
@@ -3856,12 +3862,12 @@ export default function App() {
                   strike,
                   oi_ce: toSafeNumber(r.CE_OI ?? r.oi_ce ?? 0),
                   oi_pe: toSafeNumber(r.PE_OI ?? r.oi_pe ?? 0),
-                  oi_ce_change: typeof r.CE_DeltaOI === "number" ? r.CE_DeltaOI : null,
-                  oi_pe_change: typeof r.PE_DeltaOI === "number" ? r.PE_DeltaOI : null,
+                  oi_ce_change: toSafeNumber(r.oi_ce_change ?? r.CE_DeltaOI ?? 0),
+                  oi_pe_change: toSafeNumber(r.oi_pe_change ?? r.PE_DeltaOI ?? 0),
                   tag,
                 };
               })
-              .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; oi_ce_change: number | null; oi_pe_change: number | null; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
+              .filter((row): row is { strike: number; oi_ce: number; oi_pe: number; oi_ce_change: number; oi_pe_change: number; tag: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null } => row !== null),
           }}
           trap={{
             trap_probability: displayTrapRiskPct,

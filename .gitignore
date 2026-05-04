@@ -15,3 +15,4 @@ frontend/src/pages/
 frontend/src/styles/analytics.css
 backend_restart_out.log
 backend_restart_err.log
+monitor.py

@@ -3,6 +3,10 @@ from typing import Any
 
 NO_BREAKOUT_VALIDITY_FLOOR = 0.55
 
+# Module-level rolling state for absorption signal (keyed by rounded support/resistance level).
+# Persists across cycles within a process lifetime; resets automatically when the level shifts.
+_ABS_ROLLING: dict[str, Any] = {}
+
 
 def estimate_iv_realized_ratio(
     *,
@@ -647,8 +651,10 @@ def _compute_absorption_signal(
     resistance_prox = _clamp01(1.0 - max(0.0, (resistance_v - spot_v)) / max(1e-9, near_buffer))
     support_failure_score = 1.0 if (attempted_breakdown and reclaimed_support) else (0.7 if support_price_failure else 0.0)
     resistance_failure_score = 1.0 if (attempted_breakout and rejected_resistance) else (0.7 if resistance_price_failure else 0.0)
-    support_defender_score = _clamp01((pe_chg - 0.0) / 0.12) if pe_chg > 0 else 0.0
-    resistance_defender_score = _clamp01((ce_chg - 0.0) / 0.12) if ce_chg > 0 else 0.0
+    # ABS1-C3: normalization 0.12 → 0.04 so realistic OI changes (1.5–4%) produce
+    # meaningful defender scores instead of near-zero values.
+    support_defender_score = _clamp01((pe_chg - 0.0) / 0.04) if pe_chg > 0 else 0.0
+    resistance_defender_score = _clamp01((ce_chg - 0.0) / 0.04) if ce_chg > 0 else 0.0
     trap_score = _clamp01((trap_v - 45.0) / 25.0)
 
     support_strength = 100.0 * (
@@ -664,31 +670,77 @@ def _compute_absorption_signal(
         + 0.10 * trap_score
     )
 
-    # Absorption = writers defending a level = LOW trap condition.
-    # trap_v < 45 means market is stable and writers are in control,
-    # not in a breakout/uncertain state (which is trap_v > 55).
-    support_confirmed = bool(
+    # ABS1-C1: Rolling 5-cycle OI accumulation gates.
+    # Single-cycle 3% gate was too strict (needs 2,612 contracts/15s at 87K OI base).
+    # Writers accumulate over 5-10 minutes; rolling avg over ~75s fires correctly.
+    _sup_key = f"pe_{int(round(support_v / gap) * gap)}"
+    _res_key = f"ce_{int(round(resistance_v / gap) * gap)}"
+
+    # Support rolling state — reset if level shifted > 2 gaps
+    _sup_state = _ABS_ROLLING.get(_sup_key) or {}
+    if abs(float(_sup_state.get("level", support_v)) - support_v) > 2 * gap:
+        _sup_state = {}
+    _sup_state["level"] = support_v
+    _sup_state["sum"] = float(_sup_state.get("sum", 0.0)) + max(pe_chg, 0.0)
+    _sup_state["count"] = int(_sup_state.get("count", 0)) + 1
+    _sup_window = min(_sup_state["count"], 5)
+    _pe_rolling_avg = _sup_state["sum"] / _sup_window
+    _ABS_ROLLING[_sup_key] = _sup_state
+
+    # Resistance rolling state — reset if level shifted > 2 gaps
+    _res_state = _ABS_ROLLING.get(_res_key) or {}
+    if abs(float(_res_state.get("level", resistance_v)) - resistance_v) > 2 * gap:
+        _res_state = {}
+    _res_state["level"] = resistance_v
+    _res_state["sum"] = float(_res_state.get("sum", 0.0)) + max(ce_chg, 0.0)
+    _res_state["count"] = int(_res_state.get("count", 0)) + 1
+    _res_window = min(_res_state["count"], 5)
+    _ce_rolling_avg = _res_state["sum"] / _res_window
+    _ABS_ROLLING[_res_key] = _res_state
+
+    # Gate: rolling 5-cycle avg >= 1.5% OR single-cycle spike >= 3%
+    _pe_oi_gate = _pe_rolling_avg > 0.015 or pe_chg > 0.03
+    _ce_oi_gate = _ce_rolling_avg > 0.015 or ce_chg > 0.03
+
+    # ABS1-C2: Absorption = writers defending a level = LOW trap condition.
+    # Strength threshold lowered 55 → 50; 2-cycle hysteresis prevents single-cycle noise.
+    _sup_pre = bool(
         near_support
         and support_price_failure
-        and pe_chg > 0.03
+        and _pe_oi_gate
         and trap_v < 50.0
-        and support_strength >= 55.0
+        and support_strength >= 50.0
     )
-    resistance_confirmed = bool(
+    _res_pre = bool(
         near_resistance
         and resistance_price_failure
-        and ce_chg > 0.03
+        and _ce_oi_gate
         and trap_v < 50.0
-        and resistance_strength >= 55.0
+        and resistance_strength >= 50.0
     )
+
+    # 2-cycle hysteresis counters
+    _sup_state["confirm"] = (int(_sup_state.get("confirm", 0)) + 1) if _sup_pre else 0
+    _res_state["confirm"] = (int(_res_state.get("confirm", 0)) + 1) if _res_pre else 0
+
+    support_confirmed = _sup_state["confirm"] >= 2
+    resistance_confirmed = _res_state["confirm"] >= 2
+
+    # Reset rolling sum when absorption fires to prevent stale accumulation
+    if support_confirmed:
+        _sup_state["sum"] = 0.0
+        _sup_state["count"] = 0
+    if resistance_confirmed:
+        _res_state["sum"] = 0.0
+        _res_state["count"] = 0
 
     if support_confirmed and (not resistance_confirmed or support_strength >= resistance_strength):
         return {
             "absorption_signal": "SUPPORT_ABSORPTION",
             "absorption_strength": round(support_strength, 1),
             "absorption_reason": (
-                f"Support absorption: price failed to break {int(round(support_v))} while PE OI built ({pe_chg:.2f}) "
-                f"with trap low at {int(round(trap_v))}%."
+                f"Support absorption: price failed to break {int(round(support_v))} while PE OI built "
+                f"(rolling {_pe_rolling_avg:.3f}) with trap low at {int(round(trap_v))}%."
             ),
             "absorption_level": support_v,
             "absorption_confirmed": True,
@@ -700,8 +752,8 @@ def _compute_absorption_signal(
             "absorption_signal": "RESISTANCE_ABSORPTION",
             "absorption_strength": round(resistance_strength, 1),
             "absorption_reason": (
-                f"Resistance absorption: price failed to hold above {int(round(resistance_v))} while CE OI built ({ce_chg:.2f}) "
-                f"with trap low at {int(round(trap_v))}%."
+                f"Resistance absorption: price failed to hold above {int(round(resistance_v))} while CE OI built "
+                f"(rolling {_ce_rolling_avg:.3f}) with trap low at {int(round(trap_v))}%."
             ),
             "absorption_level": resistance_v,
             "absorption_confirmed": True,

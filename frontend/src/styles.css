@@ -6383,6 +6383,22 @@ input[type="number"] {
   font-style: italic;
 }
 
+.mb-v2-pcr-bullish {
+  color: #4ade80;
+  font-weight: 600;
+}
+.mb-v2-pcr-bearish {
+  color: #f87171;
+  font-weight: 600;
+}
+.mb-v2-pcr-neutral {
+  color: var(--text-muted, #94a3b8);
+}
+.mb-v2-pcr-trend {
+  font-size: 0.75em;
+  opacity: 0.8;
+}
+
 .mb-v2-classification {
   display: inline-flex;
   gap: 6px;
@@ -9145,4 +9161,26 @@ input[type="number"] {
 [data-theme="light"] header.shrink-0 {
   background: var(--bg-card);
   border-color: var(--border);
+}
+
+/* ── Ladder OI delta direction arrows (Patch LADDER1) ── */
+
+.sbb-delta-arrow {
+  font-size: 9px;
+  font-weight: 700;
+  margin-left: 2px;
+  opacity: 0.85;
+  vertical-align: baseline;
+}
+
+.sbb-delta-arrow-up {
+  color: var(--bull);
+}
+
+.sbb-delta-arrow-down {
+  color: var(--bear);
+}
+
+.sbb-delta-arrow-flat {
+  display: none;
 }

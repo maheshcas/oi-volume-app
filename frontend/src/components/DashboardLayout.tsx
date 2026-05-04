@@ -95,6 +95,8 @@ type DashboardLayoutProps = {
       strike: number;
       oi_ce: number;
       oi_pe: number;
+      oi_ce_change?: number | null;
+      oi_pe_change?: number | null;
       tag?: "pe_wall" | "ce_wall" | "magnet" | "maxpain" | null;
     }> | null;
     chainGreeks?: Array<{

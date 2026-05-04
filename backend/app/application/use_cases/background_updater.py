@@ -152,6 +152,7 @@ _flushed_windows_date: datetime | None = None
 _last_seeded_flush_ist: datetime | None = None
 _cycle_count_since_flush: int = 0
 _alignment_bootstrap_logged: set[str] = set()
+_PCR_HISTORY: dict[str, deque] = {}
 
 REGIME_MIN_HOLD_CYCLES = 3
 REGIME_SWITCH_CONFIRM_CYCLES = 2
@@ -5978,6 +5979,22 @@ def _build_v2_intelligence(
             ),
         }
     )
+    # Chain PCR rolling trend (5-cycle window)
+    _pcr_key = f"{symbol}_{expiry}"
+    _pcr_val = strike_intelligence.get("chain_pcr")
+    if isinstance(_pcr_val, (int, float)) and _pcr_val > 0:
+        if _pcr_key not in _PCR_HISTORY:
+            _PCR_HISTORY[_pcr_key] = deque(maxlen=10)
+        _PCR_HISTORY[_pcr_key].append(float(_pcr_val))
+    _pcr_history_vals = list(_PCR_HISTORY.get(_pcr_key, []))
+    if len(_pcr_history_vals) >= 5:
+        _pcr_recent = sum(_pcr_history_vals[-3:]) / 3
+        _pcr_older = sum(_pcr_history_vals[-5:-3]) / 2
+        _pcr_delta = _pcr_recent - _pcr_older
+        pcr_trend = "rising" if _pcr_delta > 0.05 else "falling" if _pcr_delta < -0.05 else "stable"
+    else:
+        pcr_trend = "stable"
+
     directional_entry_signal = strike_intelligence.get("directional_signal", "WAIT")
     legacy_entry_signal = strike_intelligence.get("entry_signal", "WAIT_NO_SETUP")
     entry_target = compute_entry_target(
@@ -6472,6 +6489,11 @@ def _build_v2_intelligence(
             "directional_signal": strike_intelligence.get("directional_signal"),
             "directional_bias": strike_intelligence.get("directional_bias"),
             "directional_rr": strike_intelligence.get("directional_rr"),
+            "chain_pcr": strike_intelligence.get("chain_pcr"),
+            "chain_pcr_bias": strike_intelligence.get("chain_pcr_bias"),
+            "chain_pcr_total_pe": strike_intelligence.get("chain_pcr_total_pe"),
+            "chain_pcr_total_ce": strike_intelligence.get("chain_pcr_total_ce"),
+            "pcr_trend": pcr_trend,
             "trade_readiness_v2": decision.get("trade_readiness_v2"),
             "readiness_state_v2": decision.get("readiness_state_v2"),
             "readiness_active_v2": bool(decision.get("readiness_active_v2", False)),

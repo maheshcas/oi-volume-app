@@ -709,6 +709,8 @@ export default function StructureBandBar({
           strike,
           oi_ce: row?.oi_ce ?? 0,
           oi_pe: row?.oi_pe ?? 0,
+          oi_ce_change: row?.oi_ce_change ?? null,
+          oi_pe_change: row?.oi_pe_change ?? null,
           tag: row?.tag ?? resolveTag(strike),
         };
       });
@@ -727,6 +729,8 @@ export default function StructureBandBar({
       ratio: number;
       label: string;
       side: "ce" | "pe" | "neutral";
+      deltaDir: "up" | "down" | "flat";
+      deltaLabel: string;
     }> = {};
     for (const row of allSortedStrikes) {
       if (!row || !Number.isFinite(row.strike)) continue;
@@ -734,14 +738,41 @@ export default function StructureBandBar({
       const pe = Math.max(0, Number(row.oi_pe) || 0);
       if (ce <= 0 || pe <= 0) continue;
 
-      const supportSide = row.strike <= spot;
+      // Spot strike itself uses resistance-side logic: CE growing = bearish (ceiling)
+      const supportSide = row.strike < spot;
       const ratio = supportSide ? pe / ce : ce / pe;
       const label = supportSide
         ? `PE/CE ${ratio.toFixed(2)}x`
         : `CE/PE ${ratio.toFixed(2)}x`;
       const side =
         ratio >= 1.1 ? (supportSide ? "pe" : "ce") : ratio <= 0.9 ? (supportSide ? "ce" : "pe") : "neutral";
-      map[row.strike] = { ratio, label, side };
+      const DELTA_THRESHOLD = 50;
+      const ceChg = Number(row.oi_ce_change) || 0;
+      const peChg = Number(row.oi_pe_change) || 0;
+      const ceGrowing = ceChg > peChg + DELTA_THRESHOLD;
+      const peGrowing = peChg > ceChg + DELTA_THRESHOLD;
+
+      let deltaDir: "up" | "down" | "flat" = "flat";
+      let deltaLabel = "";
+
+      if (supportSide) {
+        if (peGrowing) {
+          deltaDir = "up";
+          deltaLabel = "▲";
+        } else if (ceGrowing) {
+          deltaDir = "down";
+          deltaLabel = "▼";
+        }
+      } else {
+        if (ceGrowing) {
+          deltaDir = "up";
+          deltaLabel = "▲";
+        } else if (peGrowing) {
+          deltaDir = "down";
+          deltaLabel = "▼";
+        }
+      }
+      map[row.strike] = { ratio, label, side, deltaDir, deltaLabel };
     }
     return map;
   }, [allSortedStrikes, spot]);
@@ -1279,7 +1310,25 @@ export default function StructureBandBar({
                 {d ? (
                   <div className={`sb-strike-delta sb-strike-delta-${d.side}`}>
                     <span className="sb-strike-delta-dot" />
-                    <span className="sb-strike-delta-label">{d.label}</span>
+                    <span className="sb-strike-delta-label">
+                      {d.label}
+                      {d.deltaLabel ? (
+                        <span
+                          className={`sbb-delta-arrow sbb-delta-arrow-${d.deltaDir}`}
+                          title={
+                            d.deltaDir === "up"
+                              ? (d.side === "pe"
+                                  ? "Put writers adding — floor strengthening"
+                                  : "Call writers adding — ceiling building")
+                              : (d.side === "pe"
+                                  ? "Put writers covering — floor weakening"
+                                  : "Call writers covering — ceiling weakening")
+                          }
+                        >
+                          {" "}{d.deltaLabel}
+                        </span>
+                      ) : null}
+                    </span>
                   </div>
                 ) : null}
                 {isSpot && !hasWallTag ? <span className="sbb-tag sbb-tag-spot">SPOT</span> : null}
@@ -1292,9 +1341,6 @@ export default function StructureBandBar({
                     <span className="sbb-trigger-ratio">{trigger.ratioLabel}</span>
                     <span className="sbb-trigger-cond">{trigger.biasLine}</span>
                     <span className="sbb-trigger-cond sbb-trigger-hint">{trigger.triggerLine}</span>
-                    {trigger.deltaLine ? (
-                      <span className="sbb-trigger-delta">{trigger.deltaLine}</span>
-                    ) : null}
                   </div>
                 ) : null}
               </div>

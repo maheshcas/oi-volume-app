@@ -257,7 +257,8 @@ def _compute_price_magnet(
             continue
         # Exclude far-OTM strikes; they are usually expiry hedges rather than
         # meaningful intraday magnet levels.
-        intraday_window = 10 * strike_gap
+        # MAG1: narrowed ±10 → ±6 gaps (NIFTY: ±500→±300pts, BANKNIFTY: ±1000→±600pts)
+        intraday_window = 6 * strike_gap
         if spot > 0 and abs(s - spot) > intraday_window:
             continue
         ce_oi = max(0.0, _safe_float(row.get("oi_ce"), 0.0))
@@ -368,8 +369,10 @@ def _compute_price_magnet(
         hi = max(magnet_strike, sec_strike)
         between = lo <= spot <= hi
         secondary_distance_pts = float(abs(sec_strike - magnet_strike))
+        # MAG1: compression threshold 6 → 4 gaps (window narrowed, so 6 gaps would span
+        # the full window — 4 gaps = genuinely tight, e.g. 200pts for NIFTY)
         compression = bool(
-            secondary_distance_pts <= (6 * max(1, int(strike_gap)))
+            secondary_distance_pts <= (4 * max(1, int(strike_gap)))
             and between
         )
 
@@ -449,8 +452,8 @@ def _find_wall_strike(
 ) -> int | None:
     if not liquidity_map:
         return None
-    # Search window: 10 strike gaps in the relevant direction.
-    search_window = 10 * strike_gap
+    # Search window: 6 strike gaps in the relevant direction (MAG1: narrowed from 10).
+    search_window = 6 * strike_gap
     best_row: dict[str, Any] | None = None
     best_oi = -1.0
     for row in liquidity_map:
@@ -1506,6 +1509,22 @@ def compute_strike_intelligence(context: dict) -> dict:
             liquidity_map=liquidity_map,
         )
 
+        # Chain PCR: total PE OI / CE OI across strikes within ±10% of spot
+        _chain_window = spot * 0.10 if spot > 0 else 0.0
+        _total_pe_oi = 0.0
+        _total_ce_oi = 0.0
+        for _row in liquidity_map:
+            _s = float(_safe_int(_row.get("strike"), 0))
+            if _s > 0 and _chain_window > 0 and abs(_s - spot) <= _chain_window:
+                _total_pe_oi += max(0.0, _safe_float(_row.get("oi_pe"), 0.0))
+                _total_ce_oi += max(0.0, _safe_float(_row.get("oi_ce"), 0.0))
+        chain_pcr = round(_total_pe_oi / _total_ce_oi, 3) if _total_ce_oi > 0 else None
+        chain_pcr_bias = (
+            "Bullish" if chain_pcr is not None and chain_pcr > 1.3
+            else "Bearish" if chain_pcr is not None and chain_pcr < 0.8
+            else "Neutral"
+        )
+
         return {
             "trade_side": trade_side,
             "trade_side_reason": side_reason,
@@ -1559,6 +1578,10 @@ def compute_strike_intelligence(context: dict) -> dict:
             "directional_size": directional.get("size"),
             "directional_strike": directional.get("entry_strike"),
             "directional_rr": directional.get("rr"),
+            "chain_pcr": chain_pcr,
+            "chain_pcr_bias": chain_pcr_bias,
+            "chain_pcr_total_pe": round(_total_pe_oi),
+            "chain_pcr_total_ce": round(_total_ce_oi),
         }
     except Exception:
         return {

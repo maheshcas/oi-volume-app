@@ -22,6 +22,9 @@ type MarketBannerProps = {
     source?: string;
     tier?: string;
   }>;
+  chainPcr?: number | null;
+  chainPcrBias?: string | null;
+  chainPcrTrend?: string | null;
 };
 
 function splitSpotParts(value: string) {
@@ -217,6 +220,19 @@ export default function MarketBanner(props: MarketBannerProps) {
               <span className="mb-v2-sec-key">From Open</span>
               <span className={`mb-v2-sec-val ${openDeltaDown ? "mb-v2-sec-val-down" : "mb-v2-sec-val-up"}`}>
                 {props.fromOpenDelta}
+              </span>
+            </div>
+          ) : null}
+          {typeof props.chainPcr === "number" ? (
+            <div className="mb-v2-sec-item">
+              <span className="mb-v2-sec-key">PCR</span>
+              <span className={`mb-v2-sec-val mb-v2-pcr-${(props.chainPcrBias ?? "neutral").toLowerCase()}`}>
+                {props.chainPcr.toFixed(2)}
+                {props.chainPcrTrend && props.chainPcrTrend !== "stable" ? (
+                  <span className="mb-v2-pcr-trend">
+                    {" "}{props.chainPcrTrend === "rising" ? "↑" : "↓"}
+                  </span>
+                ) : null}
               </span>
             </div>
           ) : null}
